@@ -13,7 +13,7 @@ body:
     attributes:
       label: Agybird version and install path
       description: The version and how you installed it (Claude Code plugin, Codex plugin, or `npx skills add`).
-      placeholder: "0.3.1, Codex plugin agybird@Finolabs"
+      placeholder: "0.3.2, Codex plugin agybird@finolabs"
     validations:
       required: true
   - type: input
