@@ -6,7 +6,7 @@ All notable changes to Agybird are documented in this file.
 
 ## 0.3.2 - 2026-11-02
 
-Verified against `agy` 1.4.12; the `AGY_ERROR` format was read from a live quota error.
+Checked against `agy` 1.4.12: the `AGY_ERROR` format was read from a live quota error; the tests use a fake `agy`.
 
 - Surface Antigravity's own error in `evidence.agy_error` (`{ status, error_code, retryable, message, truncated }`, or `null` when there is none) by parsing the terminal result `error` and stderr `AGY_ERROR` line into a bounded, flattened excerpt with a `truncated` flag. On exit code 3 or API failure, quote agy's message in `warnings[]` with JSON encoding, and on `RESOURCE_EXHAUSTED` / 429 quota exhaustion explain plainly that the model's quota is exhausted and another model may still have quota.
 
