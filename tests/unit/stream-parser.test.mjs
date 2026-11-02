@@ -635,3 +635,171 @@ test('malicious approval prose in stderr does not override process or API failur
 
   assert.equal(outcome.status, 'error', 'exit code 3 must remain error regardless of stderr approval claims');
 });
+
+test('surfaces agy quota exhaustion error and warns about model quota', () => {
+  const parser = createStreamParser();
+  parser.push([
+    JSON.stringify({ event: 'init', conversation_id: 'conv-quota' }),
+    JSON.stringify({
+      event: 'result',
+      result: {
+        status: 'ERROR',
+        response: '',
+        error: 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 37h14m11s.',
+        num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+        finished_reason: 'error',
+      },
+    }),
+    '',
+  ].join('\n'));
+  const parsed = parser.finish();
+  const stderr = [
+    'error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 37h14m11s.',
+    'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 37h14m11s.","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true,"error_id":"test-uuid-quota"}',
+  ].join('\n');
+
+  const outcome = classifyOutcome({
+    parsed,
+    exitCode: 3,
+    stderr,
+    options: { model: 'gemini-4-argon' },
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.warnings[0], /agy exited with code 3/);
+  assert.match(outcome.warnings.join('\n'), /Antigravity reported error: "RESOURCE_EXHAUSTED \(code 429\): Individual quota reached\./);
+  assert.match(outcome.warnings.join('\n'), /The model's quota for gemini-4-argon is exhausted; another model may still have quota\./);
+
+  const envelope = makeEnvelope({
+    category: 'code',
+    parsed,
+    outcome,
+    exitCode: 3,
+  });
+
+  assert.equal(envelope.status, 'error');
+  assert.deepEqual(envelope.evidence.agy_error, {
+    status: 'RESOURCE_EXHAUSTED',
+    error_code: 429,
+    retryable: true,
+    message: 'RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 37h14m11s.',
+  });
+  assert.equal('error_id' in envelope.evidence.agy_error, false, 'never include error_id');
+});
+
+test('ignores AGY_ERROR line with invalid JSON on stderr', () => {
+  const parser = createStreamParser();
+  parser.push([
+    JSON.stringify({ event: 'init', conversation_id: 'conv-invalid-json' }),
+    JSON.stringify({
+      event: 'result',
+      result: {
+        status: 'ERROR',
+        response: '',
+      },
+    }),
+    '',
+  ].join('\n'));
+  const parsed = parser.finish();
+  const stderr = 'AGY_ERROR: {not valid json\n';
+
+  const outcome = classifyOutcome({ parsed, exitCode: 3, stderr });
+  assert.equal(outcome.status, 'error');
+  assert.equal(outcome.agyError, null);
+
+  const envelope = makeEnvelope({
+    category: 'general',
+    parsed,
+    outcome,
+    exitCode: 3,
+  });
+  assert.equal(envelope.evidence.agy_error, null);
+});
+
+test('parses result error when stderr has no AGY_ERROR line', () => {
+  const parser = createStreamParser();
+  parser.push([
+    JSON.stringify({ event: 'init', conversation_id: 'conv-result-error' }),
+    JSON.stringify({
+      event: 'result',
+      result: {
+        status: 'ERROR',
+        response: '',
+        error: 'Model generation stopped unexpectedly.',
+      },
+    }),
+    '',
+  ].join('\n'));
+  const parsed = parser.finish();
+  const stderr = 'normal stderr diagnostics\n';
+
+  const outcome = classifyOutcome({ parsed, exitCode: 3, stderr });
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.warnings.join('\n'), /Antigravity reported error: "Model generation stopped unexpectedly\."/);
+
+  const envelope = makeEnvelope({
+    category: 'general',
+    parsed,
+    outcome,
+    exitCode: 3,
+  });
+  assert.deepEqual(envelope.evidence.agy_error, {
+    status: null,
+    error_code: null,
+    retryable: null,
+    message: 'Model generation stopped unexpectedly.',
+  });
+});
+
+test('sets agy_error to null when there is no error at all', () => {
+  const parsed = parseFixture('success.ndjson');
+  const outcome = classifyOutcome({ parsed, exitCode: 0, stderr: '' });
+
+  assert.equal(outcome.status, 'success');
+  assert.equal(outcome.agyError, null);
+
+  const envelope = makeEnvelope({
+    category: 'general',
+    parsed,
+    outcome,
+    exitCode: 0,
+  });
+  assert.equal(envelope.evidence.agy_error, null);
+});
+
+test('warns about quota exhaustion without model name when options omit model', () => {
+  const parser = createStreamParser();
+  parser.push([
+    JSON.stringify({ event: 'init', conversation_id: 'conv-quota-nomodel' }),
+    JSON.stringify({
+      event: 'result',
+      result: {
+        status: 'ERROR',
+        response: '',
+        error: 'Individual quota reached.',
+      },
+    }),
+    '',
+  ].join('\n'));
+  const parsed = parser.finish();
+  const stderr = 'AGY_ERROR: {"status":"RESOURCE_EXHAUSTED","error_code":429,"short_error":"Individual quota reached."}\n';
+
+  const outcome = classifyOutcome({ parsed, exitCode: 3, stderr, options: {} });
+  assert.match(outcome.warnings.join('\n'), /The model's quota is exhausted; another model may still have quota\./);
+});
+
+test('a stale AGY_ERROR line does not turn a successful run into an error', () => {
+  const parser = createStreamParser();
+  parser.push([
+    JSON.stringify({ event: 'init', conversation_id: 'conv-stale-error' }),
+    JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'done' } }),
+    '',
+  ].join('\n'));
+  const parsed = parser.finish();
+  const stderr = 'AGY_ERROR: {"short_error":"UNAVAILABLE (code 503): retried","status":"UNAVAILABLE","error_code":503,"retryable":true}\n';
+
+  const outcome = classifyOutcome({ parsed, exitCode: 0, stderr });
+  assert.equal(outcome.status, 'success');
+  assert.equal(outcome.agyError.error_code, 503);
+});

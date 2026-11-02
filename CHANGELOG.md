@@ -2,6 +2,10 @@
 
 All notable changes to Agybird are documented in this file.
 
+## Unreleased
+
+- Surface Antigravity's own error in `evidence.agy_error` (`{ status, error_code, retryable, message }`, or `null` when there is none) by parsing the terminal result `error` and stderr `AGY_ERROR` line. On exit code 3 or API failure, quote agy's message in `warnings[]`, and on `RESOURCE_EXHAUSTED` / 429 quota exhaustion explain plainly that the model's quota is exhausted and another model may still have quota.
+
 ## 0.3.1 - 2026-10-26
 
 Verified against `agy` 1.4.7.
