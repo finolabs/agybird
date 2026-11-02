@@ -103,6 +103,27 @@ test('reports provider nonzero exit as error and exits nonzero', async () => {
   assert.equal(envelope.evidence.agy_exit_code, 7);
 });
 
+test('reports exit 3 with AGY_ERROR 429 in envelope evidence and warns with model name', async () => {
+  const result = await runRunner({
+    prompt: 'CASE_QUOTA_EXHAUSTED',
+    extraArgs: ['--model', 'gemini-4-argon'],
+  });
+  const envelope = parseSingleEnvelope(result.stdout);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.evidence.agy_exit_code, 3);
+  assert.deepEqual(envelope.evidence.agy_error, {
+    status: 'RESOURCE_EXHAUSTED',
+    error_code: 429,
+    retryable: true,
+    message: 'RESOURCE_EXHAUSTED (code 429): Individual quota reached.',
+    truncated: false,
+  });
+  assert.match(envelope.warnings.join('\n'), /The model's quota for gemini-4-argon is exhausted; another model may still have quota\./);
+  assert.match(envelope.warnings.join('\n'), /Antigravity reported error: "RESOURCE_EXHAUSTED \(code 429\): Individual quota reached\."/);
+});
+
 test('recovers from malformed provider output with a sanitized warning', async () => {
   const result = await runRunner({ prompt: 'CASE_MALFORMED' });
   const envelope = parseSingleEnvelope(result.stdout);

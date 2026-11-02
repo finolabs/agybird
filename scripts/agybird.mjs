@@ -626,6 +626,16 @@ function normalizeDeniedActions(entries) {
   return actions;
 }
 
+function extractStreamError(rawError) {
+  if (typeof rawError === 'string') {
+    return rawError;
+  }
+  if (rawError && typeof rawError === 'object' && typeof rawError.message === 'string') {
+    return rawError.message;
+  }
+  return null;
+}
+
 export function createStreamParser() {
   let buffer = '';
   let lineNumber = 0;
@@ -642,6 +652,7 @@ export function createStreamParser() {
     deniedActions: [],
     sawTerminalResult: false,
     agyStatus: null,
+    error: null,
   };
 
   function processLine(line) {
@@ -700,6 +711,11 @@ export function createStreamParser() {
         state.response,
       );
       state.usage = firstDefined(terminal.usage, terminal.stats, state.usage);
+      const rawError = firstDefined(terminal.error, event.error);
+      const extractedError = extractStreamError(rawError);
+      if (extractedError !== null) {
+        state.error = extractedError;
+      }
       if (Array.isArray(terminal.denied_actions)) {
         state.deniedActions = normalizeDeniedActions(terminal.denied_actions);
       }
@@ -874,7 +890,102 @@ export function describePermissionRequests(parsed, stderr = '') {
   return requests;
 }
 
-export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = false }) {
+function nonBlankString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? value : null;
+}
+
+function parseErrorCode(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '' || !/^-?\d+$/.test(trimmed)) return null;
+    const num = Number(trimmed);
+    return Number.isSafeInteger(num) ? num : null;
+  }
+  return null;
+}
+
+export function parseAgyErrorFromStderr(stderr = '') {
+  if (!stderr) return null;
+  const lines = String(stderr).split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i].trimStart();
+    if (!trimmed.startsWith('AGY_ERROR:')) continue;
+    const payload = trimmed.slice('AGY_ERROR:'.length).trim();
+    try {
+      const obj = JSON.parse(payload);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return obj;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  return null;
+}
+
+export function parseAgyError({ parsed, stderr = '' }) {
+  const stderrObj = parseAgyErrorFromStderr(stderr);
+  let resultError = null;
+  if (typeof parsed?.error === 'string') {
+    resultError = parsed.error;
+  } else if (parsed?.error && typeof parsed.error === 'object' && typeof parsed.error.message === 'string') {
+    resultError = parsed.error.message;
+  }
+
+  const rawMessage = nonBlankString(stderrObj?.short_error)
+    ?? nonBlankString(stderrObj?.message)
+    ?? nonBlankString(resultError)
+    ?? null;
+
+  // A status is an enum name such as RESOURCE_EXHAUSTED; anything else is dropped.
+  const status = typeof stderrObj?.status === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(stderrObj.status)
+    ? stderrObj.status
+    : null;
+  const errorCode = parseErrorCode(stderrObj?.error_code);
+  const retryable = typeof stderrObj?.retryable === 'boolean'
+    ? stderrObj.retryable
+    : null;
+
+  if (!status && errorCode === null && retryable === null && !rawMessage) {
+    return null;
+  }
+
+  const message = rawMessage ? truncateField(rawMessage) : null;
+  const truncated = rawMessage ? rawMessage.replace(/\s+/g, ' ').trim().length > MAX_PERMISSION_FIELD : false;
+
+  return {
+    status,
+    error_code: errorCode,
+    retryable,
+    message,
+    truncated,
+  };
+}
+
+function addAgyErrorWarnings(warnings, agyError, options = {}) {
+  if (!agyError) return;
+  if (agyError.message) {
+    warnings.push(`Antigravity reported error: ${JSON.stringify(agyError.message)}`);
+  }
+  if (agyError.status === 'RESOURCE_EXHAUSTED' || agyError.error_code === 429) {
+    const model = options?.model;
+    if (model) {
+      warnings.push(`The model's quota for ${model} is exhausted; another model may still have quota.`);
+    } else {
+      warnings.push("The model's quota is exhausted; another model may still have quota.");
+    }
+  }
+}
+
+export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = false, options = {} }) {
+  const agyError = parseAgyError({ parsed, stderr });
   const warnings = [...parsed.warnings];
   const toolErrors = parsed.toolCalls.filter((tool) => FAILED_TOOL_STATUS.has(tool.status) || tool.error);
   const permissionText = [
@@ -886,7 +997,8 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
   // A denial kept from earlier in the turn must not hide that the turn then failed.
   if (exitCode === AGENT_FAILURE_EXIT_CODE) {
     warnings.push('agy exited with code 3: the agent or model API failed mid-turn; any response is partial.');
-    return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [] };
+    addAgyErrorWarnings(warnings, agyError, options);
+    return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [], agyError };
   }
   if (denied) {
     const permissionRequests = describePermissionRequests(parsed, stderr);
@@ -896,31 +1008,34 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
     }
     if (grantable.length === 0) {
       warnings.push('Antigravity permission policy blocked at least one requested action and no allow-rule can be suggested for it.');
-      return { status: 'blocked', warnings, permissionRequests };
+      return { status: 'blocked', warnings, permissionRequests, agyError };
     }
-    return { status: 'needs_permission', warnings, permissionRequests };
+    return { status: 'needs_permission', warnings, permissionRequests, agyError };
   }
   if (exitCode !== 0) {
     warnings.push(`agy exited with code ${exitCode}`);
-    return { status: 'error', warnings };
+    addAgyErrorWarnings(warnings, agyError, options);
+    return { status: 'error', warnings, agyError };
   }
   if (deadlineReached || PRINT_TIMEOUT_EXPIRED.test(stderr)) {
     warnings.push('agy --print-timeout expired before the turn finished; the response is incomplete.');
-    return { status: 'partial', warnings };
+    return { status: 'partial', warnings, agyError };
   }
   if (!parsed.sawTerminalResult) {
     warnings.push('Antigravity stream ended without a terminal result event.');
-    return { status: 'error', warnings };
+    addAgyErrorWarnings(warnings, agyError, options);
+    return { status: 'error', warnings, agyError };
   }
   if (/error|failed|failure/i.test(parsed.agyStatus ?? '')) {
     warnings.push(`Antigravity reported terminal status: ${parsed.agyStatus}`);
-    return { status: 'error', warnings };
+    addAgyErrorWarnings(warnings, agyError, options);
+    return { status: 'error', warnings, agyError };
   }
   if (toolErrors.length > 0) {
     warnings.push(`${toolErrors.length} Antigravity tool call(s) did not complete successfully.`);
-    return { status: 'partial', warnings };
+    return { status: 'partial', warnings, agyError };
   }
-  return { status: 'success', warnings };
+  return { status: 'success', warnings, agyError };
 }
 
 export function makeEnvelope({
@@ -932,6 +1047,7 @@ export function makeEnvelope({
   agyBinary,
   agyVersion,
   sessionResumed = false,
+  agyError = outcome?.agyError ?? null,
 }) {
   return {
     schema_version: 1,
@@ -953,6 +1069,7 @@ export function makeEnvelope({
     evidence: {
       agy_exit_code: exitCode,
       agy_status: parsed.agyStatus,
+      agy_error: agyError,
       session_resumed: sessionResumed,
       ...(agyBinary === undefined ? {} : { agy_binary: agyBinary }),
       ...(agyVersion === undefined ? {} : { agy_version: agyVersion }),
@@ -1266,7 +1383,7 @@ function fatalEnvelope(category, error) {
     artifacts: [],
     warnings: [error.message],
     usage: null,
-    evidence: { agy_exit_code: null, agy_status: null, session_resumed: false },
+    evidence: { agy_exit_code: null, agy_status: null, agy_error: null, session_resumed: false },
   };
 }
 
@@ -1350,6 +1467,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       exitCode: execution.exitCode,
       stderr: execution.stderr,
       deadlineReached: execution.elapsedMs >= timeoutToMilliseconds(options.timeout),
+      options,
     });
 
     if (execution.timedOut) {
