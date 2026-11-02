@@ -626,6 +626,16 @@ function normalizeDeniedActions(entries) {
   return actions;
 }
 
+function extractStreamError(rawError) {
+  if (typeof rawError === 'string') {
+    return rawError;
+  }
+  if (rawError && typeof rawError === 'object' && typeof rawError.message === 'string') {
+    return rawError.message;
+  }
+  return null;
+}
+
 export function createStreamParser() {
   let buffer = '';
   let lineNumber = 0;
@@ -702,8 +712,9 @@ export function createStreamParser() {
       );
       state.usage = firstDefined(terminal.usage, terminal.stats, state.usage);
       const rawError = firstDefined(terminal.error, event.error);
-      if (rawError !== undefined && rawError !== null) {
-        state.error = String(rawError);
+      const extractedError = extractStreamError(rawError);
+      if (extractedError !== null) {
+        state.error = extractedError;
       }
       if (Array.isArray(terminal.denied_actions)) {
         state.deniedActions = normalizeDeniedActions(terminal.denied_actions);
@@ -879,65 +890,91 @@ export function describePermissionRequests(parsed, stderr = '') {
   return requests;
 }
 
+function nonBlankString(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? value : null;
+}
+
+function parseErrorCode(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '' || !/^-?\d+$/.test(trimmed)) return null;
+    const num = Number(trimmed);
+    return Number.isSafeInteger(num) ? num : null;
+  }
+  return null;
+}
+
 export function parseAgyErrorFromStderr(stderr = '') {
   if (!stderr) return null;
   const lines = String(stderr).split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i].trim();
-    const index = line.indexOf('AGY_ERROR:');
-    if (index !== -1) {
-      const payload = line.slice(index + 'AGY_ERROR:'.length).trim();
-      try {
-        const obj = JSON.parse(payload);
-        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-          return obj;
-        }
-      } catch {
-        return null;
+    const trimmed = lines[i].trimStart();
+    if (!trimmed.startsWith('AGY_ERROR:')) continue;
+    const payload = trimmed.slice('AGY_ERROR:'.length).trim();
+    try {
+      const obj = JSON.parse(payload);
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return obj;
       }
+    } catch {
       return null;
     }
+    return null;
   }
   return null;
 }
 
 export function parseAgyError({ parsed, stderr = '' }) {
   const stderrObj = parseAgyErrorFromStderr(stderr);
-  const resultError = typeof parsed?.error === 'string' && parsed.error.trim()
-    ? parsed.error.trim()
-    : (parsed?.error ? String(parsed.error) : null);
-
-  if (!stderrObj && !resultError) {
-    return null;
+  let resultError = null;
+  if (typeof parsed?.error === 'string') {
+    resultError = parsed.error;
+  } else if (parsed?.error && typeof parsed.error === 'object' && typeof parsed.error.message === 'string') {
+    resultError = parsed.error.message;
   }
 
-  const status = stderrObj?.status !== undefined && stderrObj?.status !== null
-    ? String(stderrObj.status)
+  const rawMessage = nonBlankString(stderrObj?.short_error)
+    ?? nonBlankString(stderrObj?.message)
+    ?? nonBlankString(resultError)
+    ?? null;
+
+  // A status is an enum name such as RESOURCE_EXHAUSTED; anything else is dropped.
+  const status = typeof stderrObj?.status === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(stderrObj.status)
+    ? stderrObj.status
     : null;
-  let errorCode = null;
-  if (stderrObj?.error_code !== undefined && stderrObj?.error_code !== null) {
-    const num = Number(stderrObj.error_code);
-    errorCode = Number.isFinite(num) ? num : stderrObj.error_code;
-  }
+  const errorCode = parseErrorCode(stderrObj?.error_code);
   const retryable = typeof stderrObj?.retryable === 'boolean'
     ? stderrObj.retryable
     : null;
-  const message = stderrObj?.short_error ?? stderrObj?.message ?? resultError ?? null;
+
+  if (!status && errorCode === null && retryable === null && !rawMessage) {
+    return null;
+  }
+
+  const message = rawMessage ? truncateField(rawMessage) : null;
+  const truncated = rawMessage ? rawMessage.replace(/\s+/g, ' ').trim().length > MAX_PERMISSION_FIELD : false;
 
   return {
     status,
     error_code: errorCode,
     retryable,
-    message: message ? String(message) : null,
+    message,
+    truncated,
   };
 }
 
 function addAgyErrorWarnings(warnings, agyError, options = {}) {
   if (!agyError) return;
   if (agyError.message) {
-    warnings.push(`Antigravity reported error: "${agyError.message}"`);
+    warnings.push(`Antigravity reported error: ${JSON.stringify(agyError.message)}`);
   }
-  if (agyError.status === 'RESOURCE_EXHAUSTED' || Number(agyError.error_code) === 429) {
+  if (agyError.status === 'RESOURCE_EXHAUSTED' || agyError.error_code === 429) {
     const model = options?.model;
     if (model) {
       warnings.push(`The model's quota for ${model} is exhausted; another model may still have quota.`);

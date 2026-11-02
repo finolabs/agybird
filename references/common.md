@@ -43,7 +43,7 @@ The envelope provides comprehensive execution metrics:
 - `structured_output`: Parsed payload when `--json-schema` is enforced.
 - `subagents`: List of background subagents spawned by Antigravity during the run (`type_name`, `role`, `conversation_id`, `log_uri`, `workspace_uris`).
 - `usage`: Detailed token breakdown including `input_tokens`, `output_tokens`, `thinking_tokens` (reasoning models), `cache_read_tokens` (prompt cache), and `total_tokens`.
-- `evidence.agy_error`: Structured error from Antigravity (`{ status, error_code, retryable, message }`, or `null` when there is none), parsed from the terminal result and agy's stderr `AGY_ERROR` line.
+- `evidence.agy_error`: Structured error from Antigravity (`{ status, error_code, retryable, message, truncated }`, or `null` when there is none), carrying a bounded, flattened excerpt with a `truncated` flag parsed from the terminal result and agy's stderr `AGY_ERROR` line.
 
 Keep stderr as diagnostics; never parse it as the primary result.
 
