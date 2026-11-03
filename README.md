@@ -3,8 +3,8 @@
 ![Agybird — Delegate work to the Antigravity CLI you already use.](assets/wordmark.svg#gh-light-mode-only)
 ![Agybird — Delegate work to the Antigravity CLI you already use.](assets/wordmark-dark.svg#gh-dark-mode-only)
 
-[![release](https://img.shields.io/github/v/release/fioenix/agybird)](https://github.com/fioenix/agybird/releases/latest)
-[![CI](https://github.com/fioenix/agybird/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/fioenix/agybird/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/finolabs/agybird)](https://github.com/finolabs/agybird/releases/latest)
+[![CI](https://github.com/finolabs/agybird/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/finolabs/agybird/actions/workflows/ci.yml)
 
 Agybird is an MIT-licensed Agent Skill that lets Claude Code and Codex delegate work to the official Google Antigravity CLI (`agy`). It uses the user's existing Antigravity authentication and Gemini subscription instead of extracting credentials or calling private APIs.
 
@@ -33,44 +33,48 @@ Every install path ships the same skill from the same files. Pick the plugin pat
 
 ### As a Claude Code plugin
 
-Add the marketplace, then install the plugin:
+Agybird is listed in the shared [FINOLABS catalog](https://github.com/finolabs/plugins). Add the catalog, then install the plugin:
 
-```text
-/plugin marketplace add fioenix/agybird
-/plugin install agybird@agybird
+```bash
+claude plugin marketplace add finolabs/plugins
+claude plugin install agybird@finolabs
 ```
 
-Claude Code pins the installed plugin to the version in `.claude-plugin/plugin.json`, so updates arrive only when that version changes. This path requires Claude Code v2.1.142 or newer.
+Update the catalog with `claude plugin marketplace update finolabs`. This path requires Claude Code v2.1.142 or newer. This repository no longer hosts its own marketplace, so a plugin installed as `agybird@agybird` gets no further updates: remove it and install `agybird@finolabs`.
 
 ### As a Codex plugin
 
-**Already installed 0.2.x from Codex?** Do not run the commands below: the Codex marketplace was named `agybird` before 0.3.0, and `codex plugin marketplace upgrade agybird` fails because the name changed. Follow the [migration guide](docs/migration.md) to move to `@Finolabs` side by side and to roll back if needed.
-
-This repository hosts the **Finolabs** Codex marketplace, which lists Agybird next to two plugins by the same author, [Vietnamizer](https://github.com/fioenix/vietnamizer) and [Markmap Skills](https://github.com/fioenix/markmap-skills). For a new install, add the marketplace, then install only the plugins you want:
-
 ```bash
-codex plugin marketplace add fioenix/agybird
-codex plugin add agybird@Finolabs
-codex plugin add vietnamizer@Finolabs
-codex plugin add markmap-skills@Finolabs
+codex plugin marketplace add finolabs/plugins
+codex plugin add agybird@finolabs
 ```
 
-You can also open `/plugins` inside Codex and install from the **Finolabs** marketplace. Start a new session afterwards so the skills load. To try a local clone, pass its path instead: `codex plugin marketplace add /path/to/agybird`.
+Start a new session afterwards so the skill loads. Refresh the catalog with `codex plugin marketplace upgrade finolabs`, then run `codex plugin add agybird@finolabs` again. Codex caches each plugin by the version in `.codex-plugin/plugin.json`.
 
-Codex caches each plugin by the version in `.codex-plugin/plugin.json`. To pick up a new release, run `codex plugin marketplace upgrade Finolabs`, then `codex plugin add <plugin>@Finolabs` again.
+**Installed from the older `Finolabs` catalog (`agybird@Finolabs`)?** That catalog was served from this repository and is gone. Follow the [migration guide](docs/migration.md) before adding `finolabs/plugins`, because both names share one plugin cache folder on macOS.
+
+### As an Antigravity plugin
+
+Antigravity resolves `plugin@marketplace` only for its official marketplace, so install from the repository URL:
+
+```bash
+agy plugin install https://github.com/finolabs/agybird
+```
+
+Check it with `agy plugin list`. There is no catalog to upgrade from, so run the install command again to pick up a new release.
 
 ### As an Agent Skill
 
 Use the interactive installer and select Claude Code, Codex, or both:
 
 ```bash
-npx skills add fioenix/agybird
+npx skills add finolabs/agybird
 ```
 
 For an explicit global install into both agents:
 
 ```bash
-npx skills add fioenix/agybird --global --agent claude-code codex
+npx skills add finolabs/agybird --global --agent claude-code codex
 ```
 
 The command uses the open-source [Skills CLI](https://github.com/vercel-labs/skills). Review its prompt before confirming destinations.

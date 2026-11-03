@@ -6,14 +6,14 @@ body:
     attributes:
       value: |
         Issues are public. Do not post credentials, tokens, personal data, private repository content, or unredacted prompts, including in screenshots.
-        Security problems go through [Report a vulnerability](https://github.com/fioenix/agybird/security/advisories/new), not here.
+        Security problems go through [Report a vulnerability](https://github.com/finolabs/agybird/security/advisories/new), not here.
         Problems with Antigravity sign-in, subscription eligibility, quota, or Google's service behaviour belong with Google.
   - type: input
     id: agybird_version
     attributes:
       label: Agybird version and install path
       description: The version and how you installed it (Claude Code plugin, Codex plugin, or `npx skills add`).
-      placeholder: "0.3.2, Codex plugin agybird@Finolabs"
+      placeholder: "0.3.2, Codex plugin agybird@finolabs"
     validations:
       required: true
   - type: input

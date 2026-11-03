@@ -8,16 +8,15 @@ const readJson = (path) => JSON.parse(read(path));
 
 const packageJson = readJson('package.json');
 const plugin = readJson('.claude-plugin/plugin.json');
-const marketplace = readJson('.claude-plugin/marketplace.json');
 const codexPlugin = readJson('.codex-plugin/plugin.json');
-const codexMarketplace = readJson('.agents/plugins/marketplace.json');
+const antigravityPlugin = readJson('.antigravity-plugin/plugin.json');
 const frontmatter = (path) => /^---\n([\s\S]*?)\n---/.exec(read(path))?.[1] ?? '';
 const field = (path, name) => new RegExp(`^${name}: (.+)$`, 'm').exec(frontmatter(path))?.[1];
 const policyUrls = {
-  homepage: 'https://github.com/fioenix/agybird',
-  support: 'https://github.com/fioenix/agybird/issues',
-  privacy: 'https://github.com/fioenix/agybird/blob/main/PRIVACY.md',
-  terms: 'https://github.com/fioenix/agybird/blob/main/TERMS.md',
+  homepage: 'https://github.com/finolabs/agybird',
+  support: 'https://github.com/finolabs/agybird/issues',
+  privacy: 'https://github.com/finolabs/agybird/blob/main/PRIVACY.md',
+  terms: 'https://github.com/finolabs/agybird/blob/main/TERMS.md',
 };
 
 // Codex reads every icon path relative to the plugin root and requires the "./" prefix.
@@ -37,6 +36,7 @@ test('the plugin manifest identifies Agybird and stays parseable', () => {
 test('both plugin versions track package.json and a documented changelog entry', () => {
   assert.equal(plugin.version, packageJson.version);
   assert.equal(codexPlugin.version, packageJson.version);
+  assert.equal(antigravityPlugin.version, packageJson.version);
   assert.equal(readJson('package-lock.json').version, packageJson.version);
   assert.match(read('CHANGELOG.md'), new RegExp(`^## ${packageJson.version.replace(/\./g, '\\.')} `, 'm'));
 });
@@ -57,7 +57,7 @@ test('the Claude Code manifest carries the icon and policy links', () => {
   assert.equal(plugin.supportUrl, policyUrls.support);
   assert.equal(plugin.privacyPolicyUrl, policyUrls.privacy);
   assert.equal(plugin.termsOfServiceUrl, policyUrls.terms);
-  assert.match(plugin.documentationUrl, /^https:\/\/github\.com\/fioenix\/agybird/);
+  assert.match(plugin.documentationUrl, /^https:\/\/github\.com\/finolabs\/agybird/);
 });
 
 test('the Codex manifest describes the same plugin as the Claude Code manifest', () => {
@@ -66,8 +66,6 @@ test('the Codex manifest describes the same plugin as the Claude Code manifest',
   }
   assert.deepEqual(codexPlugin.author, plugin.author);
   assert.deepEqual(codexPlugin.keywords, plugin.keywords);
-  assert.deepEqual(marketplace.plugins[0].keywords, plugin.keywords);
-  assert.equal(marketplace.plugins[0].description, plugin.description);
   assert.equal('$schema' in codexPlugin, false, 'the Codex format omits $schema');
   // The runner spawns a local agy process, so the Codex directory must list it as Desktop only.
   assert.equal(codexPlugin.requires_local_executor, true);
@@ -76,9 +74,6 @@ test('the Codex manifest describes the same plugin as the Claude Code manifest',
 // Listing rules from the Claude directory pre-submission checklist and the Codex submission page.
 test('the listing meets both directories\' naming, contrast, and content rules', () => {
   assert.match(plugin.name, /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/);
-  for (const field of ['icon', 'documentationUrl', 'supportUrl', 'privacyPolicyUrl', 'termsOfServiceUrl']) {
-    assert.equal(field in marketplace.plugins[0], false, `${field} belongs in plugin.json only`);
-  }
   for (const url of [plugin.supportUrl, plugin.privacyPolicyUrl, plugin.termsOfServiceUrl, plugin.documentationUrl]) {
     assert.match(url, /^https:\/\//);
   }
@@ -144,31 +139,6 @@ test('the Codex interface has every field the plugin directory requires', () => 
   assert.equal(ui.logo, plugin.icon);
 });
 
-test('the Codex marketplace lists the consolidated Finolabs catalog under the Finolabs identifier', () => {
-  assert.equal(codexMarketplace.name, 'Finolabs');
-  assert.equal(codexMarketplace.interface?.displayName, 'Finolabs');
-  assert.deepEqual(codexMarketplace.plugins, [
-    {
-      name: codexPlugin.name,
-      source: { source: 'local', path: './' },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: codexPlugin.interface.category,
-    },
-    {
-      name: 'vietnamizer',
-      source: { source: 'url', url: 'https://github.com/fioenix/vietnamizer.git' },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: 'Productivity',
-    },
-    {
-      name: 'markmap-skills',
-      source: { source: 'url', url: 'https://github.com/fioenix/markmap-skills.git' },
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      category: 'Productivity',
-    },
-  ]);
-});
-
 test('the icon set shares one self-contained mark across light and dark variants', () => {
   const shape = (path) => read(path).replace(/<title[^>]*>[^<]*<\/title>/, '').replace(/#[0-9A-F]{6}/gi, 'COLOR');
   for (const path of ['assets/icon.svg', 'assets/icon-dark.svg', 'assets/wordmark.svg', 'assets/wordmark-dark.svg']) {
@@ -192,24 +162,30 @@ test('the icon set shares one self-contained mark across light and dark variants
   assert.equal(png[25], 6, 'icon.png must keep an alpha channel');
 });
 
-test('the marketplace lists exactly this repository as the plugin source', () => {
-  assert.equal(marketplace.name, 'agybird');
-  assert.equal(typeof marketplace.owner?.name, 'string');
-  assert.equal(marketplace.plugins.length, 1);
-  const [entry] = marketplace.plugins;
-  assert.equal(entry.name, plugin.name);
-  assert.equal(entry.source, './');
-  assert.equal(entry.license, plugin.license);
+// Agybird is listed in the shared finolabs/plugins catalog, so this repository serves no catalog
+// of its own: a second catalog under the same plugin name would shadow the shared one.
+test('the repository serves no marketplace catalog of its own', () => {
+  assert.equal(existsSync(new URL('.claude-plugin/marketplace.json', root)), false);
+  assert.equal(existsSync(new URL('.agents/plugins/marketplace.json', root)), false);
 });
 
-test('README documents both plugin install paths alongside the skill install path', () => {
+test('the Antigravity manifest describes the same plugin as the Claude Code manifest', () => {
+  for (const key of ['name', 'displayName', 'description', 'homepage', 'repository', 'license']) {
+    assert.equal(antigravityPlugin[key], plugin[key], `.antigravity-plugin/plugin.json ${key} differs`);
+  }
+  assert.deepEqual(antigravityPlugin.author, plugin.author);
+  assert.deepEqual(antigravityPlugin.keywords, plugin.keywords);
+  assert.equal(antigravityPlugin.skills, codexPlugin.skills);
+  assertAsset(antigravityPlugin.logo);
+});
+
+test('README documents the shared-catalog install paths alongside the skill install path', () => {
   const readme = read('README.md');
-  assert.match(readme, /\/plugin marketplace add fioenix\/agybird/);
-  assert.match(readme, /\/plugin install agybird@agybird/);
-  assert.match(readme, /codex plugin marketplace add fioenix\/agybird/);
-  assert.match(readme, /codex plugin add agybird@Finolabs/);
-  assert.match(readme, /codex plugin add vietnamizer@Finolabs/);
-  assert.match(readme, /codex plugin add markmap-skills@Finolabs/);
+  assert.match(readme, /claude plugin marketplace add finolabs\/plugins/);
+  assert.match(readme, /claude plugin install agybird@finolabs/);
+  assert.match(readme, /codex plugin marketplace add finolabs\/plugins/);
+  assert.match(readme, /codex plugin add agybird@finolabs/);
+  assert.match(readme, /agy plugin install https:\/\/github\.com\/finolabs\/agybird/);
   assert.match(readme, /\(assets\/wordmark\.svg#gh-light-mode-only\)/);
   assert.match(readme, /\(assets\/wordmark-dark\.svg#gh-dark-mode-only\)/);
 });
