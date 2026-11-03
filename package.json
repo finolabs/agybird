@@ -1,7 +1,15 @@
 {
   "name": "agybird",
   "version": "0.4.0",
-  "description": "Agent Skill bridge for the official Google Antigravity CLI",
+  "description": "Delegate code work, image generation or editing, and general tasks to the official Google Antigravity CLI through an existing Gemini subscription.",
+  "keywords": [
+    "antigravity",
+    "agy",
+    "gemini",
+    "delegation",
+    "code-review",
+    "agent-skills"
+  ],
   "type": "module",
   "private": true,
   "files": [
