@@ -11,6 +11,7 @@ All notable changes to Agybird are documented in this file.
 - Removed `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`; install with `agybird@finolabs` after `marketplace add finolabs/plugins`.
 - Added the Antigravity manifest `.antigravity-plugin/plugin.json` (`agy plugin install https://github.com/finolabs/agybird`), and the release workflow now checks its version against the tag.
 - Moved manifest, policy and issue-template URLs from `fioenix/agybird` to `finolabs/agybird`.
+- Made the plugin description and keywords identical in the three manifests, `package.json` and the shared catalog.
 
 ## 0.3.2 - 2026-11-02
 
