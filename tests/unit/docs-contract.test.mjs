@@ -7,7 +7,7 @@ const read = (path) => readFileSync(new URL(path, root), 'utf8');
 
 test('README documents installation and both target agents', () => {
   const readme = read('README.md');
-  assert.match(readme, /npx skills add fioenix\/agybird/);
+  assert.match(readme, /npx skills add finolabs\/agybird/);
   assert.match(readme, /Claude Code/);
   assert.match(readme, /Codex/);
   assert.match(readme, /Node\.js 20/);

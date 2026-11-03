@@ -8,7 +8,7 @@ Before this change, Agybird's own repository served two catalogs: the Claude Cod
 | Codex `agybird@Finolabs`, or `agybird@agybird` from before 0.3.0 | `agybird@finolabs` |
 | Codex `vietnamizer@Finolabs`, `markmap-skills@Finolabs` | `vietnamizer@finolabs`, `markmap-skills@finolabs` |
 
-Antigravity is unchanged: it installs from the repository URL, now `https://github.com/finolabs/agybird`.
+Antigravity has no catalog: it installs from the repository URL, `https://github.com/finolabs/agybird`.
 
 ## Why a plain upgrade fails
 
@@ -41,10 +41,19 @@ Start a new session and confirm that the skill loads once, not twice. Check the 
 
 ## Roll back
 
-Pin the last release that served its own catalog:
+Pin the last release that served its own catalogs, `v0.3.2`.
+
+Codex:
 
 ```bash
 codex plugin marketplace add finolabs/agybird --ref v0.3.2
 ```
 
-Then reinstall the old selectors you want and remove the `finolabs` entries. Never overwrite `~/.codex/` in bulk; that discards newer, unrelated configuration changes.
+Claude Code has no pinned marketplace install, so add a local checkout of that tag instead:
+
+```bash
+git clone --branch v0.3.2 https://github.com/finolabs/agybird.git /path/to/agybird-v0.3.2
+claude plugin marketplace add /path/to/agybird-v0.3.2
+```
+
+Then reinstall the old selectors you want (`agybird@agybird` on Claude Code, `agybird@Finolabs` on Codex) and remove the `finolabs` entries. Never overwrite `~/.codex/` in bulk; that discards newer, unrelated configuration changes.
