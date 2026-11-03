@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-03
+
 **Breaking for installs from this repository's catalogs.** Agybird is now listed in the shared [`finolabs/plugins`](https://github.com/finolabs/plugins) catalog, and the repository no longer serves a marketplace of its own. Existing `agybird@agybird` (Claude Code) and `agybird@Finolabs` (Codex) installs need the [migration guide](docs/migration.md).
 
 - Removed `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`; install with `agybird@finolabs` after `marketplace add finolabs/plugins`.
