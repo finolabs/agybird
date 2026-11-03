@@ -4,6 +4,12 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+**Breaking for installs from this repository's catalogs.** Agybird is now listed in the shared [`finolabs/plugins`](https://github.com/finolabs/plugins) catalog, and the repository no longer serves a marketplace of its own. Existing `agybird@agybird` (Claude Code) and `agybird@Finolabs` (Codex) installs need the [migration guide](docs/migration.md).
+
+- Removed `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`; install with `agybird@finolabs` after `marketplace add finolabs/plugins`.
+- Added the Antigravity manifest `.antigravity-plugin/plugin.json` (`agy plugin install https://github.com/finolabs/agybird`), and the release workflow now checks its version against the tag.
+- Moved manifest, policy and issue-template URLs from `fioenix/agybird` to `finolabs/agybird`.
+
 ## 0.3.2 - 2026-11-02
 
 Checked against `agy` 1.4.12: the `AGY_ERROR` format was read from a live quota error; the tests use a fake `agy`.

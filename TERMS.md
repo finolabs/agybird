@@ -8,4 +8,4 @@ Using Agybird means using Google Antigravity. Your use of `agy`, your Gemini sub
 
 You are responsible for the work you delegate: for having the right to share the files and prompts involved, for approving any permission grant, and for reviewing code, images, and other output before you rely on or publish it.
 
-Report bugs and suggest changes through [GitHub Issues](https://github.com/fioenix/agybird/issues). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+Report bugs and suggest changes through [GitHub Issues](https://github.com/finolabs/agybird/issues). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
