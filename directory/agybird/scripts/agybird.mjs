@@ -6,6 +6,7 @@ import {
   accessSync,
   closeSync,
   constants,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -345,34 +346,82 @@ function grantLockPath(cwd, directory) {
   return join(directory, 'grant-locks', `${workspaceDigest(cwd)}.json`);
 }
 
+// A lock is published whole: its content is written to a private file first and
+// then linked into place, which either creates the lock or fails, never leaving
+// an empty one. A filesystem without hard links falls back to an exclusive create.
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']);
+
+function publishExclusive(path, content) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, content);
+  try {
+    linkSync(temporary, path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    if (!LINK_UNSUPPORTED.has(error?.code)) throw error;
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+  let handle;
+  try {
+    handle = openSync(path, 'wx');
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    throw error;
+  }
+  try {
+    writeFileSync(handle, content);
+  } finally {
+    closeSync(handle);
+  }
+  return true;
+}
+
+// A lock that cannot be read is treated as held until it is this old.
+const UNREADABLE_LOCK_MS = 60_000;
+
 // The holder of a live grant in this workspace, or null. A lock left by a
-// process that is gone is removed rather than blocking the workspace forever.
+// process that is gone is cleared, and only that lock: it is moved aside and
+// checked first, so a lock another run took meanwhile is put back, never lost.
 export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
   const path = grantLockPath(cwd, directory);
   const holder = readJsonOrNull(path);
   if (holder && Number.isInteger(holder.pid) && isRunning(holder.pid)) return holder;
-  if (statOrNull(path)) rmSync(path, { force: true });
-  return null;
+  if (!holder) {
+    const stat = statOrNull(path);
+    if (!stat) return null;
+    if (Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS) return { pid: null, conversation: null };
+  }
+  const aside = `${path}.${randomUUID()}.stale`;
+  try {
+    renameSync(path, aside);
+  } catch {
+    // Gone already, or taken again: look once more without clearing anything.
+    const current = readJsonOrNull(path);
+    return current && Number.isInteger(current.pid) && isRunning(current.pid) ? current : null;
+  }
+  const moved = readJsonOrNull(aside);
+  const sameStaleLock = holder ? moved?.pid === holder.pid : moved === null;
+  if (!sameStaleLock) {
+    // Another run published a lock between our read and the move: restore it.
+    try {
+      linkSync(aside, path);
+    } catch {
+      // a third run holds the path now; it owns the lock
+    }
+  }
+  rmSync(aside, { force: true });
+  if (sameStaleLock) return null;
+  return moved && Number.isInteger(moved.pid) && isRunning(moved.pid) ? moved : { pid: null, conversation: null };
 }
 
 export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
   const path = grantLockPath(cwd, directory);
   mkdirSync(dirname(path), { recursive: true });
   if (liveGrantLock(cwd, directory, isRunning)) return null;
-  let handle;
-  try {
-    // Exclusive create is the only primitive here that cannot race.
-    handle = openSync(path, 'wx');
-  } catch (error) {
-    if (error?.code === 'EEXIST') return null;
-    throw error;
-  }
-  try {
-    writeFileSync(handle, JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1));
-  } finally {
-    closeSync(handle);
-  }
-  return path;
+  const published = publishExclusive(path, JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1));
+  return published ? path : null;
 }
 
 export function releaseGrantLock(path) {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { markProviderPending, otherLiveRuns, registerRun, runAgy } from '../../scripts/agybird.mjs';
+import { acquireGrantLock, liveGrantLock, markProviderPending, otherLiveRuns, registerRun, runAgy } from '../../scripts/agybird.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const dead = () => false;
@@ -57,4 +57,32 @@ test('a record updated while its runner dies is judged by what it says last', ()
     return false;
   };
   assert.equal(otherLiveRuns(cwd, 'conv-a', null, directory, isRunning).length, 1);
+});
+
+test('looking for a grant lock that is not there removes nothing', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
+  assert.equal(liveGrantLock(cwd, directory, () => true), null);
+  const path = acquireGrantLock(cwd, 'conv-a', directory, () => true);
+  assert.ok(path);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-a', 'the lock is published whole');
+  assert.deepEqual(readdirSync(dirname(path)).filter((name) => name.endsWith('.tmp')), []);
+});
+
+test('a stale lock replaced by a live one while it is being cleared is kept', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
+  const path = acquireGrantLock(cwd, 'conv-old', directory, () => true);
+  writeFileSync(path, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
+  // While the reader decides the old holder is dead, another run takes the lock.
+  const isRunning = (pid) => {
+    if (pid === 111111) {
+      rmSync(path, { force: true });
+      writeFileSync(path, JSON.stringify({ pid: process.pid, conversation: 'conv-new' }));
+      return false;
+    }
+    return pid === process.pid;
+  };
+  liveGrantLock(cwd, directory, isRunning);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-new', 'the new holder must keep its lock');
 });
