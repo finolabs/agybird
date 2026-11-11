@@ -49,12 +49,17 @@ function filterOverrides(cwd) {
   }));
 }
 
-// Git 2.40+ can read attributes from a tree instead of the work tree. Pointing it
+// Git 2.41+ can read attributes from a tree instead of the work tree. Pointing it
 // at the empty tree means no .gitattributes of the repository selects a driver.
+export function supportsAttrSource(versionText) {
+  const version = /(\d+)\.(\d+)/.exec(versionText ?? '');
+  if (!version) return false;
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  return major > 2 || (major === 2 && minor >= 41);
+}
+
 function attributeSource(top) {
-  const version = /(\d+)\.(\d+)/.exec(gitText(top, ['--version']) ?? '');
-  if (!version || Number(version[1]) < 2 || (Number(version[1]) === 2 && Number(version[2]) < 40)) return [];
-  return [`--attr-source=${emptyTree(top)}`];
+  return supportsAttrSource(gitText(top, ['--version'])) ? [`--attr-source=${emptyTree(top)}`] : [];
 }
 
 let overrides = null;

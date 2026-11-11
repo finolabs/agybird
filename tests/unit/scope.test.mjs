@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { collectScope, filterOverridesFrom } from '../../scripts/lib/scope.mjs';
+import { collectScope, filterOverridesFrom, supportsAttrSource } from '../../scripts/lib/scope.mjs';
 
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -156,4 +156,12 @@ test('a failed filter listing refuses the review instead of running filters', ()
   assert.throws(() => filterOverridesFrom({ status: 128, stdout: '' }), /filter configuration/);
   assert.deepEqual(filterOverridesFrom({ status: 1, stdout: '' }), []);
   assert.ok(filterOverridesFrom({ status: 0, stdout: 'filter.lfs.clean\0filter.lfs.smudge\0' }).includes('filter.lfs.clean='));
+});
+
+test('--attr-source is used from git 2.41, where it first exists', () => {
+  assert.equal(supportsAttrSource('git version 2.40.1'), false);
+  assert.equal(supportsAttrSource('git version 2.41.0'), true);
+  assert.equal(supportsAttrSource('git version 2.50.1 (Apple Git-155)'), true);
+  assert.equal(supportsAttrSource('git version 3.0.0'), true);
+  assert.equal(supportsAttrSource('nonsense'), false);
 });
