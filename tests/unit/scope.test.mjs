@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { collectScope } from '../../scripts/lib/scope.mjs';
+import { collectScope, filterOverridesFrom } from '../../scripts/lib/scope.mjs';
 
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -140,4 +140,20 @@ test('binary untracked files count against a read limit too', () => {
   const scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 4_000 });
   assert.equal(scope.truncated, true);
   assert.ok(scope.bytesRead <= 4 * 4_000 + 2_000, `read ${scope.bytesRead} bytes`);
+});
+
+test('a file cut short by the read limit marks the scope truncated', () => {
+  const cwd = repository();
+  for (let index = 0; index < 4; index += 1) writeFileSync(join(cwd, `a${index}.bin`), Buffer.alloc(3_500, 0));
+  writeFileSync(join(cwd, 'z-last.txt'), 'q'.repeat(3_000));
+  const scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 4_000 });
+  assert.equal(scope.truncated, true);
+});
+
+test('a failed filter listing refuses the review instead of running filters', () => {
+  assert.throws(() => filterOverridesFrom({ error: Object.assign(new Error('x'), { code: 'ENOBUFS' }), stdout: 'filter.a' }), /filter configuration/);
+  assert.throws(() => filterOverridesFrom({ status: null, signal: 'SIGKILL', stdout: '' }), /filter configuration/);
+  assert.throws(() => filterOverridesFrom({ status: 128, stdout: '' }), /filter configuration/);
+  assert.deepEqual(filterOverridesFrom({ status: 1, stdout: '' }), []);
+  assert.ok(filterOverridesFrom({ status: 0, stdout: 'filter.lfs.clean\0filter.lfs.smudge\0' }).includes('filter.lfs.clean='));
 });

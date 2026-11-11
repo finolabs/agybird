@@ -19,13 +19,13 @@ const DIFF_OPTIONS = ['--no-color', '--no-ext-diff', '--no-textconv'];
 // Content filters (clean, smudge, process) run the command a driver names when
 // git reads the working tree. Every driver configured anywhere is blanked for
 // the collection, so reviewing a change can never execute code from it.
-function filterOverrides(cwd) {
-  const result = spawnSync('git', [...SAFE_CONFIG, 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'], {
-    cwd,
-    encoding: 'utf8',
-    shell: false,
-    windowsHide: true,
-  });
+// Turns the driver listing into overrides. Anything but a clean answer (exit 0,
+// or 1 for no filters at all) refuses the review: a partial list would leave
+// some driver able to run.
+export function filterOverridesFrom(result) {
+  if (result.error || result.signal || ![0, 1].includes(result.status)) {
+    throw new Error('Could not read the git filter configuration completely, so the review was not started.');
+  }
   const drivers = new Set();
   for (const key of (result.stdout ?? '').split('\0')) {
     const match = /^filter\.(.+)\.[^.]+$/.exec(key);
@@ -39,10 +39,29 @@ function filterOverrides(cwd) {
   ]);
 }
 
+function filterOverrides(cwd) {
+  return filterOverridesFrom(spawnSync('git', [...SAFE_CONFIG, 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+    shell: false,
+    windowsHide: true,
+  }));
+}
+
+// Git 2.40+ can read attributes from a tree instead of the work tree. Pointing it
+// at the empty tree means no .gitattributes of the repository selects a driver.
+function attributeSource(top) {
+  const version = /(\d+)\.(\d+)/.exec(gitText(top, ['--version']) ?? '');
+  if (!version || Number(version[1]) < 2 || (Number(version[1]) === 2 && Number(version[2]) < 40)) return [];
+  return [`--attr-source=${emptyTree(top)}`];
+}
+
 let overrides = null;
+let attrSource = null;
 
 function git(cwd, args, { allowFailure = false, maxBuffer = 16 * 1024 * 1024, input } = {}) {
-  const result = spawnSync('git', [...SAFE_CONFIG, ...(overrides ?? []), ...args], {
+  const result = spawnSync('git', [...(attrSource ?? []), ...SAFE_CONFIG, ...(overrides ?? []), ...args], {
     cwd,
     encoding: 'utf8',
     maxBuffer,
@@ -155,6 +174,7 @@ function addUntracked(budget, top, files) {
     try {
       content = readRegularFile(join(top, file), Math.min(stat.size, budget.left + 1, budget.readLimit - budget.read));
       budget.read += content.length;
+
     } catch {
       continue;
     }
@@ -163,6 +183,8 @@ function addUntracked(budget, top, files) {
       continue;
     }
     budget.add(`--- new file ${file}\n${content.toString('utf8').split('\n').map((line) => `+${line}`).join('\n')}`);
+    // The read limit cut this file short: say so even if it is the last one.
+    if (content.length < stat.size) budget.truncated = true;
   }
 }
 
@@ -181,7 +203,10 @@ export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX
     throw new Error('Review needs a git repository; run it inside one.');
   }
   const top = gitText(cwd, ['rev-parse', '--show-toplevel']).trim();
+  overrides = null;
+  attrSource = null;
   overrides = filterOverrides(top);
+  attrSource = attributeSource(top);
   // Without a commit, compare the files on disk with the empty tree.
   const against = refExists(top, 'HEAD') ? 'HEAD' : emptyTree(top);
   const bufferFor = maxBytes + 1024 * 1024;
