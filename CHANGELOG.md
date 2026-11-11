@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.2 - 2026-11-11
+
 - Added commands for Claude Code and Codex, on a par with OpenAI's `codex` plugin: review, adversarial review, rescue (task delegation through an `agybird-rescue` subagent in Claude Code), status, result, cancel, setup, usage and image. In Codex each command is a skill (`$agybird-review` and the rest). Review and rescue can run in the background.
 - Review and rescue pick their model from `agy -p /usage` when none is named, the usable model of the tier with the most room, and stop with the reset times when the tier is spent.
 - An approval of a permission names a reported request (`--approve <job>:<n>`) and resumes that job's own conversation, mode and model; a raw rule is never passed.

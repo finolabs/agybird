@@ -7,7 +7,7 @@
   "supportUrl": "https://github.com/finolabs/agybird/issues",
   "privacyPolicyUrl": "https://github.com/finolabs/agybird/blob/main/PRIVACY.md",
   "termsOfServiceUrl": "https://github.com/finolabs/agybird/blob/main/TERMS.md",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Hand code review, task rescue and analysis to the Google Antigravity CLI you already use, with your Gemini plan. Unofficial; Claude Code only.",
   "author": {
     "name": "Fioenix",
