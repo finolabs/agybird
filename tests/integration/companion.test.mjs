@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdtempSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -92,6 +92,33 @@ test('cancel stops a background job and it stays cancelled', async () => {
   assert.equal(cancelled.job.status, 'cancelled');
   await new Promise((done) => setTimeout(done, 1_000));
   assert.equal(json(await runCompanion(['status', launch.job.id, '--json'], { env, cwd })).job.status, 'cancelled');
+});
+
+test('cancel ends a provider process that ignores SIGTERM', { skip: process.platform === 'win32' && 'taskkill /F is forced already' }, async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-c-ws-'));
+  const launch = json(await runCompanion(['task', '--background', '--json', 'CASE_STUBBORN keep running'], { env, cwd }));
+  const pidFile = join(cwd, 'fake-agy.pid');
+  const agyPid = await waitFor(() => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null));
+  json(await runCompanion(['cancel', launch.job.id, '--json'], { env, cwd }));
+  const gone = await waitFor(() => {
+    try {
+      process.kill(agyPid, 0);
+      return null;
+    } catch {
+      return true;
+    }
+  }, 10_000);
+  assert.equal(gone, true);
+});
+
+test('slash commands never splice $ARGUMENTS into inline shell', () => {
+  for (const name of readdirSync(join(projectRoot, 'commands'))) {
+    const text = readFileSync(join(projectRoot, 'commands', name), 'utf8');
+    for (const line of text.split('\n').filter((entry) => entry.includes('!`'))) {
+      assert.doesNotMatch(line, /\$ARGUMENTS|\$\d/, `${name} splices arguments into a shell line`);
+    }
+  }
 });
 
 test('result and cancel refuse an unknown job id', async () => {

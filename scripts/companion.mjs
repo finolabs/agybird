@@ -9,9 +9,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  claimJob,
   effectiveStatus,
+  HEARTBEAT_MS,
+  heartbeatFresh,
   isJobId,
   killTree,
+  markCancelled,
   listJobs,
   logPath,
   newJobId,
@@ -119,14 +123,32 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, args, { cwd: workspace, env: childEnv, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // On POSIX the runner leads its own process group, so cancel can stop it and
+    // agy together without touching this process or the caller's session.
+    const child = spawn(process.execPath, args, {
+      cwd: workspace,
+      env: childEnv,
+      shell: false,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     onSpawn?.(child);
+    // A separate group no longer hears Ctrl+C from the terminal, so pass it on.
+    const forward = (signal) => {
+      killTree(child.pid);
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    };
+    process.once('SIGINT', forward);
+    process.once('SIGTERM', forward);
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
     child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
     child.on('close', (code) => {
+      process.removeListener('SIGINT', forward);
+      process.removeListener('SIGTERM', forward);
       const envelope = lastJsonLine(stdout);
       if (!envelope) {
         reject(new Error(`The runner returned no result (exit ${code}). ${stderr.trim().slice(-300)}`));
@@ -170,9 +192,23 @@ function createJob({ directory, workspace, kind, title, request }) {
 
 async function executeJob(directory, job, env) {
   const request = { ...job.request, prompt: readFileSync(promptPath(directory, job.id), 'utf8') };
-  updateJob(directory, job.id, { status: 'running', pid: process.pid, startedAt: new Date().toISOString() });
+  // Only a queued job can be claimed; a job cancelled before this point never runs.
+  if (!claimJob(directory, job.id, process.pid)) return readJob(directory, job.id);
+  const beat = setInterval(() => {
+    try {
+      updateJob(directory, job.id, { heartbeatAt: new Date().toISOString() });
+    } catch {
+      // the next beat retries
+    }
+  }, HEARTBEAT_MS);
+  beat.unref();
   try {
-    const { envelope } = await runRunner({ workspace: job.workspace, request, env });
+    const { envelope } = await runRunner({
+      workspace: job.workspace,
+      request,
+      env,
+      onSpawn: (child) => updateJob(directory, job.id, { runnerPid: child.pid }),
+    });
     writeFileSync(resultPath(directory, job.id), `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
     const rendered = renderOutcome(job, envelope);
     writeFileSync(renderedPath(directory, job.id), rendered, { mode: 0o600 });
@@ -184,6 +220,8 @@ async function executeJob(directory, job, env) {
     });
   } catch (error) {
     return updateJob(directory, job.id, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() });
+  } finally {
+    clearInterval(beat);
   }
 }
 
@@ -278,14 +316,21 @@ async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
   const job = resolveJob(directory, positional[0], { preferActive: true });
-  if (!['queued', 'running'].includes(job.status)) {
-    output(options, { job: summary(job) }, `Job ${job.id} already ended as ${job.status}.`);
+  // Mark first under the job lock, so a worker that reports in while it dies
+  // cannot overwrite the cancel, and a queued job is never claimed afterwards.
+  const { before, after } = markCancelled(directory, job.id);
+  if (before.status !== 'queued' && before.status !== 'running') {
+    output(options, { job: summary(after) }, `Job ${job.id} already ended as ${before.status}.`);
     return;
   }
-  // Mark first, so a worker that reports in while it dies cannot overwrite it.
-  const cancelled = updateJob(directory, job.id, { status: 'cancelled', finishedAt: new Date().toISOString() });
-  if (job.pid) killTree(job.pid);
-  output(options, { job: summary(cancelled) }, `Cancelled ${job.id}.`);
+  // Signal only a runner whose worker still beats: a stale pid may belong to
+  // an unrelated process by now.
+  const stopped = before.runnerPid && heartbeatFresh(before) ? killTree(before.runnerPid) : true;
+  output(
+    options,
+    { job: summary(after), stopped },
+    stopped ? `Cancelled ${job.id}.` : `Marked ${job.id} cancelled, but its Antigravity process did not stop; end process ${before.runnerPid} yourself.`,
+  );
 }
 
 const TASK_FLAGS = {

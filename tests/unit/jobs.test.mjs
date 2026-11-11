@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  claimJob,
+  withJobLock,
   effectiveStatus,
   isJobId,
   jobsRoot,
@@ -57,6 +59,31 @@ test('a cancelled job is not revived by a late worker update', () => {
   const directory = store();
   const job = writeJob(directory, { id: newJobId(), status: 'cancelled', createdAt: new Date().toISOString() });
   assert.equal(updateJob(directory, job.id, { status: 'completed' }).status, 'cancelled');
+});
+
+test('a worker claims a queued job once, and never a cancelled one', () => {
+  const directory = store();
+  const queued = writeJob(directory, { id: newJobId(), status: 'queued', createdAt: new Date().toISOString() });
+  assert.equal(claimJob(directory, queued.id, 111).status, 'running');
+  assert.equal(claimJob(directory, queued.id, 222), null, 'a second claim must fail');
+  const cancelled = writeJob(directory, { id: newJobId(), status: 'cancelled', createdAt: new Date().toISOString() });
+  assert.equal(claimJob(directory, cancelled.id, 333), null);
+});
+
+test('a state change waits for the job lock and gives up after its limit', () => {
+  const directory = store();
+  const job = writeJob(directory, { id: newJobId(), status: 'running', createdAt: new Date().toISOString() });
+  withJobLock(directory, job.id, () => {
+    assert.throws(() => withJobLock(directory, job.id, () => {}, { timeoutMs: 200 }), /locked/);
+  });
+  assert.equal(withJobLock(directory, job.id, () => 'free'), 'free');
+});
+
+test('liveness follows the heartbeat, not a bare pid', () => {
+  const now = Date.now();
+  const base = { id: newJobId(), status: 'running', pid: 1, createdAt: new Date(now).toISOString(), timeoutMs: 600_000 };
+  assert.equal(effectiveStatus({ ...base, heartbeatAt: new Date(now - 5_000).toISOString() }, now, dead), 'running');
+  assert.equal(effectiveStatus({ ...base, heartbeatAt: new Date(now - 120_000).toISOString() }, now, alive), 'failed');
 });
 
 test('jobs list newest first and skip unreadable records', () => {

@@ -19,7 +19,12 @@ function emit(event) {
 
 emit({ type: 'init', conversation_id: 'fake-conversation' });
 
-if (prompt.includes('CASE_HANG')) {
+if (prompt.includes('CASE_STUBBORN')) {
+  // Ignores SIGTERM and records its pid, so a test can prove cancel still ends it.
+  process.on('SIGTERM', () => {});
+  writeFileSync(join(process.cwd(), 'fake-agy.pid'), String(process.pid));
+  setInterval(() => {}, 1_000);
+} else if (prompt.includes('CASE_HANG')) {
   // Ignores --print-timeout entirely, so only the runner's own kill ends it.
   setTimeout(() => {
     emit({ type: 'result', status: 'success', response: 'never seen' });
