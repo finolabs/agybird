@@ -42,3 +42,19 @@ test('a failure to record the provider does not abandon the run', async () => {
   assert.equal(execution.exitCode, 0);
   assert.match(execution.stdout, /"response":"ok"/);
 });
+
+test('a record updated while its runner dies is judged by what it says last', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-admission-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-admission-ws-'));
+  const path = registerRun(cwd, 'conv-b', directory, Date.now() + 60_000);
+  let marked = false;
+  // The runner writes its pending mark and dies between the reader's first read and its liveness check.
+  const isRunning = () => {
+    if (!marked) {
+      marked = true;
+      markProviderPending(path);
+    }
+    return false;
+  };
+  assert.equal(otherLiveRuns(cwd, 'conv-a', null, directory, isRunning).length, 1);
+});

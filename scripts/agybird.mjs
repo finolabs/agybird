@@ -451,21 +451,30 @@ export function otherLiveRuns(cwd, conversationId, ownPath, directory = STATE_DI
   } catch {
     return [];
   }
+  // Live while either the runner or its provider runs, or while its provider
+  // may be starting and the run has not expired; a reused pid can only keep a
+  // grant waiting, never let one through.
+  const live = (run) => {
+    if (!run) return false;
+    if (Number.isInteger(run.pid) && isRunning(run.pid)) return true;
+    if (Number.isInteger(run.providerPid) && isRunning(run.providerPid)) return true;
+    return run.providerPending === true && !Number.isInteger(run.providerPid)
+      && (!Number.isFinite(run.expiresAt) || Date.now() < run.expiresAt);
+  };
   const others = [];
   for (const name of names) {
     const path = join(folder, name);
     if (path === ownPath || !name.endsWith('.json')) continue;
-    const run = readJsonOrNull(path);
-    // Live while either the runner or its provider runs; a reused pid can only
-    // keep a grant waiting, never let one through.
-    const unrecordedProvider = run?.providerPending === true && !Number.isInteger(run.providerPid)
-      && (!Number.isFinite(run.expiresAt) || Date.now() < run.expiresAt);
-    const live = run && ((Number.isInteger(run.pid) && isRunning(run.pid))
-      || (Number.isInteger(run.providerPid) && isRunning(run.providerPid))
-      || unrecordedProvider);
-    if (!live) {
-      rmSync(path, { force: true });
-      continue;
+    let run = readJsonOrNull(path);
+    if (!live(run)) {
+      // Judge a runner that just died by its final record: it may have marked
+      // or recorded its provider after the first read, and a dead process
+      // writes nothing more, so this read is the last word.
+      run = readJsonOrNull(path);
+      if (!live(run)) {
+        rmSync(path, { force: true });
+        continue;
+      }
     }
     if (run.conversation === null || run.conversation !== conversationId) others.push(run);
   }
