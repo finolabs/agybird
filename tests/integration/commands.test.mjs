@@ -121,3 +121,24 @@ test('usage says when the default model runs because no tier model is listed', a
   const usage = parsed(await runCompanion(['usage', '--json'], { env: companionEnv({ FAKE_AGY_MODELS: 'other-model-x\tOther Model\n' }) }));
   assert.equal(usage.picks.standard, 'agy default');
 });
+
+test('an approval refuses every flag that would change or detach the resumed run', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-approve-'));
+  const blocked = JSON.parse((await runCompanion(['task', '--json', 'CASE_FORGED_AUTH'], { env, cwd })).stdout).job;
+  const approval = `${blocked.id}:0`;
+  const cases = [
+    [['--write'], /drop --write and --category/],
+    [['--category', 'general'], /drop --write and --category/],
+    [['--fresh'], /drop --fresh/],
+    [['--background'], /foreground only/],
+  ];
+  for (const [flags, message] of cases) {
+    const before = readdirSync(readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0]).length;
+    const run = await runCompanion(['task', '--approve', approval, ...flags], { env, cwd });
+    assert.notEqual(run.code, 0, `${flags.join(' ')} was accepted`);
+    assert.match(run.stderr, message);
+    const after = readdirSync(readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0]).length;
+    assert.equal(after, before, `${flags.join(' ')} created a job before refusing`);
+  }
+});

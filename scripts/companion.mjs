@@ -488,7 +488,7 @@ export function approvedRules(directory, approvals = []) {
     const conversation = envelope.conversation_id;
     if (!conversation) throw new Error(`Job ${id} has no conversation to resume, so its request cannot be granted.`);
     if (source && source.conversation !== conversation) throw new Error('These approvals come from different conversations; approve one job at a time.');
-    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: job.request?.category === 'general' ? 'general' : 'code', model: job.model ?? null };
+    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: ['code', 'general', 'image'].includes(job.request?.category) ? job.request.category : 'code', model: job.model ?? null };
     rules.push(request.suggested_rule);
   }
   return source ? { rules, ...source } : { rules };
@@ -511,10 +511,14 @@ async function commandTask(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   const approval = approvedRules(storeFor(cwd, env), options.approve);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
+  // An image job resumes as image, so the runner still verifies the artifact.
   const category = approval.category ?? options.category ?? 'code';
-  if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+  if (!['code', 'general'].includes(category) && !(approving && category === 'image')) throw new Error('--category must be code or general');
   // A retry keeps the model of the conversation it resumes.
-  const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model ?? approval.model ?? undefined });
+  // Image work picks its own model through the image-generator subagent.
+  const { model, note } = category === 'image'
+    ? { model: undefined, note: null }
+    : pickModel({ cwd, env, tier: 'standard', model: options.model ?? approval.model ?? undefined });
   if (note) process.stderr.write(`agybird: ${note}\n`);
   const runnerArgs = [];
   if (options.fresh) runnerArgs.push('--new-session');

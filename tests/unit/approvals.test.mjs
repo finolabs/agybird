@@ -32,3 +32,11 @@ test('a job without a conversation id cannot be approved', () => {
   const id = blockedJob(directory, null);
   assert.throws(() => approvedRules(directory, [`${id}:0`]), /no conversation/);
 });
+
+test('an image job keeps its category, so the retry still verifies the image', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-approvals-'));
+  const id = newJobId();
+  writeJob(directory, { id, kind: 'image', status: 'completed', createdAt: new Date().toISOString(), request: { category: 'image', mode: 'write' } });
+  writeFileSync(join(directory, `${id}.result.json`), JSON.stringify({ conversation_id: 'conv-i', permission_requests: [{ tool: 'run_command', target: 'ls', suggested_rule: 'command(ls)', grantable: true }] }));
+  assert.equal(approvedRules(directory, [`${id}:0`]).category, 'image');
+});
