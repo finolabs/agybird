@@ -2,6 +2,8 @@ Challenge the approach of the change below rather than polishing it. Question th
 
 For each finding give its severity (critical, high, medium or low), the file and the first line it concerns in the new version, the scenario that breaks the assumption, and what to change. Read surrounding files in the repository when you need them. Set the verdict to approve only when no finding is medium or worse.
 
+Do not run terminal commands: a headless review cannot approve them, and the run would stop. Read files with the file viewing and search tools only, and rely on the diff below for what changed.
+
 Review target: {{TARGET}}
 {{FOCUS}}
 Changed files:

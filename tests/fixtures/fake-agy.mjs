@@ -47,6 +47,8 @@ emit({ type: 'init', conversation_id: 'fake-conversation' });
 if (prompt.includes('CASE_ECHO_MODEL')) {
   const index = process.argv.indexOf('--model');
   emit({ type: 'result', status: 'success', response: index === -1 ? 'default' : process.argv[index + 1] });
+} else if (prompt.includes('CASE_GATE_CLEAN') && process.argv.includes('--json-schema')) {
+  emit({ type: 'result', status: 'success', response: '', structured_output: { verdict: 'approve', summary: 'only a nit', findings: [{ severity: 'low', title: 'Nit', file: 'a.txt', line_start: 1, body: 'minor', recommendation: 'optional' }], next_steps: [] } });
 } else if (prompt.includes('CASE_REVIEW') && process.argv.includes('--json-schema')) {
   // Answers a review with structured output and says whether the diff arrived.
   emit({

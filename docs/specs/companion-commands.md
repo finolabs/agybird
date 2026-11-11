@@ -75,7 +75,7 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 - [x] T7 `image` command over the existing image category
 
 ### US4
-- [ ] T8 Stop hook gate with loop guard, fail-open and per-workspace switch
+- [x] T8 Stop hook gate with loop guard, fail-open and per-workspace switch
 
 ### US5
 - [ ] T9 Codex skills folder, manifest hooks override, install-layout tests

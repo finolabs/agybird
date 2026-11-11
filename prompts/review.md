@@ -2,6 +2,8 @@ Review the code change below as a senior engineer would before it merges. Report
 
 For each finding give its severity (critical, high, medium or low), the file and the first line it concerns in the new version, what goes wrong with a concrete input or sequence, and the smallest fix. Read surrounding files in the repository when the diff alone does not show whether something is a defect. Do not report a finding you could not tie to a line. Set the verdict to approve only when no finding is medium or worse.
 
+Do not run terminal commands: a headless review cannot approve them, and the run would stop. Read files with the file viewing and search tools only, and rely on the diff below for what changed.
+
 Review target: {{TARGET}}
 {{FOCUS}}
 Changed files:
