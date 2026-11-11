@@ -64,6 +64,7 @@ test('host instructions call node through `command`, so a shell function named n
   ];
   for (const path of sources) {
     const text = readFileSync(path, 'utf8');
-    assert.doesNotMatch(text, /(?<!command )\bnode "/, `${path} calls node without command`);
+    // Any call of node followed by a quoted path, an absolute path or the plugin root.
+    assert.doesNotMatch(text, /(?<!command )(?<![\w-])node (?="|\/|<plugin-root>|\$\{CLAUDE_PLUGIN_ROOT\})/, `${path} calls node without command`);
   }
 });
