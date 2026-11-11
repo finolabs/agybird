@@ -1,0 +1,377 @@
+#!/usr/bin/env node
+// Command layer for Agybird's slash commands, Codex skills and the review gate.
+// It never runs agy itself: every model run goes through scripts/agybird.mjs,
+// which keeps the permission, session and envelope rules in one place.
+
+import { spawn } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import {
+  effectiveStatus,
+  isJobId,
+  killTree,
+  listJobs,
+  logPath,
+  newJobId,
+  readJob,
+  reconcile,
+  updateJob,
+  workspaceDirectory,
+  workspaceRoot,
+  writeJob,
+} from './lib/jobs.mjs';
+import { renderJobTable, renderOutcome } from './lib/render.mjs';
+
+const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
+const COMPANION_PATH = fileURLToPath(import.meta.url);
+
+// Slash commands pass "$ARGUMENTS" as one string. Split it the way a shell
+// would for plain words and quotes, without ever invoking a shell.
+export function splitArguments(argv) {
+  if (argv.length !== 1 || !/\s/.test(argv[0])) return argv;
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let inToken = false;
+  for (const character of argv[0]) {
+    if (quote) {
+      if (character === quote) quote = null;
+      else current += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      inToken = true;
+    } else if (/\s/.test(character)) {
+      if (inToken) tokens.push(current);
+      current = '';
+      inToken = false;
+    } else {
+      current += character;
+      inToken = true;
+    }
+  }
+  if (quote) throw new Error('Unterminated quote in arguments');
+  if (inToken) tokens.push(current);
+  return tokens;
+}
+
+// Generic flag parser: `spec` maps a flag to 'flag', 'value' or 'list'.
+export function parseFlags(argv, spec) {
+  const options = {};
+  const positional = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--') {
+      positional.push(...argv.slice(index + 1));
+      break;
+    }
+    if (!argument.startsWith('--')) {
+      positional.push(argument);
+      continue;
+    }
+    const kind = spec[argument];
+    if (!kind) throw new Error(`Unknown option: ${argument}`);
+    const key = argument.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (kind === 'flag') {
+      options[key] = true;
+      continue;
+    }
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${argument} requires a value`);
+    index += 1;
+    if (kind === 'list') (options[key] ??= []).push(value);
+    else options[key] = value;
+  }
+  return { options, positional };
+}
+
+export function timeoutMs(timeout) {
+  const match = /^(\d+)(ms|s|m)$/.exec(timeout);
+  if (!match) throw new Error(`Invalid timeout: ${timeout}`);
+  return Number(match[1]) * { ms: 1, s: 1_000, m: 60_000 }[match[2]];
+}
+
+function lastJsonLine(text) {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(lines[index]);
+    } catch {
+      // keep looking
+    }
+  }
+  return null;
+}
+
+// Runs the runner once and returns its envelope. The prompt goes through stdin,
+// never the argument list, exactly as the skill does it.
+export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+  const args = [
+    RUNNER_PATH,
+    '--category', request.category,
+    '--cwd', workspace,
+    '--mode', request.mode,
+    '--timeout', request.timeout,
+    ...request.runnerArgs,
+  ];
+  const childEnv = { ...env };
+  if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, args, { cwd: workspace, env: childEnv, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    onSpawn?.(child);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const envelope = lastJsonLine(stdout);
+      if (!envelope) {
+        reject(new Error(`The runner returned no result (exit ${code}). ${stderr.trim().slice(-300)}`));
+        return;
+      }
+      resolvePromise({ envelope, stderr });
+    });
+    child.stdin.end(request.prompt);
+  });
+}
+
+function promptPath(directory, id) {
+  return join(directory, `${id}.prompt`);
+}
+
+function resultPath(directory, id) {
+  return join(directory, `${id}.result.json`);
+}
+
+function renderedPath(directory, id) {
+  return join(directory, `${id}.md`);
+}
+
+function createJob({ directory, workspace, kind, title, request }) {
+  const id = newJobId();
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(promptPath(directory, id), request.prompt, { mode: 0o600, flag: 'wx' });
+  const { prompt, ...stored } = request;
+  return writeJob(directory, {
+    id,
+    kind,
+    title,
+    workspace,
+    status: 'queued',
+    createdAt: new Date().toISOString(),
+    // The runner's own timeout, its kill grace and agy's shutdown window.
+    timeoutMs: timeoutMs(request.timeout) + 45_000,
+    request: stored,
+  });
+}
+
+async function executeJob(directory, job, env) {
+  const request = { ...job.request, prompt: readFileSync(promptPath(directory, job.id), 'utf8') };
+  updateJob(directory, job.id, { status: 'running', pid: process.pid, startedAt: new Date().toISOString() });
+  try {
+    const { envelope } = await runRunner({ workspace: job.workspace, request, env });
+    writeFileSync(resultPath(directory, job.id), `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
+    const rendered = renderOutcome(job, envelope);
+    writeFileSync(renderedPath(directory, job.id), rendered, { mode: 0o600 });
+    return updateJob(directory, job.id, {
+      status: 'completed',
+      outcome: envelope.status,
+      conversationId: envelope.conversation_id ?? null,
+      finishedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return updateJob(directory, job.id, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() });
+  }
+}
+
+function startWorker(directory, job, env) {
+  const log = openSync(logPath(directory, job.id), 'a', 0o600);
+  const child = spawn(process.execPath, [COMPANION_PATH, 'run-job', job.id, '--store', directory], {
+    cwd: job.workspace,
+    env,
+    detached: true,
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', log, log],
+  });
+  child.unref();
+  closeSync(log);
+  return job;
+}
+
+function readStoredResult(directory, id) {
+  const path = resultPath(directory, id);
+  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
+}
+
+function summary(job) {
+  const { request, ...rest } = job;
+  return rest;
+}
+
+// Shared by every command that runs a model: foreground waits and prints,
+// background returns the job id at once.
+export async function launch({ cwd, kind, title, request, background, env = process.env }) {
+  const workspace = workspaceRoot(cwd);
+  const directory = workspaceDirectory(workspace, env);
+  const job = createJob({ directory, workspace, kind, title, request });
+  if (background) {
+    startWorker(directory, job, env);
+    return { job: summary(readJob(directory, job.id)), directory };
+  }
+  const finished = await executeJob(directory, job, env);
+  return { job: summary(finished), envelope: readStoredResult(directory, job.id), directory };
+}
+
+function storeFor(cwd, env) {
+  return workspaceDirectory(workspaceRoot(cwd), env);
+}
+
+function resolveJob(directory, reference, { preferActive = false } = {}) {
+  if (reference) {
+    if (!isJobId(reference)) throw new Error(`No job ${reference} in this workspace`);
+    const job = readJob(directory, reference);
+    if (!job) throw new Error(`No job ${reference} in this workspace`);
+    return reconcile(directory, job);
+  }
+  const jobs = listJobs(directory).map((job) => reconcile(directory, job));
+  const job = preferActive ? jobs.find((entry) => ['queued', 'running'].includes(entry.status)) : jobs.find((entry) => entry.status === 'completed') ?? jobs[0];
+  if (!job) throw new Error(preferActive ? 'No running job in this workspace' : 'No job in this workspace yet');
+  return job;
+}
+
+const COMMON = { '--json': 'flag', '--cwd': 'value' };
+
+function output(options, data, text) {
+  process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
+}
+
+async function commandStatus(argv, env) {
+  const { options, positional } = parseFlags(argv, { ...COMMON, '--all': 'flag' });
+  const directory = storeFor(options.cwd ?? process.cwd(), env);
+  if (positional[0]) {
+    const job = resolveJob(directory, positional[0]);
+    output(options, { job: summary(job) }, renderJobTable([job]));
+    return;
+  }
+  const jobs = listJobs(directory).map((job) => reconcile(directory, job));
+  const shown = options.all ? jobs : jobs.slice(0, 10);
+  output(options, { jobs: shown.map(summary) }, shown.length ? renderJobTable(shown) : 'No Agybird jobs in this workspace yet.');
+}
+
+async function commandResult(argv, env) {
+  const { options, positional } = parseFlags(argv, COMMON);
+  const directory = storeFor(options.cwd ?? process.cwd(), env);
+  const job = resolveJob(directory, positional[0]);
+  const envelope = readStoredResult(directory, job.id);
+  const renderedFile = renderedPath(directory, job.id);
+  const rendered = existsSync(renderedFile)
+    ? readFileSync(renderedFile, 'utf8')
+    : `Job ${job.id} is ${effectiveStatus(job)}${job.error ? `: ${job.error}` : ''}.`;
+  output(options, { job: summary(job), envelope }, rendered);
+}
+
+async function commandCancel(argv, env) {
+  const { options, positional } = parseFlags(argv, COMMON);
+  const directory = storeFor(options.cwd ?? process.cwd(), env);
+  const job = resolveJob(directory, positional[0], { preferActive: true });
+  if (!['queued', 'running'].includes(job.status)) {
+    output(options, { job: summary(job) }, `Job ${job.id} already ended as ${job.status}.`);
+    return;
+  }
+  // Mark first, so a worker that reports in while it dies cannot overwrite it.
+  const cancelled = updateJob(directory, job.id, { status: 'cancelled', finishedAt: new Date().toISOString() });
+  if (job.pid) killTree(job.pid);
+  output(options, { job: summary(cancelled) }, `Cancelled ${job.id}.`);
+}
+
+const TASK_FLAGS = {
+  ...COMMON,
+  '--background': 'flag',
+  '--write': 'flag',
+  '--fresh': 'flag',
+  '--category': 'value',
+  '--model': 'value',
+  '--effort': 'value',
+  '--timeout': 'value',
+  '--grant': 'list',
+  '--grant-scope': 'value',
+};
+
+async function readStdin() {
+  if (process.stdin.isTTY) return '';
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function commandTask(argv, env) {
+  const { options, positional } = parseFlags(argv, TASK_FLAGS);
+  const text = positional.join(' ').trim() || (await readStdin()).trim();
+  if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
+  if (options.grant && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
+  if (options.grant && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
+  const category = options.category ?? 'code';
+  if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+  const runnerArgs = [];
+  if (options.fresh) runnerArgs.push('--new-session');
+  if (options.model) runnerArgs.push('--model', options.model);
+  if (options.effort) runnerArgs.push('--effort', options.effort);
+  for (const rule of options.grant ?? []) runnerArgs.push('--grant', rule);
+  if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
+  const request = { category, mode: options.write ? 'write' : 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
+  const result = await launch({ cwd: options.cwd ?? process.cwd(), kind: 'task', title: text.slice(0, 80), request, background: options.background, env });
+  if (options.background) {
+    output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
+    return;
+  }
+  const rendered = existsSync(renderedPath(result.directory, result.job.id)) ? readFileSync(renderedPath(result.directory, result.job.id), 'utf8') : `Job ${result.job.id} failed: ${result.job.error}`;
+  output(options, { job: result.job, envelope: result.envelope }, rendered);
+}
+
+async function commandRunJob(argv, env) {
+  const { options, positional } = parseFlags(argv, { '--store': 'value' });
+  const directory = resolve(options.store);
+  const job = readJob(directory, positional[0]);
+  if (!job || job.status !== 'queued') return;
+  await executeJob(directory, job, env);
+}
+
+export const COMMANDS = {
+  status: commandStatus,
+  result: commandResult,
+  cancel: commandCancel,
+  task: commandTask,
+  'run-job': commandRunJob,
+};
+
+export async function main(argv = process.argv.slice(2), env = process.env) {
+  const [command, ...rest] = splitArguments(argv);
+  const handler = COMMANDS[command];
+  if (!handler) {
+    process.stderr.write(`agybird: unknown command ${JSON.stringify(command ?? '')}; use ${Object.keys(COMMANDS).filter((name) => name !== 'run-job').join(', ')}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    await handler(splitArguments(rest), env);
+  } catch (error) {
+    process.stderr.write(`agybird: ${error.message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+function isDirect() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return pathToFileURL(realpathSync(entry)).href === pathToFileURL(realpathSync(COMPANION_PATH)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirect()) await main();

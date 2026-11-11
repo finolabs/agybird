@@ -1,5 +1,5 @@
 # Agybird companion: commands, background jobs and a review gate
-Status: accepted; plan approved by Fio on 2026-11-11
+Status: in progress; plan approved by Fio on 2026-11-11
 
 Make Agybird a full companion for Antigravity CLI (`agy`) inside Claude Code and Codex, on par with OpenAI's `codex` plugin for Claude Code (1.0.6, Apache-2.0, read for its surface only; no code copied), and better where Agybird already is: quota-aware model choice across the Gemini and the Claude and GPT pools, the permission round trip, structured output and image work. Then prepare a submission to Anthropic's plugin directory.
 
@@ -62,8 +62,8 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 ## Tasks
 
 ### US1
-- [ ] T1 Job store, ids, pid liveness and cancel, with unit tests on the fake `agy`
-- [ ] T2 `status`, `result`, `cancel` commands and rendering
+- [x] T1 Job store, ids, pid liveness and cancel, with unit tests on the fake `agy`
+- [x] T2 `status`, `result`, `cancel` commands and rendering
 
 ### US2
 - [ ] T3 Git scope resolution and bounded diff collection
