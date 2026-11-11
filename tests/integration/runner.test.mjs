@@ -489,3 +489,38 @@ test('a grant waits for a run already going on another conversation instead of l
     other.kill('SIGKILL');
   }
 });
+
+test('a provider that outlives its killed runner still keeps a grant for another conversation out', { skip: process.platform === 'win32' && 'POSIX signals' }, async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-orphan-'));
+  const projectsDir = mkdtempSync(join(tmpdir(), 'agybird-orphan-projects-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  assert.equal(JSON.parse((await runRunner({ cwd, stateDir, projectsDir })).stdout).status, 'success');
+  const other = spawn(process.execPath, [runnerPath, '--category', 'general', '--cwd', cwd, '--mode', 'read', '--timeout', '60s', '--new-session'], {
+    cwd: projectRoot,
+    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`, AGYBIRD_PROJECTS_DIR: projectsDir, AGYBIRD_STATE_DIR: stateDir },
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  other.stdin.end('CASE_STUBBORN keep the provider alive');
+  const pidFile = join(cwd, 'fake-agy.pid');
+  let providerPid;
+  try {
+    const started = Date.now();
+    while (!existsSync(pidFile)) {
+      if (Date.now() - started > 10_000) throw new Error('the provider never started');
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    providerPid = Number(readFileSync(pidFile, 'utf8'));
+    // Give the runner time to record the provider, then kill only the runner.
+    await new Promise((done) => setTimeout(done, 500));
+    other.kill('SIGKILL');
+    await new Promise((done) => other.once('exit', done));
+    process.kill(providerPid, 0);
+    const grant = await runRunner({ cwd, stateDir, projectsDir, extraArgs: ['--grant', 'command(git status)'] });
+    assert.equal(JSON.parse(grant.stdout).status, 'error');
+    assert.match(grant.stdout, /different conversation/);
+  } finally {
+    if (providerPid) {
+      try { process.kill(providerPid, 'SIGKILL'); } catch { /* gone */ }
+    }
+  }
+});

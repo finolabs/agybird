@@ -348,11 +348,11 @@ function localTime(iso) {
 
 // The model for a run: the one the user named, else the usable model of the
 // tier with the most room. A spent tier stops the run rather than moving up.
-export function pickModel({ cwd, env, tier, model }) {
+export function pickModel({ cwd, env, tier, model, deadline }) {
   if (model) return { model, note: null };
   let quota;
   try {
-    quota = readQuota({ cwd, env, cacheFile: quotaCache(env) });
+    quota = readQuota({ cwd, env, cacheFile: quotaCache(env), deadline });
   } catch (error) {
     return { model: undefined, note: `Quota could not be read (${error.message}); Antigravity's default model runs.` };
   }
@@ -745,7 +745,7 @@ async function stopGate(env) {
   try {
     // The gate runs only on an explicit light-tier model; it never falls back to
     // agy's default, which may draw on a more expensive allowance.
-    const { model } = pickModel({ cwd, env, tier: 'light' });
+    const { model } = pickModel({ cwd, env, tier: 'light', deadline: deadlineAt });
     if (!model) {
       hookNotice('no light-tier model with quota could be chosen; run /agybird:usage.');
       return;

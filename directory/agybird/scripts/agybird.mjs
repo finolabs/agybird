@@ -395,6 +395,13 @@ export function registerRun(cwd, conversationId, directory = STATE_DIRECTORY) {
   return path;
 }
 
+// Adds the provider to a run's record: agy can outlive a runner that is killed
+// outright, and while it runs its conversation must still count as live.
+export function recordProvider(path, providerPid) {
+  const run = path ? readJsonOrNull(path) : null;
+  if (run) writeJsonAtomically(path, { ...run, providerPid });
+}
+
 export function unregisterRun(path) {
   if (path) rmSync(path, { force: true });
 }
@@ -414,7 +421,10 @@ export function otherLiveRuns(cwd, conversationId, ownPath, directory = STATE_DI
     const path = join(folder, name);
     if (path === ownPath || !name.endsWith('.json')) continue;
     const run = readJsonOrNull(path);
-    if (!run || !Number.isInteger(run.pid) || !isRunning(run.pid)) {
+    // Live while either the runner or its provider runs; a reused pid can only
+    // keep a grant waiting, never let one through.
+    const live = run && ((Number.isInteger(run.pid) && isRunning(run.pid)) || (Number.isInteger(run.providerPid) && isRunning(run.providerPid)));
+    if (!live) {
       rmSync(path, { force: true });
       continue;
     }
@@ -1179,7 +1189,7 @@ export function resolveAgyBinary(env = process.env) {
   throw new Error('Official Antigravity CLI `agy` was not found on PATH');
 }
 
-function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 1024 * 1024 }) {
+function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 1024 * 1024, onSpawn }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -1188,6 +1198,7 @@ function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 102
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (child.pid) onSpawn?.(child.pid);
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -1239,7 +1250,7 @@ async function readPrompt(stream = process.stdin, limit = 1024 * 1024) {
   return prompt;
 }
 
-export async function runAgy(options, delegatedPrompt, env = process.env) {
+export async function runAgy(options, delegatedPrompt, env = process.env, { onProviderSpawn } = {}) {
   const binary = resolveAgyBinary(env);
   const preflight = await spawnCaptured(binary.command, [...binary.prefixArgs, '--version'], {
     cwd: options.cwd,
@@ -1259,6 +1270,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env) {
       cwd: options.cwd,
       env,
       timeoutMs: killDeadline(options.timeout),
+      onSpawn: onProviderSpawn,
     },
   );
   return {
@@ -1363,7 +1375,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.once('SIGINT', onSignal);
       process.once('SIGTERM', onSignal);
     }
-    const execution = await runAgy(options, delegatedPrompt, env);
+    const execution = await runAgy(options, delegatedPrompt, env, { onProviderSpawn: (pid) => recordProvider(runRecord, pid) });
     const parser = createStreamParser();
     parser.push(execution.stdout);
     const parsed = parser.finish();

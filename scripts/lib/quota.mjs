@@ -76,13 +76,14 @@ export function chooseModel({ tier, models, limits }) {
   return scored[0] ? { ...scored[0].model, room: scored[0].room } : null;
 }
 
-function runAgy(args, { cwd, env }) {
+function runAgy(args, { cwd, env, timeoutMs = 30_000 }) {
+  if (timeoutMs <= 0) throw new Error('no time left to read quota');
   const binary = resolveAgyBinary(env);
   const result = spawnSync(binary.command, [...binary.prefixArgs, ...args], {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: 30_000,
+    timeout: Math.min(30_000, timeoutMs),
     shell: false,
     windowsHide: true,
   });
@@ -93,7 +94,7 @@ function runAgy(args, { cwd, env }) {
 }
 
 // Reads quota and the model list, cached for a few minutes per store.
-export function readQuota({ cwd, env = process.env, cacheFile, now = Date.now(), refresh = false }) {
+export function readQuota({ cwd, env = process.env, cacheFile, now = Date.now(), refresh = false, deadline = Infinity }) {
   if (cacheFile && !refresh && existsSync(cacheFile)) {
     try {
       const cached = JSON.parse(readFileSync(cacheFile, 'utf8'));
@@ -104,8 +105,8 @@ export function readQuota({ cwd, env = process.env, cacheFile, now = Date.now(),
   }
   const quota = {
     at: now,
-    limits: parseUsage(runAgy(['-p', '/usage'], { cwd, env })),
-    models: parseModels(runAgy(['models'], { cwd, env })),
+    limits: parseUsage(runAgy(['-p', '/usage'], { cwd, env, timeoutMs: deadline - Date.now() })),
+    models: parseModels(runAgy(['models'], { cwd, env, timeoutMs: deadline - Date.now() })),
   };
   if (cacheFile) {
     mkdirSync(dirname(cacheFile), { recursive: true, mode: 0o700 });
