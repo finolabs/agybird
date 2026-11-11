@@ -120,3 +120,24 @@ test('git never runs a configured textconv or fsmonitor helper', { skip: process
   collectScope({ cwd, scope: 'working-tree' });
   assert.equal(existsSync(marker), false, 'a repository helper ran during collection');
 });
+
+test('git never runs a configured clean or process filter', { skip: process.platform === 'win32' && 'uses a POSIX shell helper' }, () => {
+  const cwd = repository();
+  const marker = join(cwd, '..', `filter-ran-${Date.now()}`);
+  writeFileSync(join(cwd, '.gitattributes'), '*.txt filter=normalize\n');
+  git(cwd, 'config', 'filter.normalize.clean', `sh -c "touch ${marker}; cat"`);
+  git(cwd, 'config', 'filter.normalize.process', `sh -c "touch ${marker}; exit 1"`);
+  git(cwd, 'config', 'filter.normalize.required', 'true');
+  writeFileSync(join(cwd, 'a.txt'), 'one\nfiltered change\n');
+  const scope = collectScope({ cwd, scope: 'working-tree' });
+  assert.equal(existsSync(marker), false, 'a configured filter ran during collection');
+  assert.match(scope.diff, /filtered change/);
+});
+
+test('binary untracked files count against a read limit too', () => {
+  const cwd = repository();
+  for (let index = 0; index < 40; index += 1) writeFileSync(join(cwd, `b${index}.bin`), Buffer.alloc(2_000, 0));
+  const scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 4_000 });
+  assert.equal(scope.truncated, true);
+  assert.ok(scope.bytesRead <= 4 * 4_000 + 2_000, `read ${scope.bytesRead} bytes`);
+});

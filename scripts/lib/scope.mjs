@@ -16,8 +16,33 @@ const SAFE_REF = /^(?!-)[A-Za-z0-9._\/@{}^~-]+$/;
 const SAFE_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'core.quotepath=off', '-c', 'diff.external='];
 const DIFF_OPTIONS = ['--no-color', '--no-ext-diff', '--no-textconv'];
 
+// Content filters (clean, smudge, process) run the command a driver names when
+// git reads the working tree. Every driver configured anywhere is blanked for
+// the collection, so reviewing a change can never execute code from it.
+function filterOverrides(cwd) {
+  const result = spawnSync('git', [...SAFE_CONFIG, 'config', '--null', '--name-only', '--get-regexp', '^filter\\.'], {
+    cwd,
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+  });
+  const drivers = new Set();
+  for (const key of (result.stdout ?? '').split('\0')) {
+    const match = /^filter\.(.+)\.[^.]+$/.exec(key);
+    if (match) drivers.add(match[1]);
+  }
+  return [...drivers].flatMap((name) => [
+    '-c', `filter.${name}.clean=`,
+    '-c', `filter.${name}.smudge=`,
+    '-c', `filter.${name}.process=`,
+    '-c', `filter.${name}.required=false`,
+  ]);
+}
+
+let overrides = null;
+
 function git(cwd, args, { allowFailure = false, maxBuffer = 16 * 1024 * 1024, input } = {}) {
-  const result = spawnSync('git', [...SAFE_CONFIG, ...args], {
+  const result = spawnSync('git', [...SAFE_CONFIG, ...(overrides ?? []), ...args], {
     cwd,
     encoding: 'utf8',
     maxBuffer,
@@ -61,6 +86,9 @@ class Budget {
     this.maxBytes = maxBytes;
     this.parts = [];
     this.used = 0;
+    // Bytes read from disk, shown or not; binary files count too.
+    this.read = 0;
+    this.readLimit = 4 * maxBytes;
     this.truncated = false;
   }
 
@@ -103,6 +131,11 @@ function readRegularFile(path, limit) {
 function addUntracked(budget, top, files) {
   for (const file of files) {
     if (budget.truncated) return;
+    if (budget.read >= budget.readLimit) {
+      budget.add('[stopped reading new files at the read limit]');
+      budget.truncated = true;
+      return;
+    }
     let stat;
     try {
       stat = lstatSync(join(top, file));
@@ -120,7 +153,8 @@ function addUntracked(budget, top, files) {
     }
     let content;
     try {
-      content = readRegularFile(join(top, file), Math.min(stat.size, budget.left + 1));
+      content = readRegularFile(join(top, file), Math.min(stat.size, budget.left + 1, budget.readLimit - budget.read));
+      budget.read += content.length;
     } catch {
       continue;
     }
@@ -147,6 +181,7 @@ export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX
     throw new Error('Review needs a git repository; run it inside one.');
   }
   const top = gitText(cwd, ['rev-parse', '--show-toplevel']).trim();
+  overrides = filterOverrides(top);
   // Without a commit, compare the files on disk with the empty tree.
   const against = refExists(top, 'HEAD') ? 'HEAD' : emptyTree(top);
   const bufferFor = maxBytes + 1024 * 1024;
@@ -165,7 +200,7 @@ export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX
     if (tracked.overflowed) budget.truncated = true;
     addUntracked(budget, top, untracked);
     const diff = budget.text();
-    return { kind, base: null, files: listed([...trackedChanges, ...untracked]), diff: diff.trim() ? diff : '', truncated: budget.truncated, root: top };
+    return { kind, base: null, files: listed([...trackedChanges, ...untracked]), diff: diff.trim() ? diff : '', truncated: budget.truncated, bytesRead: budget.read, root: top };
   }
 
   const baseRef = base ?? defaultBase(top);
