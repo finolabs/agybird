@@ -413,12 +413,21 @@ function runRegistry(cwd, directory) {
   return join(directory, 'active-runs', workspaceDigest(cwd));
 }
 
-export function registerRun(cwd, conversationId, directory = STATE_DIRECTORY) {
+// `expiresAt` bounds how long a record whose provider may be starting keeps a
+// grant waiting after its runner is gone: agy ends by its own print timeout.
+export function registerRun(cwd, conversationId, directory = STATE_DIRECTORY, expiresAt = null) {
   const folder = runRegistry(cwd, directory);
   mkdirSync(folder, { recursive: true });
   const path = join(folder, `${process.pid}-${randomUUID()}.json`);
-  writeJsonAtomically(path, { pid: process.pid, conversation: conversationId ?? null });
+  writeJsonAtomically(path, { pid: process.pid, conversation: conversationId ?? null, expiresAt });
   return path;
+}
+
+// Written just before agy starts, so a runner killed between the spawn and the
+// pid write leaves a record that still counts as live until it expires.
+export function markProviderPending(path) {
+  const run = path ? readJsonOrNull(path) : null;
+  if (run) writeJsonAtomically(path, { ...run, providerPending: true });
 }
 
 // Adds the provider to a run's record: agy can outlive a runner that is killed
@@ -449,7 +458,11 @@ export function otherLiveRuns(cwd, conversationId, ownPath, directory = STATE_DI
     const run = readJsonOrNull(path);
     // Live while either the runner or its provider runs; a reused pid can only
     // keep a grant waiting, never let one through.
-    const live = run && ((Number.isInteger(run.pid) && isRunning(run.pid)) || (Number.isInteger(run.providerPid) && isRunning(run.providerPid)));
+    const unrecordedProvider = run?.providerPending === true && !Number.isInteger(run.providerPid)
+      && (!Number.isFinite(run.expiresAt) || Date.now() < run.expiresAt);
+    const live = run && ((Number.isInteger(run.pid) && isRunning(run.pid))
+      || (Number.isInteger(run.providerPid) && isRunning(run.providerPid))
+      || unrecordedProvider);
     if (!live) {
       rmSync(path, { force: true });
       continue;
@@ -1234,7 +1247,15 @@ function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 102
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (child.pid) onSpawn?.(child.pid);
+    // A failed bookkeeping write must not abandon a provider that is already
+    // running; the caller's record stays pending, which keeps grants out.
+    if (child.pid) {
+      try {
+        onSpawn?.(child.pid);
+      } catch {
+        // see above
+      }
+    }
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -1286,7 +1307,7 @@ async function readPrompt(stream = process.stdin, limit = 1024 * 1024) {
   return prompt;
 }
 
-export async function runAgy(options, delegatedPrompt, env = process.env, { onProviderSpawn } = {}) {
+export async function runAgy(options, delegatedPrompt, env = process.env, { beforeProviderSpawn, onProviderSpawn } = {}) {
   const binary = resolveAgyBinary(env);
   const preflight = await spawnCaptured(binary.command, [...binary.prefixArgs, '--version'], {
     cwd: options.cwd,
@@ -1298,6 +1319,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env, { onPr
     throw new Error('Official Antigravity CLI version preflight failed');
   }
 
+  beforeProviderSpawn?.();
   const startedAt = Date.now();
   const execution = await spawnCaptured(
     binary.command,
@@ -1516,7 +1538,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // A grant applied by another run is visible to every conversation under the
     // same project, so a run on a different conversation must not start while one
     // is live. The conversation the grant was approved for may proceed.
-    runRecord = registerRun(options.cwd, resumed, stateDirectory);
+    runRecord = registerRun(options.cwd, resumed, stateDirectory, Date.now() + killDeadline(options.timeout) + 60_000);
     const holder = liveGrantLock(options.cwd, stateDirectory);
     if (holder && holder.conversation !== resumed) {
       throw new Error(
@@ -1548,7 +1570,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.once('SIGINT', onSignal);
       process.once('SIGTERM', onSignal);
     }
-    const execution = await runAgy(options, delegatedPrompt, env, { onProviderSpawn: (pid) => recordProvider(runRecord, pid) });
+    const execution = await runAgy(options, delegatedPrompt, env, {
+      beforeProviderSpawn: () => markProviderPending(runRecord),
+      onProviderSpawn: (pid) => recordProvider(runRecord, pid),
+    });
     const parser = createStreamParser();
     parser.push(execution.stdout);
     const parsed = parser.finish();
