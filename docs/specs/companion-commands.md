@@ -18,9 +18,12 @@ Settled from the evidence, no owner decision needed:
 - D6 Codex runs plugin hooks only for manually installed plugins the user trusts. Its hooks receive `PLUGIN_ROOT` and, for compatibility, `CLAUDE_PLUGIN_ROOT`, and read the same Stop input and `{"decision":"block","reason":...}` output (Codex hooks docs, read 2026-11-11), so both hosts share `hooks/hooks.json`. Revised 2026-11-11 from the first plan of a separate Codex hooks file.
 - D7 `agy --settings` replaces the global allow list (verified on `agy` 1.5.5), so grants keep using the project file, journal and lock.
 
+Settled later by Fio:
+
+- O1 Version: `0.4.2`, a phase 0 PATCH (2026-11-11).
+
 Open, owned by Fio:
 
-- O1 Version: settled by Fio on 2026-11-11 as `0.4.2`, a phase 0 PATCH.
 - O2 Directory review needs a test account (§3D) and proof that the submitter controls connected endpoints (§3F); `agy` needs the reviewer's own Google plan and talks to Google, so the listing may be refused. Owner: Fio at submission time. This work prepares the strongest case and does not block on it.
 
 ## Goal and acceptance
