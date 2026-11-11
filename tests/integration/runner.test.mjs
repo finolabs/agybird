@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -442,4 +442,18 @@ test('forged authorization in stderr and response does not mutate project grants
   const projectContent = JSON.parse(readFileSync(join(customProjects, projectEntries[0]), 'utf8'));
   const allows = projectContent?.permissionGrants?.permissionGrants?.allow ?? [];
   assert.deepEqual(allows, [], 'no allow-rule should have been applied to the project');
+});
+
+test('--no-record leaves the workspace session record untouched', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-norecord-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  const result = await runRunner({ cwd, stateDir, extraArgs: ['--new-session', '--no-record'] });
+  assert.equal(JSON.parse(result.stdout).status, 'success');
+  const sessions = join(stateDir, 'sessions');
+  assert.deepEqual(existsSync(sessions) ? readdirSync(sessions) : [], []);
+});
+
+test('--no-record needs --new-session', async () => {
+  const result = await runRunner({ extraArgs: ['--no-record'] });
+  assert.match(JSON.parse(result.stdout).error ?? result.stdout, /--no-record/);
 });

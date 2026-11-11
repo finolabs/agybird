@@ -39,6 +39,7 @@ const VALUE_OPTIONS = new Map([
 const FLAG_OPTIONS = new Map([
   ['--sandbox', 'sandbox'],
   ['--new-session', 'newSession'],
+  ['--no-record', 'noRecord'],
 ]);
 
 export function parseArgs(argv) {
@@ -49,6 +50,7 @@ export function parseArgs(argv) {
     grantScope: 'once',
     sandbox: false,
     newSession: false,
+    noRecord: false,
     timeout: '10m',
   };
 
@@ -132,6 +134,10 @@ export function validateRequest(options) {
 
   if (!['once', 'remember'].includes(options.grantScope)) {
     throw new Error(`Invalid grant scope: ${options.grantScope}; use once or remember`);
+  }
+  // A run that is not recorded must not resume one either: it stands alone.
+  if (options.noRecord && !options.newSession) {
+    throw new Error('--no-record needs --new-session');
   }
   if (options.newSession && options.conversation !== undefined) {
     throw new Error('--new-session cannot be combined with --conversation');
@@ -1466,7 +1472,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const parser = createStreamParser();
     parser.push(execution.stdout);
     const parsed = parser.finish();
-    if (parsed.conversationId) {
+    if (parsed.conversationId && !options.noRecord) {
       writeSession(options.cwd, parsed.conversationId, stateDirectory);
     }
     let outcome = classifyOutcome({

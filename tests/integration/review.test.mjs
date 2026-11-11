@@ -65,13 +65,24 @@ test('reviews keep their own conversations, apart from the workspace task sessio
   const request = buildReviewRequest({
     kind: 'review',
     scope: { kind: 'working-tree', base: null, files: ['a.txt'], diff: '+x', truncated: false },
-    stateDir: '/store/review-state',
     options: {},
   });
-  assert.equal(request.stateDir, '/store/review-state');
+  // Same state folder as tasks, so grant locks and recovery stay shared;
+  // --no-record keeps the review from replacing the task session.
+  assert.equal(request.stateDir, undefined);
   assert.ok(request.runnerArgs.includes('--new-session'));
+  assert.ok(request.runnerArgs.includes('--no-record'));
   assert.equal(request.mode, 'read');
   assert.ok(request.runnerArgs.includes('--json-schema'));
+});
+
+test('--wait runs in the foreground and cannot be combined with --background', async () => {
+  const cwd = repository();
+  const waited = await runCompanion(['review', '--wait'], { cwd });
+  assert.equal(waited.code, 0, waited.stderr);
+  assert.match(waited.stdout, /Saw the diff/);
+  const both = await runCompanion(['review', '--wait', '--background'], { cwd });
+  assert.notEqual(both.code, 0);
 });
 
 test('review refuses write mode and grants', async () => {

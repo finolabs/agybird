@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -79,4 +79,44 @@ test('a base that looks like an option is refused', () => {
 
 test('outside a git repository the scope is refused', () => {
   assert.throws(() => collectScope({ cwd: mkdtempSync(join(tmpdir(), 'agybird-nogit-')), scope: 'auto' }), /git repository/);
+});
+
+test('a repository without commits reviews the files as they are on disk', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-unborn-'));
+  git(cwd, 'init', '-q');
+  writeFileSync(join(cwd, 'a.txt'), 'staged\n');
+  git(cwd, 'add', 'a.txt');
+  writeFileSync(join(cwd, 'a.txt'), 'staged\nedited after add\n');
+  const scope = collectScope({ cwd, scope: 'auto' });
+  assert.match(scope.diff, /edited after add/);
+});
+
+test('untracked symlinks are listed but never followed', { skip: process.platform === 'win32' && 'symlinks need privileges on Windows' }, () => {
+  const cwd = repository();
+  const outside = join(mkdtempSync(join(tmpdir(), 'agybird-outside-')), 'secret.txt');
+  writeFileSync(outside, 'PRIVATE-CONTENT\n');
+  symlinkSync(outside, join(cwd, 'link.txt'));
+  const scope = collectScope({ cwd, scope: 'working-tree' });
+  assert.doesNotMatch(scope.diff, /PRIVATE-CONTENT/);
+  assert.match(scope.diff, /link\.txt/);
+});
+
+test('collection stops at the byte budget instead of reading everything first', () => {
+  const cwd = repository();
+  for (let index = 0; index < 50; index += 1) writeFileSync(join(cwd, `f${index}.txt`), 'y'.repeat(2_000));
+  const scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 10_000 });
+  assert.equal(scope.truncated, true);
+  assert.ok(Buffer.byteLength(scope.diff) <= 10_200);
+  assert.ok(scope.files.length <= 500);
+});
+
+test('git never runs a configured textconv or fsmonitor helper', { skip: process.platform === 'win32' && 'uses a POSIX shell helper' }, () => {
+  const cwd = repository();
+  const marker = join(cwd, '..', `ran-${Date.now()}`);
+  writeFileSync(join(cwd, '.gitattributes'), '*.txt diff=evil\n');
+  git(cwd, 'config', 'diff.evil.textconv', `sh -c "touch ${marker}; cat \\"$1\\"" -`);
+  git(cwd, 'config', 'core.fsmonitor', `sh -c "touch ${marker}"`);
+  writeFileSync(join(cwd, 'a.txt'), 'one\nchanged\n');
+  collectScope({ cwd, scope: 'working-tree' });
+  assert.equal(existsSync(marker), false, 'a repository helper ran during collection');
 });

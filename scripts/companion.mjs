@@ -451,7 +451,7 @@ function reviewTarget(scope) {
 
 // Builds the runner request for a review. Reviews run read-only, in a fresh
 // conversation kept apart from the workspace task session, with a findings schema.
-export function buildReviewRequest({ kind, scope, stateDir, options, focus = '' }) {
+export function buildReviewRequest({ kind, scope, options, focus = '' }) {
   const template = readFileSync(join(PLUGIN_ROOT, 'prompts', `${kind === 'adversarial-review' ? 'adversarial-review' : 'review'}.md`), 'utf8');
   const diff = scope.diff.replaceAll('</agybird_review_diff', '<\\/agybird_review_diff');
   const prompt = template
@@ -459,15 +459,18 @@ export function buildReviewRequest({ kind, scope, stateDir, options, focus = '' 
     .replace('{{FOCUS}}', () => (focus ? `Focus the user asked for: ${focus}\n` : ''))
     .replace('{{FILES}}', () => scope.files.map((file) => `- ${file}`).join('\n') || '- (none listed)')
     .replace('{{DIFF}}', () => diff);
-  const runnerArgs = ['--new-session', '--json-schema', REVIEW_SCHEMA_PATH];
+  // The runner's own state folder keeps grant locks and recovery shared with
+  // tasks; --no-record keeps this run from replacing the task session.
+  const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
   if (options.model) runnerArgs.push('--model', options.model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
-  return { category: 'code', mode: 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt, stateDir };
+  return { category: 'code', mode: 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt };
 }
 
 const REVIEW_FLAGS = {
   ...COMMON,
   '--background': 'flag',
+  '--wait': 'flag',
   '--base': 'value',
   '--scope': 'value',
   '--model': 'value',
@@ -478,14 +481,14 @@ const REVIEW_FLAGS = {
 function reviewCommand(kind) {
   return async (argv, env) => {
     const { options, positional } = parseFlags(argv, REVIEW_FLAGS);
+    if (options.wait && options.background) throw new Error('Choose --wait or --background, not both.');
     const cwd = options.cwd ?? process.cwd();
     const scope = collectScope({ cwd, scope: options.scope ?? 'auto', base: options.base });
     if (!scope.diff) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const stateDir = join(workspaceDirectory(workspaceRoot(cwd), env), 'review-state');
-    const request = buildReviewRequest({ kind, scope, stateDir, options, focus: positional.join(' ').trim() });
+    const request = buildReviewRequest({ kind, scope, options, focus: positional.join(' ').trim() });
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
     const result = await launch({ cwd, kind, title, request, background: options.background, env });
     if (options.background) {
