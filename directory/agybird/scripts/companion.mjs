@@ -491,6 +491,9 @@ export function approvedRules(directory, approvals = []) {
     const envelope = job ? readStoredResult(directory, id) : null;
     const request = envelope?.permission_requests?.[Number(index)];
     if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
+    // A review runs in a standalone conversation the workspace never resumes;
+    // granting into it would record it as the task session.
+    if (!['task', 'image'].includes(job.kind)) throw new Error(`Job ${id} is a ${job.kind}; only a task or image job can be approved and resumed.`);
     if (!request.grantable || !request.suggested_rule) throw new Error(`Request ${index} of ${id} cannot be granted by a rule; agree a narrower rule with the user and grant it outside Agybird.`);
     // The grant belongs to the conversation that asked for it, and to that run's mode.
     const conversation = envelope.conversation_id;
@@ -758,6 +761,11 @@ async function stopGate(env) {
     const request = { category: 'code', mode: 'read', timeout: '8m', runnerArgs, prompt };
     // A deadline well inside the hook's own timeout: past it the job is cancelled,
     // its worker (this process) stops the runner it owns, and the stop passes.
+    // Preparation can use up the budget; never start a provider after it.
+    if (Date.now() >= deadlineAt) {
+      hookNotice(`preparing the review took longer than ${Math.round(deadlineMs / 1000)}s.`);
+      return;
+    }
     let created = null;
     let timer;
     const expired = new Promise((done) => { timer = setTimeout(() => done(null), Math.max(0, deadlineAt - Date.now())); });

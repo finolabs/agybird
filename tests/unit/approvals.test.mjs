@@ -48,3 +48,13 @@ test('an image edit keeps its reference images through an approval', () => {
   writeFileSync(join(directory, `${id}.result.json`), JSON.stringify({ conversation_id: 'conv-i', permission_requests: [{ tool: 'run_command', target: 'ls', suggested_rule: 'command(ls)', grantable: true }] }));
   assert.deepEqual(approvedRules(directory, [`${id}:0`]).references, ['/photos/a.png', '/photos/b.png']);
 });
+
+test('a review or gate job cannot be approved, so its standalone conversation never replaces the task session', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-approvals-'));
+  for (const kind of ['review', 'adversarial-review', 'stop-review']) {
+    const id = newJobId();
+    writeJob(directory, { id, kind, status: 'completed', createdAt: new Date().toISOString(), request: { category: 'code', mode: 'read' } });
+    writeFileSync(join(directory, `${id}.result.json`), JSON.stringify({ conversation_id: 'conv-r', permission_requests: [{ tool: 'read_file', target: '/x', suggested_rule: 'read_file(/x)', grantable: true }] }));
+    assert.throws(() => approvedRules(directory, [`${id}:0`]), /only a task or image job/);
+  }
+});

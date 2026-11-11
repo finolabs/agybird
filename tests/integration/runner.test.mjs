@@ -457,3 +457,35 @@ test('--no-record needs --new-session', async () => {
   const result = await runRunner({ extraArgs: ['--no-record'] });
   assert.match(JSON.parse(result.stdout).error ?? result.stdout, /--no-record/);
 });
+
+test('a grant waits for a run already going on another conversation instead of lending it the rule', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-admission-'));
+  const projectsDir = mkdtempSync(join(tmpdir(), 'agybird-admission-projects-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  // Record a session for the workspace, which the grant run resumes.
+  const first = await runRunner({ cwd, stateDir, projectsDir });
+  assert.equal(JSON.parse(first.stdout).status, 'success');
+  // Another run, on a new conversation, is still going when the grant arrives.
+  const other = spawn(process.execPath, [runnerPath, '--category', 'general', '--cwd', cwd, '--mode', 'read', '--timeout', '30s', '--new-session'], {
+    cwd: projectRoot,
+    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`, AGYBIRD_PROJECTS_DIR: projectsDir, AGYBIRD_STATE_DIR: stateDir },
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  other.stdin.end('CASE_HANG keep the other conversation busy');
+  try {
+    const registry = join(stateDir, 'active-runs');
+    const started = Date.now();
+    while (!(existsSync(registry) && readdirSync(registry).some((entry) => readdirSync(join(registry, entry)).length > 0))) {
+      if (Date.now() - started > 10_000) throw new Error('the other run never registered');
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    const grant = await runRunner({ cwd, stateDir, projectsDir, extraArgs: ['--grant', 'command(git status)'] });
+    const envelope = JSON.parse(grant.stdout);
+    assert.equal(envelope.status, 'error');
+    assert.match(JSON.stringify(envelope), /different conversation/);
+    const projectFiles = readdirSync(projectsDir).map((name) => readFileSync(join(projectsDir, name), 'utf8')).join('\n');
+    assert.doesNotMatch(projectFiles, /git status/, 'the rule must not stay applied');
+  } finally {
+    other.kill('SIGKILL');
+  }
+});

@@ -405,6 +405,50 @@ export function releaseGrantLock(path) {
   if (path) rmSync(path, { force: true });
 }
 
+// Every run registers itself before it checks for a grant, and a grant checks
+// the registered runs after it holds the lock. Both sides write before they
+// read, so of a run and a grant starting together at least one sees the other:
+// a run on another conversation can never start while that rule is applied.
+function runRegistry(cwd, directory) {
+  return join(directory, 'active-runs', workspaceDigest(cwd));
+}
+
+export function registerRun(cwd, conversationId, directory = STATE_DIRECTORY) {
+  const folder = runRegistry(cwd, directory);
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, `${process.pid}-${randomUUID()}.json`);
+  writeJsonAtomically(path, { pid: process.pid, conversation: conversationId ?? null });
+  return path;
+}
+
+export function unregisterRun(path) {
+  if (path) rmSync(path, { force: true });
+}
+
+// Live runs in this workspace on a conversation other than `conversationId`.
+// A record whose process is gone is removed.
+export function otherLiveRuns(cwd, conversationId, ownPath, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
+  const folder = runRegistry(cwd, directory);
+  let names;
+  try {
+    names = readdirSync(folder);
+  } catch {
+    return [];
+  }
+  const others = [];
+  for (const name of names) {
+    const path = join(folder, name);
+    if (path === ownPath || !name.endsWith('.json')) continue;
+    const run = readJsonOrNull(path);
+    if (!run || !Number.isInteger(run.pid) || !isRunning(run.pid)) {
+      rmSync(path, { force: true });
+      continue;
+    }
+    if (run.conversation === null || run.conversation !== conversationId) others.push(run);
+  }
+  return others;
+}
+
 // Undo every grant whose run is gone. A journal belonging to a live process is
 // left alone: that run is still using its grant and will clean up after itself.
 export function recoverAbandonedGrants(directory = STATE_DIRECTORY, isRunning = processIsRunning) {
@@ -1422,6 +1466,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let grantState = null;
   let journalPath = null;
   let lockPath = null;
+  let runRecord = null;
   let onSignal = null;
 
   const releaseGrant = () => {
@@ -1459,6 +1504,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // A grant applied by another run is visible to every conversation under the
     // same project, so a run on a different conversation must not start while one
     // is live. The conversation the grant was approved for may proceed.
+    runRecord = registerRun(options.cwd, resumed, stateDirectory);
     const holder = liveGrantLock(options.cwd, stateDirectory);
     if (holder && holder.conversation !== resumed) {
       throw new Error(
@@ -1470,6 +1516,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       lockPath = acquireGrantLock(options.cwd, resumed, stateDirectory);
       if (lockPath === null) {
         throw new Error('another run in this workspace is already holding a one-time allow-rule; retry once it finishes');
+      }
+      if (otherLiveRuns(options.cwd, resumed, runRecord, stateDirectory).length > 0) {
+        releaseGrantLock(lockPath);
+        lockPath = null;
+        throw new Error('another run in this workspace is using a different conversation; apply the grant once it finishes');
       }
       // Intent first: the journal has to exist before the grant does, or a kill
       // in between leaves a rule on disk that nothing knows how to undo.
@@ -1539,6 +1590,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.exitCode = 1;
   } finally {
     releaseGrant();
+    unregisterRun(runRecord);
     if (onSignal) {
       process.removeListener('SIGINT', onSignal);
       process.removeListener('SIGTERM', onSignal);
