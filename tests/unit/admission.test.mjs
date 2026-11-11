@@ -5,7 +5,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { acquireGrantLock, liveGrantLock, markProviderPending, otherLiveRuns, registerRun, runAgy } from '../../scripts/agybird.mjs';
+import { acquireGrantLock, liveGrantLock, markProviderPending, otherLiveRuns, registerRun, releaseGrantLock, runAgy } from '../../scripts/agybird.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const dead = () => false;
@@ -59,44 +59,61 @@ test('a record updated while its runner dies is judged by what it says last', ()
   assert.equal(otherLiveRuns(cwd, 'conv-a', null, directory, isRunning).length, 1);
 });
 
-test('looking for a grant lock that is not there removes nothing', () => {
+function lockFiles(directory) {
+  const root = join(directory, 'grant-locks');
+  try {
+    return readdirSync(root, { recursive: true }).map(String).filter((name) => name.endsWith('.json')).sort();
+  } catch {
+    return [];
+  }
+}
+
+test('reading the grant lock never changes it', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
   const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
   assert.equal(liveGrantLock(cwd, directory, () => true), null);
   const path = acquireGrantLock(cwd, 'conv-a', directory, () => true);
-  assert.ok(path);
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-a', 'the lock is published whole');
-  assert.deepEqual(readdirSync(dirname(path)).filter((name) => name.endsWith('.tmp')), []);
+  const before = lockFiles(directory);
+  liveGrantLock(cwd, directory, () => false);
+  liveGrantLock(cwd, directory, () => true);
+  assert.deepEqual(lockFiles(directory), before, 'a reader removes nothing, live or dead');
 });
 
-test('clearing a stale lock can never leave two runs holding the grant lock', () => {
+test('a dead holder is superseded, not deleted, and only one run wins the next generation', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
   const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
-  const path = acquireGrantLock(cwd, 'conv-old', directory, () => true);
-  writeFileSync(path, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
   const BEE = 222222;
+  const stale = acquireGrantLock(cwd, 'conv-old', directory, () => true);
+  writeFileSync(stale, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
   let bLock = null;
-  let bChanged = null;
-  // A has read the dead holder; while it checks that holder, B clears the stale
-  // lock and takes it, then C tries as well.
+  // A sees the dead holder; while it decides, B takes the next generation.
   const isRunning = (pid) => {
     if (pid === 111111) {
       if (bLock === null) {
-        bLock = acquireGrantLock(cwd, 'conv-b', directory, (other) => other === BEE || (other !== 111111 && other === process.pid));
-        if (bLock) {
-          writeFileSync(bLock, JSON.stringify({ pid: BEE, conversation: 'conv-b' }));
-          bChanged = statSync(bLock).ctimeMs;
-        }
+        bLock = acquireGrantLock(cwd, 'conv-b', directory, (other) => other === BEE);
+        writeFileSync(bLock, JSON.stringify({ pid: BEE, conversation: 'conv-b' }));
       }
       return false;
     }
     return pid === BEE;
   };
-  const seenByA = liveGrantLock(cwd, directory, isRunning);
-  assert.ok(bLock, 'B must have taken the lock');
-  assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-b', 'A must not remove B\'s lock');
-  assert.equal(seenByA?.pid, BEE, 'A must see B as the holder');
-  assert.equal(statSync(path).ctimeMs, bChanged, 'A must never move or relink a live lock, or a third run could take the path meanwhile');
-  assert.equal(acquireGrantLock(cwd, 'conv-c', directory, isRunning), null, 'C must not get the lock while B holds it');
-  assert.deepEqual(readdirSync(dirname(path)).filter((name) => /\.(tmp|stale|breaker)$/.test(name)), []);
+  assert.equal(acquireGrantLock(cwd, 'conv-a', directory, isRunning), null, 'A must lose to B');
+  assert.equal(liveGrantLock(cwd, directory, isRunning)?.pid, BEE, 'B holds the lock');
+  assert.equal(acquireGrantLock(cwd, 'conv-c', directory, isRunning), null, 'C must not get it either');
+  assert.equal(JSON.parse(readFileSync(bLock, 'utf8')).conversation, 'conv-b');
+  releaseGrantLock(bLock);
+  assert.equal(liveGrantLock(cwd, directory, isRunning), null, 'released means free');
+  assert.deepEqual(lockFiles(directory), [], 'nothing is left after release');
+});
+
+test('a lock left in the previous single-file layout is still honoured', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
+  const first = acquireGrantLock(cwd, 'conv-a', directory, () => true);
+  const legacy = join(directory, 'grant-locks', `${first.split(/[\\/]/).at(-2)}.json`);
+  releaseGrantLock(first);
+  writeFileSync(legacy, JSON.stringify({ pid: process.pid, conversation: 'conv-legacy' }));
+  assert.equal(liveGrantLock(cwd, directory, (pid) => pid === process.pid)?.conversation, 'conv-legacy');
+  assert.equal(acquireGrantLock(cwd, 'conv-b', directory, (pid) => pid === process.pid), null);
 });

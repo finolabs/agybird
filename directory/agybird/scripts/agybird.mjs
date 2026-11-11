@@ -14,6 +14,7 @@ import {
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -342,8 +343,33 @@ export function clearGrantJournal(path) {
 // and cannot be deleted afterwards, because a conversation stays bound to its
 // project for good. Excluding the other conversation for the length of the grant
 // leaves nothing behind instead.
-function grantLockPath(cwd, directory) {
+// The lock is a series of generations, <n>.json in one folder per workspace;
+// the highest generation is the lock. A run takes it by publishing the next
+// generation, which only one run can do, so a lock is never deleted to be taken:
+// a dead holder is simply superseded. Earlier versions used one file per
+// workspace, which still counts as generation 0.
+function grantLockFolder(cwd, directory) {
+  return join(directory, 'grant-locks', workspaceDigest(cwd));
+}
+
+function legacyGrantLockPath(cwd, directory) {
   return join(directory, 'grant-locks', `${workspaceDigest(cwd)}.json`);
+}
+
+function currentGrantLock(cwd, directory) {
+  const folder = grantLockFolder(cwd, directory);
+  let generation = -1;
+  try {
+    for (const name of readdirSync(folder)) {
+      const match = /^(\d{1,15})\.json$/.exec(name);
+      if (match) generation = Math.max(generation, Number(match[1]));
+    }
+  } catch {
+    // no folder yet
+  }
+  if (generation >= 0) return { path: join(folder, `${generation}.json`), generation };
+  const legacy = legacyGrantLockPath(cwd, directory);
+  return statOrNull(legacy) ? { path: legacy, generation: 0 } : null;
 }
 
 // A lock is published whole: its content is written to a private file first and
@@ -380,56 +406,68 @@ function publishExclusive(path, content) {
 
 // A lock that cannot be read is treated as held until it is this old.
 const UNREADABLE_LOCK_MS = 60_000;
-// The breaker guards a few file operations; one older than this was left by a
-// process that died holding it.
-const STALE_BREAKER_MS = 30_000;
 const HELD = Object.freeze({ pid: null, conversation: null });
 
 function lockIsLive(holder, isRunning) {
   return Boolean(holder && Number.isInteger(holder.pid) && isRunning(holder.pid));
 }
 
-// The holder of a live grant in this workspace, or null when the lock is free.
-// A lock left by a process that is gone is cleared only under a breaker file:
-// while a stale lock exists nobody can create a new one (the path is taken), and
-// only the breaker holder may remove it, so a re-read under the breaker that
-// still shows the dead holder can be removed safely. A live lock is never moved.
-export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
-  const path = grantLockPath(cwd, directory);
-  const holder = readJsonOrNull(path);
+// What the current generation says: its live holder, HELD while it cannot be
+// read yet, or null when the lock is free. Reading never changes anything.
+function holderOf(current, isRunning) {
+  if (!current) return null;
+  const holder = readJsonOrNull(current.path);
   if (lockIsLive(holder, isRunning)) return holder;
-  const stat = statOrNull(path);
-  if (!stat) return null;
-  if (!holder && Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS) return HELD;
-  const breaker = `${path}.breaker`;
-  if (!publishExclusive(breaker, JSON.stringify({ pid: process.pid }))) {
-    const breakerStat = statOrNull(breaker);
-    if (breakerStat && Date.now() - breakerStat.mtimeMs > STALE_BREAKER_MS) rmSync(breaker, { force: true });
-    return HELD;
-  }
-  try {
-    const current = readJsonOrNull(path);
-    if (lockIsLive(current, isRunning)) return current;
-    const currentStat = statOrNull(path);
-    if (!currentStat) return null;
-    if (!current && Date.now() - currentStat.mtimeMs < UNREADABLE_LOCK_MS) return HELD;
-    rmSync(path, { force: true });
-    return null;
-  } finally {
-    rmSync(breaker, { force: true });
-  }
+  if (holder) return null;
+  const stat = statOrNull(current.path);
+  return stat && Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS ? HELD : null;
+}
+
+// The holder of a live grant in this workspace, or null when the lock is free.
+export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
+  return holderOf(currentGrantLock(cwd, directory), isRunning);
 }
 
 export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
-  const path = grantLockPath(cwd, directory);
-  mkdirSync(dirname(path), { recursive: true });
-  if (liveGrantLock(cwd, directory, isRunning)) return null;
-  const published = publishExclusive(path, JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1));
-  return published ? path : null;
+  const folder = grantLockFolder(cwd, directory);
+  mkdirSync(folder, { recursive: true });
+  const content = JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = currentGrantLock(cwd, directory);
+    if (holderOf(current, isRunning)) return null;
+    const next = (current?.generation ?? -1) + 1;
+    const path = join(folder, `${next}.json`);
+    let published;
+    try {
+      published = publishExclusive(path, content);
+    } catch (error) {
+      // A run releasing the last generation may have removed the folder meanwhile.
+      if (error?.code !== 'ENOENT') throw error;
+      mkdirSync(folder, { recursive: true });
+      continue;
+    }
+    if (published) {
+      // Earlier generations can never be the lock again; clearing them is tidy, not required.
+      for (const name of readdirSync(folder)) {
+        const match = /^(\d{1,15})\.json$/.exec(name);
+        if (match && Number(match[1]) < next) rmSync(join(folder, name), { force: true });
+      }
+      rmSync(legacyGrantLockPath(cwd, directory), { force: true });
+      return path;
+    }
+    // Another run published this generation first; look again.
+  }
+  return null;
 }
 
 export function releaseGrantLock(path) {
-  if (path) rmSync(path, { force: true });
+  if (!path) return;
+  rmSync(path, { force: true });
+  try {
+    rmdirSync(dirname(path));
+  } catch {
+    // not empty, or already gone
+  }
 }
 
 // Every run registers itself before it checks for a grant, and a grant checks
