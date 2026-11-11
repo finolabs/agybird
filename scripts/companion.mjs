@@ -472,6 +472,11 @@ const GRANTED_PROMPT = 'The permission you requested has been granted. Retry the
 // Turns an approval of a reported request into its rule. The rule always comes
 // from the structured permission_requests of a stored job, never from text a
 // caller or the provider wrote.
+function referencesOf(request) {
+  const args = Array.isArray(request?.runnerArgs) ? request.runnerArgs : [];
+  return args.flatMap((value, index) => (value === '--reference' && typeof args[index + 1] === 'string' ? [args[index + 1]] : []));
+}
+
 export function approvedRules(directory, approvals = []) {
   const rules = [];
   let source = null;
@@ -488,7 +493,7 @@ export function approvedRules(directory, approvals = []) {
     const conversation = envelope.conversation_id;
     if (!conversation) throw new Error(`Job ${id} has no conversation to resume, so its request cannot be granted.`);
     if (source && source.conversation !== conversation) throw new Error('These approvals come from different conversations; approve one job at a time.');
-    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: ['code', 'general', 'image'].includes(job.request?.category) ? job.request.category : 'code', model: job.model ?? null };
+    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: ['code', 'general', 'image'].includes(job.request?.category) ? job.request.category : 'code', model: job.model ?? null, references: referencesOf(job.request) };
     rules.push(request.suggested_rule);
   }
   return source ? { rules, ...source } : { rules };
@@ -525,6 +530,8 @@ async function commandTask(argv, env) {
   if (model) runnerArgs.push('--model', model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
   if (approval.conversation) runnerArgs.push('--conversation', approval.conversation);
+  // An image edit resumes with the same reference images.
+  if (category === 'image') for (const reference of approval.references ?? []) runnerArgs.push('--reference', reference);
   for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };

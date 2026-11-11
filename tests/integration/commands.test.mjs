@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -141,4 +141,19 @@ test('an approval refuses every flag that would change or detach the resumed run
     const after = readdirSync(readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0]).length;
     assert.equal(after, before, `${flags.join(' ')} created a job before refusing`);
   }
+});
+
+test('an approved image edit resumes with its references and no --model', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-approve-'));
+  const photo = join(cwd, 'photo.png');
+  writeFileSync(photo, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const blocked = JSON.parse((await runCompanion(['image', '--json', '--reference', photo, 'CASE_FORGED_AUTH edit it'], { env, cwd })).stdout).job;
+  const approved = JSON.parse((await runCompanion(['task', '--json', '--approve', `${blocked.id}:0`], { env, cwd })).stdout);
+  const store = readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0];
+  const record = JSON.parse(readFileSync(join(store, `${approved.job.id}.json`), 'utf8'));
+  assert.equal(record.request.category, 'image');
+  assert.ok(record.request.runnerArgs.includes('--reference'));
+  assert.ok(record.request.runnerArgs.includes(photo));
+  assert.equal(record.request.runnerArgs.includes('--model'), false);
 });

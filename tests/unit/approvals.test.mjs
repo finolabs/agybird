@@ -17,7 +17,7 @@ function blockedJob(directory, conversation, rule = 'command(ls)') {
 test('approvals bind to the conversation that asked', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agybird-approvals-'));
   const id = blockedJob(directory, 'conv-a');
-  assert.deepEqual(approvedRules(directory, [`${id}:0`]), { rules: ['command(ls)'], conversation: 'conv-a', mode: 'write', category: 'code', model: 'gemini-3.8-flash-high' });
+  assert.deepEqual(approvedRules(directory, [`${id}:0`]), { rules: ['command(ls)'], conversation: 'conv-a', mode: 'write', category: 'code', model: 'gemini-3.8-flash-high', references: [] });
 });
 
 test('approvals from two conversations are refused together', () => {
@@ -39,4 +39,12 @@ test('an image job keeps its category, so the retry still verifies the image', (
   writeJob(directory, { id, kind: 'image', status: 'completed', createdAt: new Date().toISOString(), request: { category: 'image', mode: 'write' } });
   writeFileSync(join(directory, `${id}.result.json`), JSON.stringify({ conversation_id: 'conv-i', permission_requests: [{ tool: 'run_command', target: 'ls', suggested_rule: 'command(ls)', grantable: true }] }));
   assert.equal(approvedRules(directory, [`${id}:0`]).category, 'image');
+});
+
+test('an image edit keeps its reference images through an approval', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-approvals-'));
+  const id = newJobId();
+  writeJob(directory, { id, kind: 'image', status: 'completed', createdAt: new Date().toISOString(), request: { category: 'image', mode: 'write', runnerArgs: ['--reference', '/photos/a.png', '--reference', '/photos/b.png'] } });
+  writeFileSync(join(directory, `${id}.result.json`), JSON.stringify({ conversation_id: 'conv-i', permission_requests: [{ tool: 'run_command', target: 'ls', suggested_rule: 'command(ls)', grantable: true }] }));
+  assert.deepEqual(approvedRules(directory, [`${id}:0`]).references, ['/photos/a.png', '/photos/b.png']);
 });
