@@ -42,6 +42,7 @@ test('parses the complete supported argument surface', () => {
     agent: 'reviewer',
     sandbox: true,
     newSession: false,
+    noRecord: false,
     timeout: '45s',
   });
   assert.doesNotThrow(() => validateRequest(options));

@@ -15,6 +15,13 @@
   "files": [
     "SKILL.md",
     "scripts/agybird.mjs",
+    "scripts/companion.mjs",
+    "scripts/lib/",
+    "prompts/",
+    "schemas/",
+    "commands/",
+    "claude-agents/",
+    "hooks/",
     "references/",
     "README.md",
     "LICENSE",

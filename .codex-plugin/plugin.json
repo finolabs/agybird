@@ -11,7 +11,7 @@
   "repository": "https://github.com/finolabs/agybird",
   "license": "MIT",
   "keywords": ["antigravity", "agy", "gemini", "delegation", "code-review", "agent-skills"],
-  "skills": "./.plugin-skills/",
+  "skills": "./.codex-skills/",
   "interface": {
     "displayName": "Agybird",
     "shortDescription": "Delegate work to Antigravity",

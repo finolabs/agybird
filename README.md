@@ -16,7 +16,7 @@ Agybird is unofficial and is not affiliated with Google.
 - **Image:** new image generation and reference-image editing through Antigravity's built-in `image-generator` subagent and its `generate_image` tool, followed by artifact and visual verification.
 - **General:** read-only analysis by default, structured JSON output, or explicit deliverable creation.
 
-This is an Agent Skill plus a small local runner, not an MCP server. Claude Code or Codex remains the orchestrator; `agy` remains the authenticated provider process.
+This is an Agent Skill, a small local runner and a set of [commands](#commands), not an MCP server. Claude Code or Codex remains the orchestrator; `agy` remains the authenticated provider process.
 
 ## Requirements
 
@@ -103,9 +103,29 @@ When headless `agy` denies an action it cannot prompt for, `needs_permission` ca
 
 Because Antigravity applies a granted rule to every conversation in that project, a run on a *different* conversation in the same workspace returns `error` while a grant is live, rather than quietly inheriting it. Retry once the other run finishes.
 
+## Commands
+
+The plugin also adds commands that run through `scripts/companion.mjs`. In Claude Code they are slash commands; Codex has no plugin slash commands, so there each one is a skill you call by name.
+
+| Claude Code | Codex | What it does |
+| --- | --- | --- |
+| `/agybird:review` | `$agybird-review` | Read-only review of the working-tree changes, or of the branch against `--base`, with findings by severity, file and line. |
+| `/agybird:adversarial-review` | `$agybird-adversarial-review` | The same scope, but challenging the design, assumptions and tradeoffs. |
+| `/agybird:rescue` | `$agybird-rescue` | Hands a task to Antigravity, read-only unless you pass `--write`, resuming the repository's conversation unless `--fresh`. |
+| `/agybird:status`, `/agybird:result`, `/agybird:cancel` | `$agybird-status`, `$agybird-result`, `$agybird-cancel` | List, show and stop jobs; review and rescue take `--background`. |
+| `/agybird:usage` | `$agybird-usage` | Quota per pool with local reset times, and the model each tier would use now. |
+| `/agybird:setup` | `$agybird-setup` | Checks `agy` and its sign-in, and switches the review gate for one repository. |
+| `/agybird:image` | `$agybird-image` | Generates an image, or edits `--reference` images. |
+
+Review and rescue pick their model from Antigravity's own quota report when you name none: the usable model of the tier with the most room. When that tier has no quota left, the command stops and shows the reset times instead of moving to a more expensive tier.
+
+A permission Antigravity asks for is never granted for you. `/agybird:rescue` reads the request from the stored result, asks you, and on a yes resumes the same conversation with that one rule (`--approve <job>:<n>`).
+
+**Review gate.** `/agybird:setup --enable-review-gate` turns on a Stop hook for that repository: when Claude Code ends a turn with uncommitted changes, Antigravity reviews them read-only on a light-tier model, and a finding of medium severity or worse sends Claude back once to fix it or explain. It is off by default, spends quota on every gated turn, never blocks twice in a row, and lets the turn end with a notice when `agy` is missing, out of quota or slower than 12 minutes. Codex runs it only after you review and trust the plugin's hooks.
+
 ## Data and network
 
-Agybird has no server, analytics, or telemetry. The runner starts one local `agy` process per invocation and talks to nothing else: it sends the task on standard input, reads `agy`'s JSON stream, and prints one envelope. Everything `agy` does with the task, including reading workspace files, fetching URLs, and generating images, happens in Google's CLI under the user's own Google account and Antigravity settings. Outside the workspace the runner writes only `~/.agybird/sessions/` (workspace path and conversation id, never prompts or results) and a lock under `~/.agybird/grant-locks/` while an approved grant is applied. See [PRIVACY.md](PRIVACY.md).
+Agybird has no server, analytics, or telemetry. The runner starts one local `agy` process per invocation and talks to nothing else: it sends the task on standard input, reads `agy`'s JSON stream, and prints one envelope. Everything `agy` does with the task, including reading workspace files, fetching URLs, and generating images, happens in Google's CLI under the user's own Google account and Antigravity settings. Outside the workspace the runner writes only `~/.agybird/sessions/` (workspace path and conversation id, never prompts or results), small grant lock files under `~/.agybird/grant-locks/` (one per approved grant, marked released when it ends) and a record per running run under `~/.agybird/active-runs/`, with process and conversation ids only. The commands also keep a job store, in the plugin's data folder or `~/.agybird/jobs/`, holding each job's prompt, result and log, a five-minute quota cache, and the review gate switch. Reviews read `git` themselves and send the diff, and the gate also sends Claude's last message of the turn. See [PRIVACY.md](PRIVACY.md).
 
 ## Safety defaults
 
@@ -115,6 +135,8 @@ Agybird has no server, analytics, or telemetry. The runner starts one local `agy
 - No `--dangerously-skip-permissions`.
 - No change to the saved `useG1Credits`, model, effort, agent, or sandbox settings. The model is chosen per run by task and remaining quota; see [model selection](references/models.md).
 - Image success requires a completed tool event and a real nonempty artifact in the working directory or the matching Antigravity conversation artifact directory.
+- Reviews never let `git` start a program the repository configures: fsmonitor, textconv, external diff and filter drivers are switched off while the diff is collected.
+- Commands run only when you call them; the review gate runs only where you switched it on.
 
 See the [threat model](docs/threat-model.md), [security policy](SECURITY.md), and [official Antigravity overview](https://antigravity.google/docs/cli/overview).
 
@@ -124,6 +146,8 @@ See the [threat model](docs/threat-model.md), [security policy](SECURITY.md), an
 npm ci
 npm run check
 ```
+
+`directory/agybird/` is the edition submitted to Anthropic's plugin directory, whose policy excludes AI image generation: the same plugin with every `// agybird:image-start` region removed. It is generated, never edited by hand; run `node scripts/build-directory-edition.mjs` after changing a shared file, and the test suite fails while it is out of date.
 
 Tests use a fake provider process and require no Google credentials. Live tests are manual and must never run in public CI.
 

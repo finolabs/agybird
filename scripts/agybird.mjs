@@ -6,6 +6,7 @@ import {
   accessSync,
   closeSync,
   constants,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -25,7 +26,9 @@ const VALUE_OPTIONS = new Map([
   ['--category', 'category'],
   ['--cwd', 'cwd'],
   ['--mode', 'mode'],
+  // agybird:image-start
   ['--reference', 'references'],
+  // agybird:image-end
   ['--json-schema', 'jsonSchema'],
   ['--conversation', 'conversation'],
   ['--grant', 'grants'],
@@ -39,16 +42,20 @@ const VALUE_OPTIONS = new Map([
 const FLAG_OPTIONS = new Map([
   ['--sandbox', 'sandbox'],
   ['--new-session', 'newSession'],
+  ['--no-record', 'noRecord'],
 ]);
 
 export function parseArgs(argv) {
   const options = {
     mode: 'read',
+    // agybird:image-start
     references: [],
+    // agybird:image-end
     grants: [],
     grantScope: 'once',
     sandbox: false,
     newSession: false,
+    noRecord: false,
     timeout: '10m',
   };
 
@@ -96,7 +103,14 @@ function statOrNull(path) {
 }
 
 export function validateRequest(options) {
-  if (!['code', 'image', 'general'].includes(options.category)) {
+  const categories = [
+    'code',
+    // agybird:image-start
+    'image',
+    // agybird:image-end
+    'general',
+  ];
+  if (!categories.includes(options.category)) {
     throw new Error(`Invalid category: ${options.category}`);
   }
   if (!['read', 'write'].includes(options.mode)) {
@@ -114,6 +128,7 @@ export function validateRequest(options) {
     throw new Error('working directory does not exist or is not a directory');
   }
 
+  // agybird:image-start
   if (options.references.length > 0 && options.category !== 'image') {
     throw new Error('--reference is only valid with category image');
   }
@@ -129,9 +144,14 @@ export function validateRequest(options) {
       throw new Error(`reference image is not a regular file: ${reference}`);
     }
   }
+  // agybird:image-end
 
   if (!['once', 'remember'].includes(options.grantScope)) {
     throw new Error(`Invalid grant scope: ${options.grantScope}; use once or remember`);
+  }
+  // A run that is not recorded must not resume one either: it stands alone.
+  if (options.noRecord && !options.newSession) {
+    throw new Error('--no-record needs --new-session');
   }
   if (options.newSession && options.conversation !== undefined) {
     throw new Error('--new-session cannot be combined with --conversation');
@@ -348,42 +368,223 @@ export function clearGrantJournal(path) {
 // and cannot be deleted afterwards, because a conversation stays bound to its
 // project for good. Excluding the other conversation for the length of the grant
 // leaves nothing behind instead.
-function grantLockPath(cwd, directory) {
+// The lock is a series of generations, <n>.json in one folder per workspace;
+// the highest generation is the lock. A run takes it by publishing the next
+// generation, which only one run can do, so a lock is never deleted to be taken:
+// a dead holder is simply superseded. Earlier versions used one file per
+// workspace, which still counts as generation 0.
+function grantLockFolder(cwd, directory) {
+  return join(directory, 'grant-locks', workspaceDigest(cwd));
+}
+
+function legacyGrantLockPath(cwd, directory) {
   return join(directory, 'grant-locks', `${workspaceDigest(cwd)}.json`);
 }
 
-// The holder of a live grant in this workspace, or null. A lock left by a
-// process that is gone is removed rather than blocking the workspace forever.
-export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
-  const path = grantLockPath(cwd, directory);
-  const holder = readJsonOrNull(path);
-  if (holder && Number.isInteger(holder.pid) && isRunning(holder.pid)) return holder;
-  if (statOrNull(path)) rmSync(path, { force: true });
-  return null;
+function currentGrantLock(cwd, directory) {
+  const folder = grantLockFolder(cwd, directory);
+  let generation = -1;
+  try {
+    for (const name of readdirSync(folder)) {
+      const match = /^(\d{1,15})\.json$/.exec(name);
+      if (match) generation = Math.max(generation, Number(match[1]));
+    }
+  } catch {
+    // no folder yet
+  }
+  return generation >= 0 ? { path: join(folder, `${generation}.json`), generation } : null;
 }
 
-export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
-  const path = grantLockPath(cwd, directory);
-  mkdirSync(dirname(path), { recursive: true });
-  if (liveGrantLock(cwd, directory, isRunning)) return null;
+// A live lock in the single-file layout of earlier versions, which a run of an
+// older Agybird may still hold. It is read, never removed.
+function legacyHolder(cwd, directory, isRunning) {
+  const holder = readJsonOrNull(legacyGrantLockPath(cwd, directory));
+  return holder && holder.released !== true && lockIsLive(holder, isRunning) ? holder : null;
+}
+
+// A lock is published whole: its content is written to a private file first and
+// then linked into place, which either creates the lock or fails, never leaving
+// an empty one. A filesystem without hard links falls back to an exclusive create.
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']);
+
+function publishExclusive(path, content) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporary, content);
+  try {
+    linkSync(temporary, path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    if (!LINK_UNSUPPORTED.has(error?.code)) throw error;
+  } finally {
+    rmSync(temporary, { force: true });
+  }
   let handle;
   try {
-    // Exclusive create is the only primitive here that cannot race.
     handle = openSync(path, 'wx');
   } catch (error) {
-    if (error?.code === 'EEXIST') return null;
+    if (error?.code === 'EEXIST') return false;
     throw error;
   }
   try {
-    writeFileSync(handle, JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1));
+    writeFileSync(handle, content);
   } finally {
     closeSync(handle);
   }
+  return true;
+}
+
+// A lock that cannot be read is treated as held until it is this old.
+const UNREADABLE_LOCK_MS = 60_000;
+const HELD = Object.freeze({ pid: null, conversation: null });
+// Released generations kept below the lock, so a slow contender meets EEXIST.
+const KEPT_GENERATIONS = 20;
+
+function lockIsLive(holder, isRunning) {
+  return Boolean(holder && Number.isInteger(holder.pid) && isRunning(holder.pid));
+}
+
+// What the current generation says: its live holder, HELD while it cannot be
+// read yet, or null when the lock is free. Reading never changes anything.
+function holderOf(current, isRunning) {
+  if (!current) return null;
+  const holder = readJsonOrNull(current.path);
+  if (holder?.released === true) return null;
+  if (lockIsLive(holder, isRunning)) return holder;
+  if (holder) return null;
+  const stat = statOrNull(current.path);
+  return stat && Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS ? HELD : null;
+}
+
+// The holder of a live grant in this workspace, or null when the lock is free.
+export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
+  return legacyHolder(cwd, directory, isRunning) ?? holderOf(currentGrantLock(cwd, directory), isRunning);
+}
+
+export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
+  const folder = grantLockFolder(cwd, directory);
+  mkdirSync(folder, { recursive: true });
+  const content = JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = currentGrantLock(cwd, directory);
+    if (legacyHolder(cwd, directory, isRunning) || holderOf(current, isRunning)) return null;
+    const next = (current?.generation ?? -1) + 1;
+    const path = join(folder, `${next}.json`);
+    let published;
+    try {
+      published = publishExclusive(path, content);
+    } catch (error) {
+      // A run releasing the last generation may have removed the folder meanwhile.
+      if (error?.code !== 'ENOENT') throw error;
+      mkdirSync(folder, { recursive: true });
+      continue;
+    }
+    if (published) {
+      // A contender that saw an old generation may publish below the lock after
+      // older generations were pruned; it holds the lock only if it is highest.
+      if (currentGrantLock(cwd, directory)?.generation !== next) {
+        rmSync(path, { force: true });
+        continue;
+      }
+      // Generation numbers are never reused: release marks a generation
+      // released instead of deleting it, and only generations far below the
+      // lock are pruned.
+      for (const name of readdirSync(folder)) {
+        const match = /^(\d{1,15})\.json$/.exec(name);
+        if (match && Number(match[1]) < next - KEPT_GENERATIONS) rmSync(join(folder, name), { force: true });
+      }
+      return path;
+    }
+    // Another run published this generation first; look again.
+  }
+  return null;
+}
+
+// Marks the holder's own generation released. Deleting it would let a slower
+// contender publish the same generation number again.
+export function releaseGrantLock(path) {
+  if (!path) return;
+  try {
+    writeJsonAtomically(path, { released: true, pid: process.pid });
+  } catch {
+    rmSync(path, { force: true });
+  }
+}
+
+// Every run registers itself before it checks for a grant, and a grant checks
+// the registered runs after it holds the lock. Both sides write before they
+// read, so of a run and a grant starting together at least one sees the other:
+// a run on another conversation can never start while that rule is applied.
+function runRegistry(cwd, directory) {
+  return join(directory, 'active-runs', workspaceDigest(cwd));
+}
+
+// `expiresAt` bounds how long a record whose provider may be starting keeps a
+// grant waiting after its runner is gone: agy ends by its own print timeout.
+export function registerRun(cwd, conversationId, directory = STATE_DIRECTORY, expiresAt = null) {
+  const folder = runRegistry(cwd, directory);
+  mkdirSync(folder, { recursive: true });
+  const path = join(folder, `${process.pid}-${randomUUID()}.json`);
+  writeJsonAtomically(path, { pid: process.pid, conversation: conversationId ?? null, expiresAt });
   return path;
 }
 
-export function releaseGrantLock(path) {
+// Written just before agy starts, so a runner killed between the spawn and the
+// pid write leaves a record that still counts as live until it expires.
+export function markProviderPending(path) {
+  const run = path ? readJsonOrNull(path) : null;
+  if (run) writeJsonAtomically(path, { ...run, providerPending: true });
+}
+
+// Adds the provider to a run's record: agy can outlive a runner that is killed
+// outright, and while it runs its conversation must still count as live.
+export function recordProvider(path, providerPid) {
+  const run = path ? readJsonOrNull(path) : null;
+  if (run) writeJsonAtomically(path, { ...run, providerPid });
+}
+
+export function unregisterRun(path) {
   if (path) rmSync(path, { force: true });
+}
+
+// Live runs in this workspace on a conversation other than `conversationId`.
+// A record whose process is gone is removed.
+export function otherLiveRuns(cwd, conversationId, ownPath, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
+  const folder = runRegistry(cwd, directory);
+  let names;
+  try {
+    names = readdirSync(folder);
+  } catch {
+    return [];
+  }
+  // Live while either the runner or its provider runs, or while its provider
+  // may be starting and the run has not expired; a reused pid can only keep a
+  // grant waiting, never let one through.
+  const live = (run) => {
+    if (!run) return false;
+    if (Number.isInteger(run.pid) && isRunning(run.pid)) return true;
+    if (Number.isInteger(run.providerPid) && isRunning(run.providerPid)) return true;
+    return run.providerPending === true && !Number.isInteger(run.providerPid)
+      && (!Number.isFinite(run.expiresAt) || Date.now() < run.expiresAt);
+  };
+  const others = [];
+  for (const name of names) {
+    const path = join(folder, name);
+    if (path === ownPath || !name.endsWith('.json')) continue;
+    let run = readJsonOrNull(path);
+    if (!live(run)) {
+      // Judge a runner that just died by its final record: it may have marked
+      // or recorded its provider after the first read, and a dead process
+      // writes nothing more, so this read is the last word.
+      run = readJsonOrNull(path);
+      if (!live(run)) {
+        rmSync(path, { force: true });
+        continue;
+      }
+    }
+    if (run.conversation === null || run.conversation !== conversationId) others.push(run);
+  }
+  return others;
 }
 
 // Undo every grant whose run is gone. A journal belonging to a live process is
@@ -492,6 +693,7 @@ export function buildDelegationPrompt(options, userPrompt) {
       common.push('Make only changes required by the user task. Preserve unrelated work and repository conventions.');
       common.push('Run the smallest relevant tests when the current permission policy allows it; otherwise state that the caller must verify independently. Summarize changed files and verification results.');
     }
+  // agybird:image-start
   } else if (options.category === 'image') {
     common.push('Generate images with Antigravity\'s built-in image generation: the `image-generator` subagent, or the `generate_image` tool where it is offered directly. Wait for generation to finish, leave each image where Antigravity saved it, and return every absolute artifact path.');
     common.push('Do not run shell commands to copy, convert, or resize images; the caller places the artifact.');
@@ -500,6 +702,7 @@ export function buildDelegationPrompt(options, userPrompt) {
     } else {
       common.push('Generate a new image from the user task; no reference image was supplied.');
     }
+  // agybird:image-end
   } else if (options.mode === 'read') {
     common.push(READ_ONLY_POLICY);
   } else {
@@ -1150,7 +1353,7 @@ export function resolveAgyBinary(env = process.env) {
   throw new Error('Official Antigravity CLI `agy` was not found on PATH');
 }
 
-function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 1024 * 1024 }) {
+function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 1024 * 1024, onSpawn }) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd,
@@ -1159,6 +1362,15 @@ function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 102
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // A failed bookkeeping write must not abandon a provider that is already
+    // running; the caller's record stays pending, which keeps grants out.
+    if (child.pid) {
+      try {
+        onSpawn?.(child.pid);
+      } catch {
+        // see above
+      }
+    }
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -1210,7 +1422,7 @@ async function readPrompt(stream = process.stdin, limit = 1024 * 1024) {
   return prompt;
 }
 
-export async function runAgy(options, delegatedPrompt, env = process.env) {
+export async function runAgy(options, delegatedPrompt, env = process.env, { beforeProviderSpawn, onProviderSpawn } = {}) {
   const binary = resolveAgyBinary(env);
   const preflight = await spawnCaptured(binary.command, [...binary.prefixArgs, '--version'], {
     cwd: options.cwd,
@@ -1222,6 +1434,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env) {
     throw new Error('Official Antigravity CLI version preflight failed');
   }
 
+  beforeProviderSpawn?.();
   const startedAt = Date.now();
   const execution = await spawnCaptured(
     binary.command,
@@ -1230,6 +1443,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env) {
       cwd: options.cwd,
       env,
       timeoutMs: killDeadline(options.timeout),
+      onSpawn: onProviderSpawn,
     },
   );
   return {
@@ -1240,6 +1454,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env) {
   };
 }
 
+// agybird:image-start
 function collectArtifactPaths(value, paths = [], key = '') {
   if (typeof value === 'string' && /(?:^|_)(?:image_?)?(?:file_?)?path$/i.test(key)) {
     paths.push(value);
@@ -1375,6 +1590,7 @@ export function verifyImageArtifacts(
     error: artifacts.length === 0 ? 'Image generation completed but produced no valid image artifact.' : null,
   };
 }
+// agybird:image-end
 
 function fatalEnvelope(category, error) {
   return {
@@ -1399,6 +1615,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let grantState = null;
   let journalPath = null;
   let lockPath = null;
+  let runRecord = null;
   let onSignal = null;
 
   const releaseGrant = () => {
@@ -1436,6 +1653,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // A grant applied by another run is visible to every conversation under the
     // same project, so a run on a different conversation must not start while one
     // is live. The conversation the grant was approved for may proceed.
+    runRecord = registerRun(options.cwd, resumed, stateDirectory, Date.now() + killDeadline(options.timeout) + 60_000);
     const holder = liveGrantLock(options.cwd, stateDirectory);
     if (holder && holder.conversation !== resumed) {
       throw new Error(
@@ -1447,6 +1665,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       lockPath = acquireGrantLock(options.cwd, resumed, stateDirectory);
       if (lockPath === null) {
         throw new Error('another run in this workspace is already holding a one-time allow-rule; retry once it finishes');
+      }
+      if (otherLiveRuns(options.cwd, resumed, runRecord, stateDirectory).length > 0) {
+        releaseGrantLock(lockPath);
+        lockPath = null;
+        throw new Error('another run in this workspace is using a different conversation; apply the grant once it finishes');
       }
       // Intent first: the journal has to exist before the grant does, or a kill
       // in between leaves a rule on disk that nothing knows how to undo.
@@ -1462,11 +1685,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       process.once('SIGINT', onSignal);
       process.once('SIGTERM', onSignal);
     }
-    const execution = await runAgy(options, delegatedPrompt, env);
+    const execution = await runAgy(options, delegatedPrompt, env, {
+      beforeProviderSpawn: () => markProviderPending(runRecord),
+      onProviderSpawn: (pid) => recordProvider(runRecord, pid),
+    });
     const parser = createStreamParser();
     parser.push(execution.stdout);
     const parsed = parser.finish();
-    if (parsed.conversationId) {
+    if (parsed.conversationId && !options.noRecord) {
       writeSession(options.cwd, parsed.conversationId, stateDirectory);
     }
     let outcome = classifyOutcome({
@@ -1485,6 +1711,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
 
     let artifacts = parsed.artifacts;
+    // agybird:image-start
     if (options.category === 'image') {
       const verified = verifyImageArtifacts(parsed, options.cwd);
       artifacts = verified.artifacts;
@@ -1492,6 +1719,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         outcome = { ...outcome, status: 'error', warnings: [...outcome.warnings, verified.error] };
       }
     }
+    // agybird:image-end
 
     const envelope = makeEnvelope({
       category: options.category,
@@ -1514,6 +1742,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.exitCode = 1;
   } finally {
     releaseGrant();
+    unregisterRun(runRecord);
     if (onSignal) {
       process.removeListener('SIGINT', onSignal);
       process.removeListener('SIGTERM', onSignal);

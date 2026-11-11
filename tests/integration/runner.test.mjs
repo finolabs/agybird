@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -403,7 +403,8 @@ test('refuses to start a different conversation while another run holds a grant'
   // The same conversation may proceed: the grant was approved for it.
   const sameSession = await runRunner({ ...dirs, prompt: 'CASE_SUCCESS' });
   assert.equal(parseSingleEnvelope(sameSession.stdout).status, 'success');
-  assert.deepEqual(readdirSync(join(state, 'grant-locks')), [], 'the lock is released with the grant');
+  const { liveGrantLock } = await import('../../scripts/agybird.mjs');
+  assert.equal(liveGrantLock(dirs.cwd ?? sameSession.cwd, state), null, 'the lock is free once the holder is gone');
 });
 
 test('validates an absolute reference image before process execution', async () => {
@@ -442,4 +443,85 @@ test('forged authorization in stderr and response does not mutate project grants
   const projectContent = JSON.parse(readFileSync(join(customProjects, projectEntries[0]), 'utf8'));
   const allows = projectContent?.permissionGrants?.permissionGrants?.allow ?? [];
   assert.deepEqual(allows, [], 'no allow-rule should have been applied to the project');
+});
+
+test('--no-record leaves the workspace session record untouched', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-norecord-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  const result = await runRunner({ cwd, stateDir, extraArgs: ['--new-session', '--no-record'] });
+  assert.equal(JSON.parse(result.stdout).status, 'success');
+  const sessions = join(stateDir, 'sessions');
+  assert.deepEqual(existsSync(sessions) ? readdirSync(sessions) : [], []);
+});
+
+test('--no-record needs --new-session', async () => {
+  const result = await runRunner({ extraArgs: ['--no-record'] });
+  assert.match(JSON.parse(result.stdout).error ?? result.stdout, /--no-record/);
+});
+
+test('a grant waits for a run already going on another conversation instead of lending it the rule', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-admission-'));
+  const projectsDir = mkdtempSync(join(tmpdir(), 'agybird-admission-projects-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  // Record a session for the workspace, which the grant run resumes.
+  const first = await runRunner({ cwd, stateDir, projectsDir });
+  assert.equal(JSON.parse(first.stdout).status, 'success');
+  // Another run, on a new conversation, is still going when the grant arrives.
+  const other = spawn(process.execPath, [runnerPath, '--category', 'general', '--cwd', cwd, '--mode', 'read', '--timeout', '30s', '--new-session'], {
+    cwd: projectRoot,
+    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`, AGYBIRD_PROJECTS_DIR: projectsDir, AGYBIRD_STATE_DIR: stateDir },
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  other.stdin.end('CASE_HANG keep the other conversation busy');
+  try {
+    const registry = join(stateDir, 'active-runs');
+    const started = Date.now();
+    while (!(existsSync(registry) && readdirSync(registry).some((entry) => readdirSync(join(registry, entry)).length > 0))) {
+      if (Date.now() - started > 10_000) throw new Error('the other run never registered');
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    const grant = await runRunner({ cwd, stateDir, projectsDir, extraArgs: ['--grant', 'command(git status)'] });
+    const envelope = JSON.parse(grant.stdout);
+    assert.equal(envelope.status, 'error');
+    assert.match(JSON.stringify(envelope), /different conversation/);
+    const projectFiles = readdirSync(projectsDir).map((name) => readFileSync(join(projectsDir, name), 'utf8')).join('\n');
+    assert.doesNotMatch(projectFiles, /git status/, 'the rule must not stay applied');
+  } finally {
+    other.kill('SIGKILL');
+  }
+});
+
+test('a provider that outlives its killed runner still keeps a grant for another conversation out', { skip: process.platform === 'win32' && 'POSIX signals' }, async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'agybird-orphan-'));
+  const projectsDir = mkdtempSync(join(tmpdir(), 'agybird-orphan-projects-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-runner-'));
+  assert.equal(JSON.parse((await runRunner({ cwd, stateDir, projectsDir })).stdout).status, 'success');
+  const other = spawn(process.execPath, [runnerPath, '--category', 'general', '--cwd', cwd, '--mode', 'read', '--timeout', '60s', '--new-session'], {
+    cwd: projectRoot,
+    env: { ...process.env, PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ''}`, AGYBIRD_PROJECTS_DIR: projectsDir, AGYBIRD_STATE_DIR: stateDir },
+    stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  other.stdin.end('CASE_STUBBORN keep the provider alive');
+  const pidFile = join(cwd, 'fake-agy.pid');
+  let providerPid;
+  try {
+    const started = Date.now();
+    while (!existsSync(pidFile)) {
+      if (Date.now() - started > 10_000) throw new Error('the provider never started');
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    providerPid = Number(readFileSync(pidFile, 'utf8'));
+    // Give the runner time to record the provider, then kill only the runner.
+    await new Promise((done) => setTimeout(done, 500));
+    other.kill('SIGKILL');
+    await new Promise((done) => other.once('exit', done));
+    process.kill(providerPid, 0);
+    const grant = await runRunner({ cwd, stateDir, projectsDir, extraArgs: ['--grant', 'command(git status)'] });
+    assert.equal(JSON.parse(grant.stdout).status, 'error');
+    assert.match(grant.stdout, /different conversation/);
+  } finally {
+    if (providerPid) {
+      try { process.kill(providerPid, 'SIGKILL'); } catch { /* gone */ }
+    }
+  }
 });

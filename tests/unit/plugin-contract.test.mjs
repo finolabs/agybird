@@ -103,8 +103,9 @@ test('the listing meets both directories\' naming, contrast, and content rules',
 // Codex 0.163 does not discover a SKILL.md at the plugin root, so its manifest points at a
 // thin adapter that defers to the root skill. The adapter must never become a second copy.
 test('the Codex skill adapter defers to the root skill', () => {
-  assert.equal(codexPlugin.skills, './.plugin-skills/');
-  const adapter = '.plugin-skills/agybird/SKILL.md';
+  // Codex also loads the companion command skills beside this adapter (.codex-skills/).
+  assert.equal(codexPlugin.skills, './.codex-skills/');
+  const adapter = '.codex-skills/agybird/SKILL.md';
   assert.equal(field(adapter, 'name'), 'agybird');
   assert.equal(field(adapter, 'description'), field('SKILL.md', 'description'));
   assert.match(read(adapter), /<plugin-root>\/SKILL\.md/);
@@ -175,7 +176,8 @@ test('the Antigravity manifest describes the same plugin as the Claude Code mani
   }
   assert.deepEqual(antigravityPlugin.author, plugin.author);
   assert.deepEqual(antigravityPlugin.keywords, plugin.keywords);
-  assert.equal(antigravityPlugin.skills, codexPlugin.skills);
+  // Antigravity keeps the single delegation skill: commands that call agy from agy have no use.
+  assert.equal(antigravityPlugin.skills, './.plugin-skills/');
   assertAsset(antigravityPlugin.logo);
 });
 
