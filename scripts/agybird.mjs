@@ -998,7 +998,9 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
 
   const denied = PERMISSION_DENIAL.test(permissionText) || (parsed.deniedActions ?? []).length > 0;
   // Read from the result, not stderr, so diagnostic text cannot soften a real failure.
-  const printTimedOut = parsed.finishedReason === 'print_timeout';
+  // agy 1.4.11 to 1.4.x set it with exit 0, and 1.5.0+ with exit 3; any other exit is a failure.
+  const printTimedOut = parsed.finishedReason === 'print_timeout'
+    && (exitCode === 0 || exitCode === AGENT_FAILURE_EXIT_CODE);
   // A denial kept from earlier in the turn must not hide that the turn then failed.
   if (exitCode === AGENT_FAILURE_EXIT_CODE && !printTimedOut) {
     warnings.push('agy exited with code 3: the agent or model API failed mid-turn; any response is partial.');

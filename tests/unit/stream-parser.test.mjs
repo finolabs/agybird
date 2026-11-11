@@ -399,6 +399,12 @@ test('keeps a denial visible when the print timeout also expired', () => {
   assert.equal(outcome.permissionRequests.length, 1);
 });
 
+test('keeps any other nonzero exit an error even after a timeout result', () => {
+  const parsed = parseFixture('agy-1.5.5-print-timeout.ndjson');
+  const outcome = classifyOutcome({ parsed, exitCode: 1, stderr: PRINT_TIMEOUT_STDERR });
+  assert.equal(outcome.status, 'error');
+});
+
 test('does not let stderr text turn an exit 3 failure into a timeout', () => {
   const parser = createStreamParser();
   parser.push(`${JSON.stringify({ event: 'result', result: { status: 'ERROR', finished_reason: 'error' } })}\n`);
