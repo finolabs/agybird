@@ -1,5 +1,5 @@
 # Agybird companion: commands, background jobs and a review gate
-Status: in progress; plan approved by Fio on 2026-11-11
+Status: implemented; plan approved by Fio on 2026-11-11, merged in PR 38, releasing as 0.4.2
 
 Make Agybird a full companion for Antigravity CLI (`agy`) inside Claude Code and Codex, on par with OpenAI's `codex` plugin for Claude Code (1.0.6, Apache-2.0, read for its surface only; no code copied), and better where Agybird already is: quota-aware model choice across the Gemini and the Claude and GPT pools, the permission round trip, structured output and image work. Then prepare a submission to Anthropic's plugin directory.
 
@@ -18,9 +18,12 @@ Settled from the evidence, no owner decision needed:
 - D6 Codex runs plugin hooks only for manually installed plugins the user trusts. Its hooks receive `PLUGIN_ROOT` and, for compatibility, `CLAUDE_PLUGIN_ROOT`, and read the same Stop input and `{"decision":"block","reason":...}` output (Codex hooks docs, read 2026-11-11), so both hosts share `hooks/hooks.json`. Revised 2026-11-11 from the first plan of a separate Codex hooks file.
 - D7 `agy --settings` replaces the global allow list (verified on `agy` 1.5.5), so grants keep using the project file, journal and lock.
 
+Settled later by Fio:
+
+- O1 Version: `0.4.2`, a phase 0 PATCH (2026-11-11).
+
 Open, owned by Fio:
 
-- O1 Version. `fnl-versioning` makes a compatible feature release in phase 0 a PATCH (`0.4.2`); `1.0.0` needs Fio's decision. Unblocks: release step.
 - O2 Directory review needs a test account (§3D) and proof that the submitter controls connected endpoints (§3F); `agy` needs the reviewer's own Google plan and talks to Google, so the listing may be refused. Owner: Fio at submission time. This work prepares the strongest case and does not block on it.
 
 ## Goal and acceptance
