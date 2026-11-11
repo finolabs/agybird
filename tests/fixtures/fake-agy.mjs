@@ -14,6 +14,10 @@ const promptIndex = process.argv.indexOf('-p');
 const prompt = promptIndex === -1 ? '' : process.argv[promptIndex + 1] ?? '';
 
 if (process.argv[2] === 'models') {
+  if (process.env.FAKE_AGY_MODELS !== undefined) {
+    process.stdout.write(process.env.FAKE_AGY_MODELS);
+    process.exit(0);
+  }
   process.stdout.write([
     'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
     'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',

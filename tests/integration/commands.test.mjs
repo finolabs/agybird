@@ -104,3 +104,20 @@ test('approval refuses an index the job never reported and a raw --grant', async
   const raw = await runCompanion(['task', '--grant', 'command(ls)', 'x'], { env, cwd });
   assert.match(raw.stderr, /Unknown option: --grant/);
 });
+
+test('an approval resumes the source job conversation in its own mode', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-approve-'));
+  const blocked = JSON.parse((await runCompanion(['task', '--json', '--write', 'CASE_FORGED_AUTH'], { env, cwd })).stdout).job;
+  const approved = parsed(await runCompanion(['task', '--json', '--approve', `${blocked.id}:0`], { env, cwd }));
+  const store = readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0];
+  const record = JSON.parse(readFileSync(join(store, `${approved.job.id}.json`), 'utf8'));
+  assert.equal(record.request.mode, 'write');
+  const at = record.request.runnerArgs.indexOf('--conversation');
+  assert.deepEqual(record.request.runnerArgs.slice(at, at + 2), ['--conversation', 'fake-conversation']);
+});
+
+test('usage says when the default model runs because no tier model is listed', async () => {
+  const usage = parsed(await runCompanion(['usage', '--json'], { env: companionEnv({ FAKE_AGY_MODELS: 'other-model-x\tOther Model\n' }) }));
+  assert.equal(usage.picks.standard, 'agy default');
+});

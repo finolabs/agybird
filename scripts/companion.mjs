@@ -473,16 +473,25 @@ const GRANTED_PROMPT = 'The permission you requested has been granted. Retry the
 // from the structured permission_requests of a stored job, never from text a
 // caller or the provider wrote.
 export function approvedRules(directory, approvals = []) {
-  return approvals.map((approval) => {
+  const rules = [];
+  let source = null;
+  for (const approval of approvals) {
     const match = APPROVAL.exec(approval);
-    if (!match) throw new Error(`Invalid approval ${approval}; use <job-id>:<request number> from /agybird:status or the permissions command.`);
+    if (!match) throw new Error(`Invalid approval ${approval}; use <job-id>:<request number> from the permissions command.`);
     const [, id, index] = match;
-    const envelope = readJob(directory, id) ? readStoredResult(directory, id) : null;
+    const job = readJob(directory, id);
+    const envelope = job ? readStoredResult(directory, id) : null;
     const request = envelope?.permission_requests?.[Number(index)];
     if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
     if (!request.grantable || !request.suggested_rule) throw new Error(`Request ${index} of ${id} cannot be granted by a rule; agree a narrower rule with the user and grant it outside Agybird.`);
-    return request.suggested_rule;
-  });
+    // The grant belongs to the conversation that asked for it, and to that run's mode.
+    const conversation = envelope.conversation_id;
+    if (!conversation) throw new Error(`Job ${id} has no conversation to resume, so its request cannot be granted.`);
+    if (source && source.conversation !== conversation) throw new Error('These approvals come from different conversations; approve one job at a time.');
+    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: job.request?.category === 'general' ? 'general' : 'code', model: job.model ?? null };
+    rules.push(request.suggested_rule);
+  }
+  return source ? { rules, ...source } : { rules };
 }
 
 async function readStdin() {
@@ -499,18 +508,22 @@ async function commandTask(argv, env) {
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
   if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
   if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
-  const category = options.category ?? 'code';
-  if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
   const cwd = options.cwd ?? process.cwd();
-  const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+  const approval = approvedRules(storeFor(cwd, env), options.approve);
+  if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
+  const category = approval.category ?? options.category ?? 'code';
+  if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+  // A retry keeps the model of the conversation it resumes.
+  const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model ?? approval.model ?? undefined });
   if (note) process.stderr.write(`agybird: ${note}\n`);
   const runnerArgs = [];
   if (options.fresh) runnerArgs.push('--new-session');
   if (model) runnerArgs.push('--model', model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
-  for (const rule of approvedRules(storeFor(cwd, env), options.approve)) runnerArgs.push('--grant', rule);
+  if (approval.conversation) runnerArgs.push('--conversation', approval.conversation);
+  for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
-  const request = { category, mode: options.write ? 'write' : 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
+  const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
   const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
@@ -610,7 +623,11 @@ async function commandUsage(argv, env) {
   const { options } = parseFlags(argv, { ...COMMON, '--refresh': 'flag' });
   const cwd = options.cwd ?? process.cwd();
   const quota = readQuota({ cwd, env, cacheFile: quotaCache(env), refresh: options.refresh });
-  const picks = Object.fromEntries(Object.keys(TIERS).map((tier) => [tier, chooseModel({ tier, models: quota.models, limits: quota.limits })?.slug ?? null]));
+  const picks = Object.fromEntries(Object.keys(TIERS).map((tier) => {
+    // Mirrors pickModel: with no known model of the tier listed, agy's default runs.
+    if (!TIERS[tier].some((slug) => quota.models.some((entry) => entry.slug === slug))) return [tier, 'agy default'];
+    return [tier, chooseModel({ tier, models: quota.models, limits: quota.limits })?.slug ?? null];
+  }));
   const rows = quota.limits.map((limit) => `| ${limit.label} | ${limit.window} | ${limit.remaining}% | ${localTime(limit.resetAt)} |`);
   const text = [
     '| Pool | Limit | Remaining | Resets (local time) |',
