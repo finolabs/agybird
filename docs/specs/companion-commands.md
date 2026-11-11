@@ -1,0 +1,92 @@
+# Agybird companion: commands, background jobs and a review gate
+Status: accepted; plan approved by Fio on 2026-11-11
+
+Make Agybird a full companion for Antigravity CLI (`agy`) inside Claude Code and Codex, on par with OpenAI's `codex` plugin for Claude Code (1.0.6, Apache-2.0, read for its surface only; no code copied), and better where Agybird already is: quota-aware model choice across the Gemini and the Claude and GPT pools, the permission round trip, structured output and image work. Then prepare a submission to Anthropic's plugin directory.
+
+## Decisions
+
+Settled with Fio on 2026-11-11:
+
+- D1 Scope: parity with `codex` including the opt-in Stop review gate: review, adversarial review, rescue (task delegation), status, result, cancel, setup, plus `usage` and `image`. Session transfer stays out of this record.
+- D2 Hosts: Claude Code and Codex. Antigravity keeps today's single skill, since delegating from `agy` to `agy` has no use.
+- D3 Listing: Claude drafts the directory submission; Fio submits it from his own claude.ai account in the developer portal.
+- D4 Images: the directory policy (§4B) excludes AI image generation, so the repository gains a directory edition in its own plugin folder without any image capability. The finolabs catalog keeps the full plugin. A CI check keeps the shared files of both editions identical.
+
+Settled from the evidence, no owner decision needed:
+
+- D5 Codex plugins have no slash commands or custom subagents (Codex "build plugins" docs, read 2026-11-11), so each command is a Codex skill. Claude Code gets `commands/` and an agent. Both call one shared companion script.
+- D6 Codex runs plugin hooks only for manually installed plugins the user trusts, and they receive `PLUGIN_ROOT`, not `CLAUDE_PLUGIN_ROOT`. The Codex manifest points `extensions["com.openai"].hooks` at a Codex hooks file instead of sharing `hooks/hooks.json`.
+- D7 `agy --settings` replaces the global allow list (verified on `agy` 1.5.5), so grants keep using the project file, journal and lock.
+
+Open, owned by Fio:
+
+- O1 Version. `fnl-versioning` makes a compatible feature release in phase 0 a PATCH (`0.4.2`); `1.0.0` needs Fio's decision. Unblocks: release step.
+- O2 Directory review needs a test account (§3D) and proof that the submitter controls connected endpoints (§3F); `agy` needs the reviewer's own Google plan and talks to Google, so the listing may be refused. Owner: Fio at submission time. This work prepares the strongest case and does not block on it.
+
+## Goal and acceptance
+
+- [ ] AC1 `/agybird:review [--base <ref>] [--scope auto|working-tree|branch] [--wait|--background]` runs a read-only `agy` review of the chosen diff and prints findings with severity, file and line from a JSON schema; it changes no file (git state identical before and after).
+- [ ] AC2 `/agybird:adversarial-review` runs the same scope with a prompt that challenges the design and assumptions, in the same output format.
+- [ ] AC3 `/agybird:rescue <task>` hands a task to `agy` through an `agybird-rescue` subagent in Claude Code and an `agybird-rescue` skill in Codex, read mode unless the task asks for changes, resuming the workspace conversation unless `--fresh`; `needs_permission` is shown to the user and nothing is granted without their answer.
+- [ ] AC4 `--background` on review, adversarial review and rescue returns a job id at once; `/agybird:status [job]`, `/agybird:result [job]` and `/agybird:cancel [job]` list, show and stop jobs of the current workspace, and a cancelled or crashed job ends `cancelled` or `failed`, never `running` forever.
+- [ ] AC5 `/agybird:setup` reports `agy` presence and version, sign-in, the quota pools and the review gate state, and installs nothing; `--enable-review-gate` and `--disable-review-gate` switch the gate for the current workspace only.
+- [ ] AC6 With the gate on, the Stop hook reviews the turn's working-tree changes; it blocks the stop with the findings when one is MEDIUM or worse, lets it pass when there are none or no changes, never blocks twice in a row (`stop_hook_active`), and fails open with a notice when `agy` is missing, out of quota or past the time limit. With the gate off it starts no `agy` process.
+- [ ] AC7 `/agybird:usage` shows each pool's five-hour and weekly remaining share and reset time in local time, and the model each tier would use now; review and rescue pick a model from it when the user names none, never moving up a tier silently.
+- [ ] AC8 `/agybird:image` generates or edits an image and verifies the artifact as the skill does today (full edition only).
+- [ ] AC9 The same commands work as Codex skills (`$agybird-review` and the rest) from `.codex-plugin`, and the Codex hook file runs the same gate.
+- [ ] AC10 The directory edition passes `claude plugin validate --profile directory --strict`, contains no image capability, no `.DS_Store`, no lockfile install, and every file it runs inside its folder; CI fails when its shared files differ from the full edition.
+- [ ] AC11 README, PRIVACY, threat model and in-plugin help say what each command and the gate send to Google through `agy`, what is stored and where, and that Agybird is unofficial; directory listing fields (`icon`, `documentationUrl`, `supportUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) point at files in the public repository.
+- [ ] AC12 The runner's existing envelope contract and all existing tests are unchanged.
+
+## Plan
+
+Architecture:
+
+- `scripts/agybird.mjs` stays the only process that runs `agy` for work and keeps its envelope. A new `scripts/companion.mjs` is the command layer: argument parsing, git scope, prompt and schema selection, model choice from quota, job store, rendering. It calls the runner as a child process with stdin, never a shell.
+- Job store: one JSON file per job plus a log under `${CLAUDE_PLUGIN_DATA}` or `${PLUGIN_DATA}` when set, else `~/.agybird/jobs/`, keyed by workspace. A background job is a detached `companion.mjs run-job <id>`; status checks the recorded pid and start time, so a dead process becomes `failed`. Cancel kills the job's process tree (`taskkill /T /F` on Windows). A job that needs a grant stops at `needs_permission`; grants run in the foreground only, as today.
+- Review: scope from git (working tree, or `--base` branch diff, `auto` picks); diff and file list bounded in size; `--json-schema` with a findings schema; read mode; output rendered as Markdown. The adversarial prompt is a separate template.
+- Gate: `hooks/hooks.json` (Claude Code) and `hooks/codex-hooks.json` (Codex) call `companion.mjs hook stop`. Per-workspace config holds the on/off switch; default off.
+- Hosts: Claude Code `commands/*.md` and `agents/agybird-rescue.md` call the companion; the root `SKILL.md` stays the general delegation skill. Codex skills move to `.codex-skills/` (the adapter plus one skill per command) and `.codex-plugin/plugin.json` points there; `.antigravity-plugin` keeps `.plugin-skills/agybird` only.
+- Directory edition: `directory/agybird/` with its own `.claude-plugin/plugin.json`, README, LICENSE, commands, agent, hooks and a copy of the scripts without image handling; `scripts/check.mjs` compares the shared files.
+
+Seams and consumers:
+
+- Runner `scripts/agybird.mjs`: consumers are the root skill, the companion and the tests; changes limited to what the companion needs (none planned).
+- Manifests: release workflow version check, plugin-contract and install-layout tests, the finolabs catalog check (description and keywords must match all three manifests).
+- `.plugin-skills/` and `.codex-plugin`: Codex installs, install-layout test, README install section, migration notes.
+
+Order: US1 job core, US2 review, US3 rescue/setup/usage/image, US4 gate, US5 Codex skills, US6 directory edition and docs, US7 release and submission pack. Each story ends with its targeted tests and the review gate before the next starts.
+
+Risks: Stop hook spends quota on every gated stop (default off, lighter model, time limit); background processes outliving sessions (pid and start-time checks, cancel); the directory may refuse the listing (O2); Codex hook trust is manual.
+
+## Tasks
+
+### US1
+- [ ] T1 Job store, ids, pid liveness and cancel, with unit tests on the fake `agy`
+- [ ] T2 `status`, `result`, `cancel` commands and rendering
+
+### US2
+- [ ] T3 Git scope resolution and bounded diff collection
+- [ ] T4 Review schema, prompts and `review` / `adversarial-review` commands, foreground and background
+
+### US3
+- [ ] T5 `rescue` command, `agybird-rescue` agent and resume or fresh session
+- [ ] T6 `setup` and `usage` with quota-based model choice
+- [ ] T7 `image` command over the existing image category
+
+### US4
+- [ ] T8 Stop hook gate with loop guard, fail-open and per-workspace switch
+
+### US5
+- [ ] T9 Codex skills folder, manifest hooks override, install-layout tests
+
+### US6
+- [ ] T10 Directory edition folder, listing fields, parity check in CI
+- [ ] T11 README, PRIVACY, threat model and help updated against what ships
+
+### US7
+- [ ] T12 Release per O1, catalog pin, directory submission pack for Fio
+
+## Evidence
+
+Pending.
