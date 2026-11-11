@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.1 - 2026-11-11
+
 Checked against `agy` 1.5.5: the timeout format was read from a live run; the tests use a recorded stream.
 
 - An expired `--timeout` is reported as `partial` again. Since `agy` 1.5.0 the CLI answers it with exit 3 and an `ERROR` result, which the runner reported as `error` and explained as an agent or model failure. The runner now reads `finished_reason: print_timeout` from the terminal result; other exit 3 failures stay `error`.
