@@ -16,5 +16,6 @@
   "homepage": "https://github.com/finolabs/agybird",
   "repository": "https://github.com/finolabs/agybird",
   "license": "MIT",
-  "keywords": ["antigravity", "agy", "gemini", "delegation", "code-review", "agent-skills"]
+  "keywords": ["antigravity", "agy", "gemini", "delegation", "code-review", "agent-skills"],
+  "agents": ["./claude-agents/agybird-rescue.md"]
 }
