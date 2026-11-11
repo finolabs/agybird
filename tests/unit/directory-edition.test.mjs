@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { staleFiles, stripImageRegions } from '../../scripts/build-directory-edition.mjs';
+import { sameContent, staleFiles, stripImageRegions } from '../../scripts/build-directory-edition.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const edition = join(root, 'directory', 'agybird');
@@ -51,4 +51,9 @@ test('image regions must be balanced', () => {
   assert.throws(() => stripImageRegions('// agybird:image-start\nx\n'), /left open/);
   assert.throws(() => stripImageRegions('x\n// agybird:image-end\n'), /without a start/);
   assert.equal(stripImageRegions('a\n  // agybird:image-start\nb\n  // agybird:image-end\nc'), 'a\nc');
+});
+
+test('line endings do not make an unchanged file read as stale', () => {
+  assert.equal(sameContent('a\r\nb\r\n', 'a\nb\n'), true);
+  assert.equal(sameContent('a\nb\n', 'a\nc\n'), false);
 });

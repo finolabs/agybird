@@ -7,8 +7,7 @@
 //   node scripts/build-directory-edition.mjs          rebuild the folder
 //   node scripts/build-directory-edition.mjs --check  fail when it is out of date
 
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -114,11 +113,14 @@ function listFiles(directory, base = directory) {
   });
 }
 
+// Equal apart from line endings, so a checkout with CRLF conversion is not stale.
+export function sameContent(a, b) {
+  return a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n');
+}
+
 // Differences between what the sources build and what is committed.
 export function staleFiles() {
   const expected = editionFiles();
-  const scratch = mkdtempSync(join(tmpdir(), 'agybird-edition-'));
-  write(scratch, expected);
   let present = [];
   try {
     present = listFiles(OUTPUT);
@@ -127,13 +129,12 @@ export function staleFiles() {
   }
   const stale = [...expected.keys()].filter((path) => {
     try {
-      return readFileSync(join(OUTPUT, path), 'utf8') !== expected.get(path);
+      return !sameContent(readFileSync(join(OUTPUT, path), 'utf8'), expected.get(path));
     } catch {
       return true;
     }
   });
   stale.push(...present.filter((path) => !expected.has(path)));
-  rmSync(scratch, { recursive: true, force: true });
   return stale;
 }
 
