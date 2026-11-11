@@ -66,8 +66,8 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 - [x] T2 `status`, `result`, `cancel` commands and rendering
 
 ### US2
-- [ ] T3 Git scope resolution and bounded diff collection
-- [ ] T4 Review schema, prompts and `review` / `adversarial-review` commands, foreground and background
+- [x] T3 Git scope resolution and bounded diff collection
+- [x] T4 Review schema, prompts and `review` / `adversarial-review` commands, foreground and background
 
 ### US3
 - [ ] T5 `rescue` command, `agybird-rescue` agent and resume or fresh session

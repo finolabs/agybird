@@ -19,7 +19,27 @@ function emit(event) {
 
 emit({ type: 'init', conversation_id: 'fake-conversation' });
 
-if (prompt.includes('CASE_STUBBORN')) {
+if (prompt.includes('CASE_REVIEW') && process.argv.includes('--json-schema')) {
+  // Answers a review with structured output and says whether the diff arrived.
+  emit({
+    type: 'result',
+    status: 'success',
+    response: '',
+    structured_output: {
+      verdict: 'needs-attention',
+      summary: prompt.includes('Challenge the approach') ? 'adversarial pass' : 'standard pass',
+      findings: [{
+        severity: 'medium',
+        title: 'Saw the diff',
+        file: 'a.txt',
+        line_start: 2,
+        body: prompt.includes('<agybird_review_diff>') ? 'diff delivered' : 'no diff',
+        recommendation: 'Check it.',
+      }],
+      next_steps: [],
+    },
+  });
+} else if (prompt.includes('CASE_STUBBORN')) {
   // Ignores SIGTERM and records its pid, so a test can prove cancel still ends it.
   process.on('SIGTERM', () => {});
   writeFileSync(join(process.cwd(), 'fake-agy.pid'), String(process.pid));

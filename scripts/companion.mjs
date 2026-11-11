@@ -27,10 +27,13 @@ import {
   writeJob,
 } from './lib/jobs.mjs';
 import { renderJobTable, renderOutcome } from './lib/render.mjs';
+import { collectScope } from './lib/scope.mjs';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 const COMPANION_PATH = fileURLToPath(import.meta.url);
+const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
+export const REVIEW_SCHEMA_PATH = join(PLUGIN_ROOT, 'schemas', 'review-output.schema.json');
 // How often a worker looks for a cancel, and how long cancel waits for it.
 const CANCEL_POLL_MS = 1_000;
 const CANCEL_WAIT_MS = 15_000;
@@ -441,6 +444,59 @@ async function commandTask(argv, env) {
   output(options, { job: result.job, envelope: result.envelope }, rendered);
 }
 
+function reviewTarget(scope) {
+  const base = scope.kind === 'branch' ? `the branch against ${scope.base}` : 'the uncommitted working-tree changes';
+  return scope.truncated ? `${base} (the diff was cut to fit; read the listed files for the rest)` : base;
+}
+
+// Builds the runner request for a review. Reviews run read-only, in a fresh
+// conversation kept apart from the workspace task session, with a findings schema.
+export function buildReviewRequest({ kind, scope, stateDir, options, focus = '' }) {
+  const template = readFileSync(join(PLUGIN_ROOT, 'prompts', `${kind === 'adversarial-review' ? 'adversarial-review' : 'review'}.md`), 'utf8');
+  const diff = scope.diff.replaceAll('</agybird_review_diff', '<\\/agybird_review_diff');
+  const prompt = template
+    .replace('{{TARGET}}', () => reviewTarget(scope))
+    .replace('{{FOCUS}}', () => (focus ? `Focus the user asked for: ${focus}\n` : ''))
+    .replace('{{FILES}}', () => scope.files.map((file) => `- ${file}`).join('\n') || '- (none listed)')
+    .replace('{{DIFF}}', () => diff);
+  const runnerArgs = ['--new-session', '--json-schema', REVIEW_SCHEMA_PATH];
+  if (options.model) runnerArgs.push('--model', options.model);
+  if (options.effort) runnerArgs.push('--effort', options.effort);
+  return { category: 'code', mode: 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt, stateDir };
+}
+
+const REVIEW_FLAGS = {
+  ...COMMON,
+  '--background': 'flag',
+  '--base': 'value',
+  '--scope': 'value',
+  '--model': 'value',
+  '--effort': 'value',
+  '--timeout': 'value',
+};
+
+function reviewCommand(kind) {
+  return async (argv, env) => {
+    const { options, positional } = parseFlags(argv, REVIEW_FLAGS);
+    const cwd = options.cwd ?? process.cwd();
+    const scope = collectScope({ cwd, scope: options.scope ?? 'auto', base: options.base });
+    if (!scope.diff) {
+      output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
+      return;
+    }
+    const stateDir = join(workspaceDirectory(workspaceRoot(cwd), env), 'review-state');
+    const request = buildReviewRequest({ kind, scope, stateDir, options, focus: positional.join(' ').trim() });
+    const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
+    const result = await launch({ cwd, kind, title, request, background: options.background, env });
+    if (options.background) {
+      output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
+      return;
+    }
+    const file = renderedPath(result.directory, result.job.id);
+    output(options, { job: result.job, envelope: result.envelope }, existsSync(file) ? readFileSync(file, 'utf8') : `Job ${result.job.id} failed: ${result.job.error}`);
+  };
+}
+
 async function commandRunJob(argv, env) {
   const { options, positional } = parseFlags(argv, { '--store': 'value' });
   const directory = resolve(options.store);
@@ -454,6 +510,8 @@ export const COMMANDS = {
   result: commandResult,
   cancel: commandCancel,
   task: commandTask,
+  review: reviewCommand('review'),
+  'adversarial-review': reviewCommand('adversarial-review'),
   'run-job': commandRunJob,
 };
 
