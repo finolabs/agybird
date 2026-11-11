@@ -467,16 +467,27 @@ const TASK_FLAGS = {
   '--grant-scope': 'value',
 };
 
+// The categories a job can resume in after an approval.
+const APPROVABLE_CATEGORIES = [
+  'code',
+  'general',
+  // agybird:image-start
+  'image',
+  // agybird:image-end
+];
+
 const APPROVAL = /^(job-[0-9a-z]+-[0-9a-f]{6}):(\d{1,3})$/;
 const GRANTED_PROMPT = 'The permission you requested has been granted. Retry the denied action and finish the task.';
 
 // Turns an approval of a reported request into its rule. The rule always comes
 // from the structured permission_requests of a stored job, never from text a
 // caller or the provider wrote.
+// agybird:image-start
 function referencesOf(request) {
   const args = Array.isArray(request?.runnerArgs) ? request.runnerArgs : [];
   return args.flatMap((value, index) => (value === '--reference' && typeof args[index + 1] === 'string' ? [args[index + 1]] : []));
 }
+// agybird:image-end
 
 export function approvedRules(directory, approvals = []) {
   const rules = [];
@@ -494,7 +505,10 @@ export function approvedRules(directory, approvals = []) {
     const conversation = envelope.conversation_id;
     if (!conversation) throw new Error(`Job ${id} has no conversation to resume, so its request cannot be granted.`);
     if (source && source.conversation !== conversation) throw new Error('These approvals come from different conversations; approve one job at a time.');
-    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: ['code', 'general', 'image'].includes(job.request?.category) ? job.request.category : 'code', model: job.model ?? null, references: referencesOf(job.request) };
+    source ??= { conversation, mode: job.request?.mode === 'write' ? 'write' : 'read', category: APPROVABLE_CATEGORIES.includes(job.request?.category) ? job.request.category : 'code', model: job.model ?? null };
+    // agybird:image-start
+    source.references ??= referencesOf(job.request);
+    // agybird:image-end
     rules.push(request.suggested_rule);
   }
   return source ? { rules, ...source } : { rules };
@@ -517,22 +531,30 @@ async function commandTask(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   const approval = approvedRules(storeFor(cwd, env), options.approve);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
-  // An image job resumes as image, so the runner still verifies the artifact.
   const category = approval.category ?? options.category ?? 'code';
-  if (!['code', 'general'].includes(category) && !(approving && category === 'image')) throw new Error('--category must be code or general');
-  // A retry keeps the model of the conversation it resumes.
+  const allowedCategories = ['code', 'general'];
+  // agybird:image-start
+  // An image job resumes as image, so the runner still verifies the artifact.
+  if (approving) allowedCategories.push('image');
+  // agybird:image-end
+  if (!allowedCategories.includes(category)) throw new Error('--category must be code or general');
+  let picked = null;
+  // agybird:image-start
   // Image work picks its own model through the image-generator subagent.
-  const { model, note } = category === 'image'
-    ? { model: undefined, note: null }
-    : pickModel({ cwd, env, tier: 'standard', model: options.model ?? approval.model ?? undefined });
+  if (category === 'image') picked = { model: undefined, note: null };
+  // agybird:image-end
+  // A retry keeps the model of the conversation it resumes.
+  const { model, note } = picked ?? pickModel({ cwd, env, tier: 'standard', model: options.model ?? approval.model ?? undefined });
   if (note) process.stderr.write(`agybird: ${note}\n`);
   const runnerArgs = [];
   if (options.fresh) runnerArgs.push('--new-session');
   if (model) runnerArgs.push('--model', model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
   if (approval.conversation) runnerArgs.push('--conversation', approval.conversation);
+  // agybird:image-start
   // An image edit resumes with the same reference images.
   if (category === 'image') for (const reference of approval.references ?? []) runnerArgs.push('--reference', reference);
+  // agybird:image-end
   for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
@@ -700,6 +722,7 @@ async function commandSetup(argv, env) {
   output(options, report, text);
 }
 
+// agybird:image-start
 async function commandImage(argv, env) {
   const { options, positional } = parseFlags(argv, { ...COMMON, '--reference': 'list', '--background': 'flag', '--timeout': 'value' });
   const text = positional.join(' ').trim() || (await readStdin()).trim();
@@ -716,6 +739,8 @@ async function commandImage(argv, env) {
   const file = renderedPath(result.directory, result.job.id);
   output(options, { job: result.job, envelope: result.envelope }, existsSync(file) ? readFileSync(file, 'utf8') : `Job ${result.job.id} failed: ${result.job.error}`);
 }
+
+// agybird:image-end
 
 const BLOCKING = new Set(['critical', 'high', 'medium']);
 const GATE_DEADLINE_MS = 12 * 60_000;
@@ -837,7 +862,9 @@ export const COMMANDS = {
   permissions: commandPermissions,
   hook: commandHook,
   setup: commandSetup,
+  // agybird:image-start
   image: commandImage,
+  // agybird:image-end
   review: reviewCommand('review'),
   'adversarial-review': reviewCommand('adversarial-review'),
   'run-job': commandRunJob,

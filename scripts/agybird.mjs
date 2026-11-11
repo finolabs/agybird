@@ -25,7 +25,9 @@ const VALUE_OPTIONS = new Map([
   ['--category', 'category'],
   ['--cwd', 'cwd'],
   ['--mode', 'mode'],
+  // agybird:image-start
   ['--reference', 'references'],
+  // agybird:image-end
   ['--json-schema', 'jsonSchema'],
   ['--conversation', 'conversation'],
   ['--grant', 'grants'],
@@ -45,7 +47,9 @@ const FLAG_OPTIONS = new Map([
 export function parseArgs(argv) {
   const options = {
     mode: 'read',
+    // agybird:image-start
     references: [],
+    // agybird:image-end
     grants: [],
     grantScope: 'once',
     sandbox: false,
@@ -98,7 +102,14 @@ function statOrNull(path) {
 }
 
 export function validateRequest(options) {
-  if (!['code', 'image', 'general'].includes(options.category)) {
+  const categories = [
+    'code',
+    // agybird:image-start
+    'image',
+    // agybird:image-end
+    'general',
+  ];
+  if (!categories.includes(options.category)) {
     throw new Error(`Invalid category: ${options.category}`);
   }
   if (!['read', 'write'].includes(options.mode)) {
@@ -116,6 +127,7 @@ export function validateRequest(options) {
     throw new Error('working directory does not exist or is not a directory');
   }
 
+  // agybird:image-start
   if (options.references.length > 0 && options.category !== 'image') {
     throw new Error('--reference is only valid with category image');
   }
@@ -131,6 +143,7 @@ export function validateRequest(options) {
       throw new Error(`reference image is not a regular file: ${reference}`);
     }
   }
+  // agybird:image-end
 
   if (!['once', 'remember'].includes(options.grantScope)) {
     throw new Error(`Invalid grant scope: ${options.grantScope}; use once or remember`);
@@ -498,6 +511,7 @@ export function buildDelegationPrompt(options, userPrompt) {
       common.push('Make only changes required by the user task. Preserve unrelated work and repository conventions.');
       common.push('Run the smallest relevant tests when the current permission policy allows it; otherwise state that the caller must verify independently. Summarize changed files and verification results.');
     }
+  // agybird:image-start
   } else if (options.category === 'image') {
     common.push('Generate images with Antigravity\'s built-in image generation: the `image-generator` subagent, or the `generate_image` tool where it is offered directly. Wait for generation to finish, leave each image where Antigravity saved it, and return every absolute artifact path.');
     common.push('Do not run shell commands to copy, convert, or resize images; the caller places the artifact.');
@@ -506,6 +520,7 @@ export function buildDelegationPrompt(options, userPrompt) {
     } else {
       common.push('Generate a new image from the user task; no reference image was supplied.');
     }
+  // agybird:image-end
   } else if (options.mode === 'read') {
     common.push(READ_ONLY_POLICY);
   } else {
@@ -1246,6 +1261,7 @@ export async function runAgy(options, delegatedPrompt, env = process.env) {
   };
 }
 
+// agybird:image-start
 function collectArtifactPaths(value, paths = [], key = '') {
   if (typeof value === 'string' && /(?:^|_)(?:image_?)?(?:file_?)?path$/i.test(key)) {
     paths.push(value);
@@ -1381,6 +1397,7 @@ export function verifyImageArtifacts(
     error: artifacts.length === 0 ? 'Image generation completed but produced no valid image artifact.' : null,
   };
 }
+// agybird:image-end
 
 function fatalEnvelope(category, error) {
   return {
@@ -1491,6 +1508,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
 
     let artifacts = parsed.artifacts;
+    // agybird:image-start
     if (options.category === 'image') {
       const verified = verifyImageArtifacts(parsed, options.cwd);
       artifacts = verified.artifacts;
@@ -1498,6 +1516,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         outcome = { ...outcome, status: 'error', warnings: [...outcome.warnings, verified.error] };
       }
     }
+    // agybird:image-end
 
     const envelope = makeEnvelope({
       category: options.category,

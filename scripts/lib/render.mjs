@@ -61,14 +61,19 @@ export function renderReview(job, envelope) {
   return lines.join('\n');
 }
 
+// agybird:image-start
 export function renderImage(job, envelope) {
   const artifacts = envelope.artifacts ?? [];
   const list = artifacts.map((artifact) => `- \`${inline(typeof artifact === 'string' ? artifact : artifact.path)}\``);
   return [renderTask(job, envelope), '', '### Images', '', ...(list.length ? list : ['_No verified image._'])].join('\n');
 }
 
+// agybird:image-end
+
 export function renderOutcome(job, envelope) {
   if (job.kind === 'review' || job.kind === 'adversarial-review' || job.kind === 'stop-review') return renderReview(job, envelope);
+  // agybird:image-start
   if (job.kind === 'image') return renderImage(job, envelope);
+  // agybird:image-end
   return renderTask(job, envelope);
 }

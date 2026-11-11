@@ -81,7 +81,7 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 - [x] T9 Codex skills folder, manifest hooks override, install-layout tests
 
 ### US6
-- [ ] T10 Directory edition folder, listing fields, parity check in CI
+- [x] T10 Directory edition folder, listing fields, parity check in CI
 - [x] T11 README, PRIVACY, threat model and help updated against what ships
 
 ### US7

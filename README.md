@@ -147,6 +147,8 @@ npm ci
 npm run check
 ```
 
+`directory/agybird/` is the edition submitted to Anthropic's plugin directory, whose policy excludes AI image generation: the same plugin with every `// agybird:image-start` region removed. It is generated, never edited by hand; run `node scripts/build-directory-edition.mjs` after changing a shared file, and the test suite fails while it is out of date.
+
 Tests use a fake provider process and require no Google credentials. Live tests are manual and must never run in public CI.
 
 The optional live wrapper refuses to spend credits unless `AGYBIRD_LIVE_CONFIRM=1` is set for that invocation. It still preserves the current Antigravity model, sandbox, permissions, and `useG1Credits` setting.

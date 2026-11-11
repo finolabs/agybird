@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "agybird",
+  "displayName": "Agybird",
+  "icon": "./assets/icon.svg",
+  "documentationUrl": "https://github.com/finolabs/agybird#readme",
+  "supportUrl": "https://github.com/finolabs/agybird/issues",
+  "privacyPolicyUrl": "https://github.com/finolabs/agybird/blob/main/PRIVACY.md",
+  "termsOfServiceUrl": "https://github.com/finolabs/agybird/blob/main/TERMS.md",
+  "version": "0.0.0",
+  "description": "Hand code review, task rescue and analysis to the Google Antigravity CLI you already use, with your Gemini plan. Unofficial; Claude Code only.",
+  "author": {
+    "name": "Fioenix",
+    "url": "https://github.com/fioenix"
+  },
+  "homepage": "https://github.com/finolabs/agybird",
+  "repository": "https://github.com/finolabs/agybird",
+  "license": "MIT",
+  "keywords": ["antigravity", "agy", "gemini", "delegation", "code-review", "agent-skills"],
+  "agents": ["./claude-agents/agybird-rescue.md"]
+}
