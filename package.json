@@ -1,6 +1,6 @@
 {
   "name": "agybird",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Delegate code work, image generation or editing, and general tasks to the official Google Antigravity CLI through an existing Gemini subscription.",
   "keywords": [
     "antigravity",
