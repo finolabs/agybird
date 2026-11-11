@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,20 +69,34 @@ test('looking for a grant lock that is not there removes nothing', () => {
   assert.deepEqual(readdirSync(dirname(path)).filter((name) => name.endsWith('.tmp')), []);
 });
 
-test('a stale lock replaced by a live one while it is being cleared is kept', () => {
+test('clearing a stale lock can never leave two runs holding the grant lock', () => {
   const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
   const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
   const path = acquireGrantLock(cwd, 'conv-old', directory, () => true);
   writeFileSync(path, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
-  // While the reader decides the old holder is dead, another run takes the lock.
+  const BEE = 222222;
+  let bLock = null;
+  let bChanged = null;
+  // A has read the dead holder; while it checks that holder, B clears the stale
+  // lock and takes it, then C tries as well.
   const isRunning = (pid) => {
     if (pid === 111111) {
-      rmSync(path, { force: true });
-      writeFileSync(path, JSON.stringify({ pid: process.pid, conversation: 'conv-new' }));
+      if (bLock === null) {
+        bLock = acquireGrantLock(cwd, 'conv-b', directory, (other) => other === BEE || (other !== 111111 && other === process.pid));
+        if (bLock) {
+          writeFileSync(bLock, JSON.stringify({ pid: BEE, conversation: 'conv-b' }));
+          bChanged = statSync(bLock).ctimeMs;
+        }
+      }
       return false;
     }
-    return pid === process.pid;
+    return pid === BEE;
   };
-  liveGrantLock(cwd, directory, isRunning);
-  assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-new', 'the new holder must keep its lock');
+  const seenByA = liveGrantLock(cwd, directory, isRunning);
+  assert.ok(bLock, 'B must have taken the lock');
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).conversation, 'conv-b', 'A must not remove B\'s lock');
+  assert.equal(seenByA?.pid, BEE, 'A must see B as the holder');
+  assert.equal(statSync(path).ctimeMs, bChanged, 'A must never move or relink a live lock, or a third run could take the path meanwhile');
+  assert.equal(acquireGrantLock(cwd, 'conv-c', directory, isRunning), null, 'C must not get the lock while B holds it');
+  assert.deepEqual(readdirSync(dirname(path)).filter((name) => /\.(tmp|stale|breaker)$/.test(name)), []);
 });

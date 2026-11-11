@@ -380,40 +380,44 @@ function publishExclusive(path, content) {
 
 // A lock that cannot be read is treated as held until it is this old.
 const UNREADABLE_LOCK_MS = 60_000;
+// The breaker guards a few file operations; one older than this was left by a
+// process that died holding it.
+const STALE_BREAKER_MS = 30_000;
+const HELD = Object.freeze({ pid: null, conversation: null });
 
-// The holder of a live grant in this workspace, or null. A lock left by a
-// process that is gone is cleared, and only that lock: it is moved aside and
-// checked first, so a lock another run took meanwhile is put back, never lost.
+function lockIsLive(holder, isRunning) {
+  return Boolean(holder && Number.isInteger(holder.pid) && isRunning(holder.pid));
+}
+
+// The holder of a live grant in this workspace, or null when the lock is free.
+// A lock left by a process that is gone is cleared only under a breaker file:
+// while a stale lock exists nobody can create a new one (the path is taken), and
+// only the breaker holder may remove it, so a re-read under the breaker that
+// still shows the dead holder can be removed safely. A live lock is never moved.
 export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
   const path = grantLockPath(cwd, directory);
   const holder = readJsonOrNull(path);
-  if (holder && Number.isInteger(holder.pid) && isRunning(holder.pid)) return holder;
-  if (!holder) {
-    const stat = statOrNull(path);
-    if (!stat) return null;
-    if (Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS) return { pid: null, conversation: null };
+  if (lockIsLive(holder, isRunning)) return holder;
+  const stat = statOrNull(path);
+  if (!stat) return null;
+  if (!holder && Date.now() - stat.mtimeMs < UNREADABLE_LOCK_MS) return HELD;
+  const breaker = `${path}.breaker`;
+  if (!publishExclusive(breaker, JSON.stringify({ pid: process.pid }))) {
+    const breakerStat = statOrNull(breaker);
+    if (breakerStat && Date.now() - breakerStat.mtimeMs > STALE_BREAKER_MS) rmSync(breaker, { force: true });
+    return HELD;
   }
-  const aside = `${path}.${randomUUID()}.stale`;
   try {
-    renameSync(path, aside);
-  } catch {
-    // Gone already, or taken again: look once more without clearing anything.
     const current = readJsonOrNull(path);
-    return current && Number.isInteger(current.pid) && isRunning(current.pid) ? current : null;
+    if (lockIsLive(current, isRunning)) return current;
+    const currentStat = statOrNull(path);
+    if (!currentStat) return null;
+    if (!current && Date.now() - currentStat.mtimeMs < UNREADABLE_LOCK_MS) return HELD;
+    rmSync(path, { force: true });
+    return null;
+  } finally {
+    rmSync(breaker, { force: true });
   }
-  const moved = readJsonOrNull(aside);
-  const sameStaleLock = holder ? moved?.pid === holder.pid : moved === null;
-  if (!sameStaleLock) {
-    // Another run published a lock between our read and the move: restore it.
-    try {
-      linkSync(aside, path);
-    } catch {
-      // a third run holds the path now; it owns the lock
-    }
-  }
-  rmSync(aside, { force: true });
-  if (sameStaleLock) return null;
-  return moved && Number.isInteger(moved.pid) && isRunning(moved.pid) ? moved : { pid: null, conversation: null };
 }
 
 export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
