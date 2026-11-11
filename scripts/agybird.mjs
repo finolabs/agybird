@@ -652,6 +652,7 @@ export function createStreamParser() {
     deniedActions: [],
     sawTerminalResult: false,
     agyStatus: null,
+    finishedReason: null,
     error: null,
   };
 
@@ -702,6 +703,7 @@ export function createStreamParser() {
         terminal.subtype,
         terminal.is_error ? 'error' : 'success',
       ));
+      state.finishedReason = firstDefined(terminal.finished_reason, null);
       state.structuredOutput = firstDefined(terminal.structured_output, terminal.structuredOutput, state.structuredOutput);
       state.response = firstDefined(
         state.structuredOutput,
@@ -751,8 +753,9 @@ const PERMISSION_DENIAL = /permission(?:s)? (?:denied|declined|required)|denied 
 // agy emits this when no allow-rule can authorize the tool, so only
 // --dangerously-skip-permissions would proceed. Agybird never offers that.
 const UNGRANTABLE_DENIAL = /Settings allow-rules do not apply/i;
-// agy 1.1.28+ ends an expired --print-timeout with exit 0 and a SUCCESS result;
-// only this stderr notice says the turn was cut short.
+// agy 1.1.28 to 1.4.x ends an expired --print-timeout with exit 0 and a SUCCESS
+// result; only this stderr notice says the turn was cut short. agy 1.5.0+ exits 3
+// and sets finished_reason to print_timeout on the result instead.
 const PRINT_TIMEOUT_EXPIRED = /print timeout after .* returning partial output/i;
 // agy 1.2.6+ exits 3 (with an AGY_ERROR line on stderr) when the agent or model API fails.
 const AGENT_FAILURE_EXIT_CODE = 3;
@@ -994,8 +997,10 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
   ].join('\n');
 
   const denied = PERMISSION_DENIAL.test(permissionText) || (parsed.deniedActions ?? []).length > 0;
+  // Read from the result, not stderr, so diagnostic text cannot soften a real failure.
+  const printTimedOut = parsed.finishedReason === 'print_timeout';
   // A denial kept from earlier in the turn must not hide that the turn then failed.
-  if (exitCode === AGENT_FAILURE_EXIT_CODE) {
+  if (exitCode === AGENT_FAILURE_EXIT_CODE && !printTimedOut) {
     warnings.push('agy exited with code 3: the agent or model API failed mid-turn; any response is partial.');
     addAgyErrorWarnings(warnings, agyError, options);
     return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [], agyError };
@@ -1012,12 +1017,12 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
     }
     return { status: 'needs_permission', warnings, permissionRequests, agyError };
   }
-  if (exitCode !== 0) {
+  if (exitCode !== 0 && !printTimedOut) {
     warnings.push(`agy exited with code ${exitCode}`);
     addAgyErrorWarnings(warnings, agyError, options);
     return { status: 'error', warnings, agyError };
   }
-  if (deadlineReached || PRINT_TIMEOUT_EXPIRED.test(stderr)) {
+  if (printTimedOut || deadlineReached || PRINT_TIMEOUT_EXPIRED.test(stderr)) {
     warnings.push('agy --print-timeout expired before the turn finished; the response is incomplete.');
     return { status: 'partial', warnings, agyError };
   }

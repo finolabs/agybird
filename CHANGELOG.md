@@ -4,6 +4,10 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+Checked against `agy` 1.5.5: the timeout format was read from a live run; the tests use a recorded stream.
+
+- An expired `--timeout` is reported as `partial` again. Since `agy` 1.5.0 the CLI answers it with exit 3 and an `ERROR` result, which the runner reported as `error` and explained as an agent or model failure. The runner now reads `finished_reason: print_timeout` from the terminal result; other exit 3 failures stay `error`.
+
 ## 0.4.0 - 2026-11-03
 
 **Breaking for installs from this repository's catalogs.** Agybird is now listed in the shared [`finolabs/plugins`](https://github.com/finolabs/plugins) catalog, and the repository no longer serves a marketplace of its own. Existing `agybird@agybird` (Claude Code) and `agybird@Finolabs` (Codex) installs need the [migration guide](docs/migration.md).

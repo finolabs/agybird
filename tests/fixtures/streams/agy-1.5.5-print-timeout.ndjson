@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"3c90cf2c-a629-4129-b392-033ff8e02040","init":{"model":"gemini-3.8-flash-low","cwd":"/workspace","tools":["ask_custom_permission","ask_permission","ask_question"]}}
+{"event":"result","result":{"conversation_id":"3c90cf2c-a629-4129-b392-033ff8e02040","status":"ERROR","response":"","error":"print timeout after 2s with the turn still in progress; the response is partial","duration_seconds":0,"num_turns":0,"usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0},"finished_reason":"print_timeout"}}

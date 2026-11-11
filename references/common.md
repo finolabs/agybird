@@ -34,10 +34,10 @@ Never pass `--dangerously-skip-permissions`. The runner itself never constructs 
 The runner prints one JSON envelope to stdout:
 
 - `success`: the Antigravity result and required verification passed.
-- `partial`: Antigravity returned a terminal result, but at least one tool action failed, or `--timeout` expired before the turn finished. Since `agy` 1.1.28 an expired timeout still exits 0 with a `SUCCESS` result and whatever partial response exists; the runner reports `partial` instead when agy's timeout notice appears on stderr or the run lasted as long as `--timeout`.
+- `partial`: Antigravity returned a terminal result, but at least one tool action failed, or `--timeout` expired before the turn finished. Since `agy` 1.5.0 an expired timeout exits 3 with `finished_reason` set to `print_timeout` on the result, and the runner reports `partial`. From `agy` 1.1.28 to 1.4.x it exited 0 with a `SUCCESS` result, and the runner reports `partial` when agy's timeout notice appears on stderr or the run lasted as long as `--timeout`.
 - `needs_permission`: an action was denied and an allow-rule would authorize it. Every denied action is described in `permission_requests[]`, including actions agy lists only in the result's `denied_actions`. Ask the user to decide; see [troubleshooting.md](troubleshooting.md).
 - `blocked`: an action was denied and no allow-rule can be suggested, either because none applies or because agy reported the action without its target.
-- `error`: the process, stream, or artifact validation failed, or the runner had to kill `agy`. Exit code 3 means the agent or model API failed mid-turn; any response is partial.
+- `error`: the process, stream, or artifact validation failed, or the runner had to kill `agy`. Exit code 3, other than an expired `--timeout`, means the agent or model API failed mid-turn; any response is partial.
 
 The envelope provides comprehensive execution metrics:
 - `structured_output`: Parsed payload when `--json-schema` is enforced.
