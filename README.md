@@ -23,7 +23,7 @@ This is an Agent Skill plus a small local runner, not an MCP server. Claude Code
 - Node.js 20 or newer.
 - The [official Antigravity CLI](https://antigravity.google/docs/cli/install), installed and authenticated by running `agy` interactively.
 - A Google account and Antigravity plan that is eligible for the requested capability.
-- Tested with `agy` 1.4.2 on macOS. CI runs the suite on Linux, macOS, and Windows against a simulated `agy`, so a newer CLI that changes its JSON stream can break the runner until a release catches up.
+- Last checked live with `agy` 1.5.5 on macOS. CI runs the suite on Linux, macOS, and Windows against a simulated `agy`, so a newer CLI that changes its JSON stream can break the runner until a release catches up.
 
 Google continues to enforce subscription eligibility, quota and credit availability, permissions, sandbox configuration, and generated-content policy. Agybird does not bypass any of them.
 

@@ -365,6 +365,53 @@ test('reports an expired print timeout as partial although agy exits zero', () =
   assert.match(outcome.warnings.join('\n'), /print-timeout expired before the turn finished/);
 });
 
+// Since agy 1.5.0 an expired --print-timeout exits 3 with an ERROR result; the
+// result's finished_reason is what separates it from a real agent failure.
+const PRINT_TIMEOUT_STDERR = [
+  '[agy] print timeout after 2s with turn in progress; returning partial output',
+  'error: print timeout after 2s with the turn still in progress; the response is partial',
+  'AGY_ERROR: {"short_error":"print timeout after 2s with the turn still in progress; the response is partial","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout"}',
+  '',
+].join('\n');
+
+test('reports an expired print timeout as partial although agy exits 3', () => {
+  const parsed = parseFixture('agy-1.5.5-print-timeout.ndjson');
+  assert.equal(parsed.agyStatus, 'ERROR');
+
+  const outcome = classifyOutcome({ parsed, exitCode: 3, stderr: PRINT_TIMEOUT_STDERR });
+  assert.equal(outcome.status, 'partial');
+  assert.match(outcome.warnings.join('\n'), /print-timeout expired before the turn finished/);
+  assert.equal(outcome.agyError.status, 'DEADLINE_EXCEEDED');
+});
+
+test('keeps a denial visible when the print timeout also expired', () => {
+  const parser = createStreamParser();
+  parser.push(`${JSON.stringify({
+    event: 'result',
+    result: {
+      status: 'ERROR',
+      finished_reason: 'print_timeout',
+      denied_actions: [{ action: 'command', display_name: 'RunCommand' }],
+    },
+  })}\n`);
+  const outcome = classifyOutcome({ parsed: parser.finish(), exitCode: 3, stderr: PRINT_TIMEOUT_STDERR });
+  assert.equal(outcome.status, 'blocked');
+  assert.equal(outcome.permissionRequests.length, 1);
+});
+
+test('keeps any other nonzero exit an error even after a timeout result', () => {
+  const parsed = parseFixture('agy-1.5.5-print-timeout.ndjson');
+  const outcome = classifyOutcome({ parsed, exitCode: 1, stderr: PRINT_TIMEOUT_STDERR });
+  assert.equal(outcome.status, 'error');
+});
+
+test('does not let stderr text turn an exit 3 failure into a timeout', () => {
+  const parser = createStreamParser();
+  parser.push(`${JSON.stringify({ event: 'result', result: { status: 'ERROR', finished_reason: 'error' } })}\n`);
+  const outcome = classifyOutcome({ parsed: parser.finish(), exitCode: 3, stderr: PRINT_TIMEOUT_STDERR });
+  assert.equal(outcome.status, 'error');
+});
+
 test('reads denied_actions from the terminal result without duplicating a described denial', () => {
   const parsed = parseFixture('agy-1.4.2-image-subagent.ndjson');
   assert.deepEqual(parsed.deniedActions, [{ action: 'command', display_name: 'RunCommand' }]);
