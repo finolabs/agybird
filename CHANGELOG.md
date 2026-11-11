@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.3 - 2026-11-11
+
 - Commands, the rescue agent, the Codex skills and the skill's runner instructions call `command node` instead of `node`, so a shell function or alias named `node` (such as a version manager's lazy loader) can no longer break them.
 
 ## 0.4.2 - 2026-11-11
