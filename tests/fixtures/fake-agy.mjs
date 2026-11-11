@@ -13,13 +13,37 @@ if (process.argv.includes('--version')) {
 const promptIndex = process.argv.indexOf('-p');
 const prompt = promptIndex === -1 ? '' : process.argv[promptIndex + 1] ?? '';
 
+if (process.argv[2] === 'models') {
+  process.stdout.write([
+    'gemini-4-argon-medium\tGemini 4 Argon (Medium)',
+    'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+    'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
+    'claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)',
+    'claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)',
+  ].join('\n') + '\n');
+  process.exit(0);
+}
+if (prompt === '/usage') {
+  process.stdout.write(process.env.FAKE_AGY_USAGE ?? [
+    'Gemini Models\tWeekly Limit Remaining\t79%\t2026-11-14T09:54:37Z',
+    'Gemini Models\tFive Hour Limit Remaining\t100%\t2026-11-11T12:19:54Z',
+    'Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-17T16:40:15Z',
+    'Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-11-11T12:19:54Z',
+    'Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t0%\t2026-11-14T04:30:48Z',
+  ].join('\n') + '\n');
+  process.exit(0);
+}
+
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
 emit({ type: 'init', conversation_id: 'fake-conversation' });
 
-if (prompt.includes('CASE_REVIEW') && process.argv.includes('--json-schema')) {
+if (prompt.includes('CASE_ECHO_MODEL')) {
+  const index = process.argv.indexOf('--model');
+  emit({ type: 'result', status: 'success', response: index === -1 ? 'default' : process.argv[index + 1] });
+} else if (prompt.includes('CASE_REVIEW') && process.argv.includes('--json-schema')) {
   // Answers a review with structured output and says whether the diff arrived.
   emit({
     type: 'result',

@@ -70,9 +70,9 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 - [x] T4 Review schema, prompts and `review` / `adversarial-review` commands, foreground and background
 
 ### US3
-- [ ] T5 `rescue` command, `agybird-rescue` agent and resume or fresh session
-- [ ] T6 `setup` and `usage` with quota-based model choice
-- [ ] T7 `image` command over the existing image category
+- [x] T5 `rescue` command, `agybird-rescue` agent and resume or fresh session
+- [x] T6 `setup` and `usage` with quota-based model choice
+- [x] T7 `image` command over the existing image category
 
 ### US4
 - [ ] T8 Stop hook gate with loop guard, fail-open and per-workspace switch

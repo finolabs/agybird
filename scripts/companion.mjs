@@ -3,7 +3,7 @@
 // It never runs agy itself: every model run goes through scripts/agybird.mjs,
 // which keeps the permission, session and envelope rules in one place.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ import {
   HEARTBEAT_MS,
   heartbeatFresh,
   isJobId,
+  jobsRoot,
   killTree,
   markCancelled,
   listJobs,
@@ -27,7 +28,9 @@ import {
   writeJob,
 } from './lib/jobs.mjs';
 import { renderJobTable, renderOutcome } from './lib/render.mjs';
+import { resolveAgyBinary } from './agybird.mjs';
 import { collectScope } from './lib/scope.mjs';
+import { chooseModel, readQuota, TIERS } from './lib/quota.mjs';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
@@ -192,7 +195,7 @@ function renderedPath(directory, id) {
   return join(directory, `${id}.md`);
 }
 
-function createJob({ directory, workspace, kind, title, request }) {
+function createJob({ directory, workspace, kind, title, request, model }) {
   const id = newJobId();
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(promptPath(directory, id), request.prompt, { mode: 0o600, flag: 'wx' });
@@ -203,6 +206,7 @@ function createJob({ directory, workspace, kind, title, request }) {
     title,
     workspace,
     status: 'queued',
+    model: model ?? null,
     createdAt: new Date().toISOString(),
     // The runner's own timeout, its kill grace and agy's shutdown window.
     timeoutMs: timeoutMs(request.timeout) + 45_000,
@@ -301,10 +305,10 @@ function summary(job) {
 
 // Shared by every command that runs a model: foreground waits and prints,
 // background returns the job id at once.
-export async function launch({ cwd, kind, title, request, background, env = process.env }) {
+export async function launch({ cwd, kind, title, request, background, env = process.env, model }) {
   const workspace = workspaceRoot(cwd);
   const directory = workspaceDirectory(workspace, env);
-  const job = createJob({ directory, workspace, kind, title, request });
+  const job = createJob({ directory, workspace, kind, title, request, model });
   if (background) {
     startWorker(directory, job, env);
     return { job: summary(readJob(directory, job.id)), directory };
@@ -331,6 +335,52 @@ function resolveJob(directory, reference, { preferActive = false } = {}) {
 }
 
 const COMMON = { '--json': 'flag', '--cwd': 'value' };
+
+function quotaCache(env) {
+  return join(jobsRoot(env), 'quota.json');
+}
+
+function localTime(iso) {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? String(iso ?? '') : date.toLocaleString();
+}
+
+// The model for a run: the one the user named, else the usable model of the
+// tier with the most room. A spent tier stops the run rather than moving up.
+export function pickModel({ cwd, env, tier, model }) {
+  if (model) return { model, note: null };
+  let quota;
+  try {
+    quota = readQuota({ cwd, env, cacheFile: quotaCache(env) });
+  } catch (error) {
+    return { model: undefined, note: `Quota could not be read (${error.message}); Antigravity's default model runs.` };
+  }
+  const choice = chooseModel({ tier, models: quota.models, limits: quota.limits });
+  if (choice) return { model: choice.slug, note: null };
+  const resets = [...new Set(quota.limits.filter((limit) => limit.remaining === 0).map((limit) => `${limit.label} ${localTime(limit.resetAt)}`))];
+  throw new Error(`No ${tier} tier model has quota left. Limits reset: ${resets.join('; ') || 'unknown'}. Pass --model to choose one yourself, or wait.`);
+}
+
+function configPath(cwd, env) {
+  return join(workspaceDirectory(workspaceRoot(cwd), env), 'config.json');
+}
+
+export function readConfig(cwd, env = process.env) {
+  const path = configPath(cwd, env);
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(cwd, env, patch) {
+  const path = configPath(cwd, env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const next = { ...readConfig(cwd, env), ...patch };
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  return next;
+}
 
 function output(options, data, text) {
   process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
@@ -428,14 +478,17 @@ async function commandTask(argv, env) {
   if (options.grant && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const category = options.category ?? 'code';
   if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+  const cwd = options.cwd ?? process.cwd();
+  const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+  if (note) process.stderr.write(`agybird: ${note}\n`);
   const runnerArgs = [];
   if (options.fresh) runnerArgs.push('--new-session');
-  if (options.model) runnerArgs.push('--model', options.model);
+  if (model) runnerArgs.push('--model', model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
   for (const rule of options.grant ?? []) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: options.write ? 'write' : 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
-  const result = await launch({ cwd: options.cwd ?? process.cwd(), kind: 'task', title: text.slice(0, 80), request, background: options.background, env });
+  const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
     return;
@@ -463,6 +516,7 @@ export function buildReviewRequest({ kind, scope, options, focus = '' }) {
   // tasks; --no-record keeps this run from replacing the task session.
   const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
   if (options.model) runnerArgs.push('--model', options.model);
+  // A model picked from quota by the caller arrives as options.model too.
   if (options.effort) runnerArgs.push('--effort', options.effort);
   return { category: 'code', mode: 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt };
 }
@@ -488,9 +542,11 @@ function reviewCommand(kind) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const request = buildReviewRequest({ kind, scope, options, focus: positional.join(' ').trim() });
+    const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+    if (note) process.stderr.write(`agybird: ${note}\n`);
+    const request = buildReviewRequest({ kind, scope, options: { ...options, model }, focus: positional.join(' ').trim() });
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
-    const result = await launch({ cwd, kind, title, request, background: options.background, env });
+    const result = await launch({ cwd, kind, title, request, background: options.background, env, model });
     if (options.background) {
       output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
       return;
@@ -498,6 +554,71 @@ function reviewCommand(kind) {
     const file = renderedPath(result.directory, result.job.id);
     output(options, { job: result.job, envelope: result.envelope }, existsSync(file) ? readFileSync(file, 'utf8') : `Job ${result.job.id} failed: ${result.job.error}`);
   };
+}
+
+async function commandUsage(argv, env) {
+  const { options } = parseFlags(argv, { ...COMMON, '--refresh': 'flag' });
+  const cwd = options.cwd ?? process.cwd();
+  const quota = readQuota({ cwd, env, cacheFile: options.refresh ? undefined : quotaCache(env) });
+  const picks = Object.fromEntries(Object.keys(TIERS).map((tier) => [tier, chooseModel({ tier, models: quota.models, limits: quota.limits })?.slug ?? null]));
+  const rows = quota.limits.map((limit) => `| ${limit.label} | ${limit.window} | ${limit.remaining}% | ${localTime(limit.resetAt)} |`);
+  const text = [
+    '| Pool | Limit | Remaining | Resets (local time) |',
+    '| --- | --- | --- | --- |',
+    ...rows,
+    '',
+    `Models Agybird would use now: light ${picks.light ?? 'none left'}, standard ${picks.standard ?? 'none left'}, heavy ${picks.heavy ?? 'none left'}.`,
+  ].join('\n');
+  output(options, { limits: quota.limits, picks }, text);
+}
+
+async function commandSetup(argv, env) {
+  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
+  if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
+  const cwd = options.cwd ?? process.cwd();
+  if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
+  if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
+  const report = { agy: { found: false, version: null }, signedIn: false, models: 0, reviewGate: readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
+  try {
+    const binary = resolveAgyBinary(env);
+    const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
+    report.agy = { found: true, version: version.stdout.trim() || null, path: binary.displayPath };
+  } catch (error) {
+    report.problems.push(`${error.message}. Install it from https://antigravity.google/docs/cli/install and sign in by running agy once.`);
+  }
+  if (report.agy.found) {
+    try {
+      const quota = readQuota({ cwd, env });
+      report.signedIn = quota.limits.length > 0 || quota.models.length > 0;
+      report.models = quota.models.length;
+    } catch (error) {
+      report.problems.push(`agy could not report quota (${error.message}); run agy once to sign in.`);
+    }
+  }
+  const text = [
+    `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
+    `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
+    `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}`,
+    ...report.problems.map((problem) => `Problem: ${problem}`),
+  ].join('\n');
+  output(options, report, text);
+}
+
+async function commandImage(argv, env) {
+  const { options, positional } = parseFlags(argv, { ...COMMON, '--reference': 'list', '--background': 'flag', '--timeout': 'value' });
+  const text = positional.join(' ').trim() || (await readStdin()).trim();
+  if (!text) throw new Error('Describe the image to generate or the edit to make.');
+  const runnerArgs = [];
+  for (const reference of options.reference ?? []) runnerArgs.push('--reference', resolve(reference));
+  const request = { category: 'image', mode: 'write', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
+  const cwd = options.cwd ?? process.cwd();
+  const result = await launch({ cwd, kind: 'image', title: text.slice(0, 80), request, background: options.background, env });
+  if (options.background) {
+    output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
+    return;
+  }
+  const file = renderedPath(result.directory, result.job.id);
+  output(options, { job: result.job, envelope: result.envelope }, existsSync(file) ? readFileSync(file, 'utf8') : `Job ${result.job.id} failed: ${result.job.error}`);
 }
 
 async function commandRunJob(argv, env) {
@@ -513,6 +634,9 @@ export const COMMANDS = {
   result: commandResult,
   cancel: commandCancel,
   task: commandTask,
+  usage: commandUsage,
+  setup: commandSetup,
+  image: commandImage,
   review: reviewCommand('review'),
   'adversarial-review': reviewCommand('adversarial-review'),
   'run-job': commandRunJob,
