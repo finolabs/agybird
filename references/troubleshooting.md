@@ -81,6 +81,8 @@ While a grant is applied the runner holds a lock for that workspace, because a g
 
 Nothing inside the repository can grant a permission on `agy` headless. Writing `<repo>/.gemini/antigravity-cli/settings.json` has no effect; that path does not exist in the CLI. Antigravity's workspace customization root `.agents/` carries rules, skills, plugins, and hooks rather than allow-rules, and a `PreToolUse` hook returning `{"decision": "allow"}` would grant permission in principle — but under `agy -p`, workspace customizations were not loaded at all in testing. A `.agents/hooks.json` was ignored in favour of `~/.gemini/config/hooks.json`, and neither `AGENTS.md` nor `.agents/rules/*.md` reached the model, which answered `NONE` when asked to list the rules it had loaded. Adding the workspace to `trustedWorkspaces` changed nothing, so this is not a trust gate. Do not rely on repository-local configuration in headless mode.
 
+`agy --settings` is not a substitute for `--grant`. Checked live with `agy` 1.5.5: an allow-rule passed there authorizes its command for that run only and is never saved, but it replaces the global `permissions.allow` list instead of adding to it, so a command the user already allows globally is denied in that run.
+
 Prefer the narrowest target that unblocks the task. `read_file` on a repository root also exposes any secrets inside it.
 
 ## Quota or credits are blocked
