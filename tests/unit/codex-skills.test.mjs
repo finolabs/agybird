@@ -30,7 +30,8 @@ test('the Codex adapter is the same file Antigravity loads', () => {
 
 test('each command skill names its folder, runs only on request and calls a real companion command', () => {
   for (const name of EXPECTED.filter((entry) => entry !== 'agybird')) {
-    const text = readFileSync(join(root, '.codex-skills', name, 'SKILL.md'), 'utf8');
+    // Windows checkouts may convert line endings; the frontmatter is the same either way.
+    const text = readFileSync(join(root, '.codex-skills', name, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
     const meta = frontmatter(text);
     assert.equal(meta.name, name);
     assert.match(meta.description, /only when the user/i, `${name} must not trigger on its own`);
