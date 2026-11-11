@@ -65,3 +65,18 @@ test('a slug the account does not list is never chosen', () => {
 test('every tier names known slugs', () => {
   assert.deepEqual(Object.keys(TIERS), ['light', 'standard', 'heavy']);
 });
+
+test('a tier model whose pool the report leaves out is still chosen, marked as unknown room', () => {
+  const onlyGemini = parseUsage(USAGE).filter((limit) => limit.label !== 'Claude and GPT models');
+  const choice = chooseModel({ tier: 'standard', models: parseModels(MODELS), limits: onlyGemini });
+  assert.equal(choice.slug, 'gemini-3.8-flash-high', 'a model with known room comes first');
+  const spentGemini = onlyGemini.map((limit) => ({ ...limit, remaining: 0 }));
+  const fallback = chooseModel({ tier: 'standard', models: parseModels(MODELS), limits: spentGemini });
+  assert.equal(fallback.slug, 'claude-sonnet-5-5-medium');
+  assert.equal(fallback.room, null);
+});
+
+test('an empty report spends nothing', () => {
+  const choice = chooseModel({ tier: 'standard', models: parseModels(MODELS), limits: [] });
+  assert.equal(choice.room, null);
+});

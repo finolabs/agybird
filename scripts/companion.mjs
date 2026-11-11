@@ -355,8 +355,11 @@ export function pickModel({ cwd, env, tier, model }) {
   } catch (error) {
     return { model: undefined, note: `Quota could not be read (${error.message}); Antigravity's default model runs.` };
   }
+  if (!TIERS[tier].some((slug) => quota.models.some((entry) => entry.slug === slug))) {
+    return { model: undefined, note: `agy lists no ${tier} tier model Agybird knows; Antigravity's default model runs.` };
+  }
   const choice = chooseModel({ tier, models: quota.models, limits: quota.limits });
-  if (choice) return { model: choice.slug, note: null };
+  if (choice) return { model: choice.slug, note: choice.room === null ? `Quota for ${choice.slug} was not reported; it may run out.` : null };
   const resets = [...new Set(quota.limits.filter((limit) => limit.remaining === 0).map((limit) => `${limit.label} ${localTime(limit.resetAt)}`))];
   throw new Error(`No ${tier} tier model has quota left. Limits reset: ${resets.join('; ') || 'unknown'}. Pass --model to choose one yourself, or wait.`);
 }
@@ -459,9 +462,28 @@ const TASK_FLAGS = {
   '--model': 'value',
   '--effort': 'value',
   '--timeout': 'value',
-  '--grant': 'list',
+  '--approve': 'list',
   '--grant-scope': 'value',
 };
+
+const APPROVAL = /^(job-[0-9a-z]+-[0-9a-f]{6}):(\d{1,3})$/;
+const GRANTED_PROMPT = 'The permission you requested has been granted. Retry the denied action and finish the task.';
+
+// Turns an approval of a reported request into its rule. The rule always comes
+// from the structured permission_requests of a stored job, never from text a
+// caller or the provider wrote.
+export function approvedRules(directory, approvals = []) {
+  return approvals.map((approval) => {
+    const match = APPROVAL.exec(approval);
+    if (!match) throw new Error(`Invalid approval ${approval}; use <job-id>:<request number> from /agybird:status or the permissions command.`);
+    const [, id, index] = match;
+    const envelope = readJob(directory, id) ? readStoredResult(directory, id) : null;
+    const request = envelope?.permission_requests?.[Number(index)];
+    if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
+    if (!request.grantable || !request.suggested_rule) throw new Error(`Request ${index} of ${id} cannot be granted by a rule; agree a narrower rule with the user and grant it outside Agybird.`);
+    return request.suggested_rule;
+  });
+}
 
 async function readStdin() {
   if (process.stdin.isTTY) return '';
@@ -472,10 +494,11 @@ async function readStdin() {
 
 async function commandTask(argv, env) {
   const { options, positional } = parseFlags(argv, TASK_FLAGS);
-  const text = positional.join(' ').trim() || (await readStdin()).trim();
+  const approving = (options.approve ?? []).length > 0;
+  const text = positional.join(' ').trim() || (await readStdin()).trim() || (approving ? GRANTED_PROMPT : '');
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
-  if (options.grant && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
-  if (options.grant && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
+  if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
+  if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const category = options.category ?? 'code';
   if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
   const cwd = options.cwd ?? process.cwd();
@@ -485,7 +508,7 @@ async function commandTask(argv, env) {
   if (options.fresh) runnerArgs.push('--new-session');
   if (model) runnerArgs.push('--model', model);
   if (options.effort) runnerArgs.push('--effort', options.effort);
-  for (const rule of options.grant ?? []) runnerArgs.push('--grant', rule);
+  for (const rule of approvedRules(storeFor(cwd, env), options.approve)) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: options.write ? 'write' : 'read', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
   const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
@@ -556,10 +579,37 @@ function reviewCommand(kind) {
   };
 }
 
+// The permission requests of a job, from its stored envelope only. This is what
+// a caller shows the user before an approval; rendered text never is.
+async function commandPermissions(argv, env) {
+  const { options, positional } = parseFlags(argv, COMMON);
+  const directory = storeFor(options.cwd ?? process.cwd(), env);
+  const job = positional[0]
+    ? resolveJob(directory, positional[0])
+    : listJobs(directory).find((entry) => (readStoredResult(directory, entry.id)?.permission_requests ?? []).length > 0);
+  if (!job) {
+    output(options, { job: null, requests: [] }, 'No Agybird job here is waiting for a permission.');
+    return;
+  }
+  const requests = (readStoredResult(directory, job.id)?.permission_requests ?? []).map((request, index) => ({
+    index,
+    approval: `${job.id}:${index}`,
+    tool: request.tool,
+    target: request.target,
+    target_truncated: request.target_truncated,
+    suggested_rule: request.suggested_rule,
+    grantable: request.grantable === true && Boolean(request.suggested_rule),
+  }));
+  const text = requests.length
+    ? requests.map((request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`).join('\n')
+    : `Job ${job.id} reported no permission request.`;
+  output(options, { job: summary(job), requests }, text);
+}
+
 async function commandUsage(argv, env) {
   const { options } = parseFlags(argv, { ...COMMON, '--refresh': 'flag' });
   const cwd = options.cwd ?? process.cwd();
-  const quota = readQuota({ cwd, env, cacheFile: options.refresh ? undefined : quotaCache(env) });
+  const quota = readQuota({ cwd, env, cacheFile: quotaCache(env), refresh: options.refresh });
   const picks = Object.fromEntries(Object.keys(TIERS).map((tier) => [tier, chooseModel({ tier, models: quota.models, limits: quota.limits })?.slug ?? null]));
   const rows = quota.limits.map((limit) => `| ${limit.label} | ${limit.window} | ${limit.remaining}% | ${localTime(limit.resetAt)} |`);
   const text = [
@@ -578,7 +628,7 @@ async function commandSetup(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
-  const report = { agy: { found: false, version: null }, signedIn: false, models: 0, reviewGate: readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
+  const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGate: readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
   try {
     const binary = resolveAgyBinary(env);
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
@@ -591,6 +641,7 @@ async function commandSetup(argv, env) {
       const quota = readQuota({ cwd, env });
       report.signedIn = quota.limits.length > 0 || quota.models.length > 0;
       report.models = quota.models.length;
+      report.limits = quota.limits;
     } catch (error) {
       report.problems.push(`agy could not report quota (${error.message}); run agy once to sign in.`);
     }
@@ -599,6 +650,7 @@ async function commandSetup(argv, env) {
     `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
     `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
     `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}`,
+    ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
   ].join('\n');
   output(options, report, text);
@@ -635,6 +687,7 @@ export const COMMANDS = {
   cancel: commandCancel,
   task: commandTask,
   usage: commandUsage,
+  permissions: commandPermissions,
   setup: commandSetup,
   image: commandImage,
   review: reviewCommand('review'),

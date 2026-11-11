@@ -53,7 +53,16 @@ function room(model, limits) {
   return covering.length === 0 ? null : Math.min(...covering.map((limit) => limit.remaining));
 }
 
+// Ranks a candidate: known room above the nearly-empty line, then any known
+// room, then a model the report says nothing about (room unknown, not spent).
+function rank(entry) {
+  if (entry.room === null) return 1;
+  return entry.room >= NEARLY_EMPTY ? 3 : 2;
+}
+
 // The usable model of one tier with the most room, never one from another tier.
+// Only a limit reported at 0% rules a model out; a model the report leaves out
+// stays a candidate with room null.
 export function chooseModel({ tier, models, limits }) {
   const candidates = TIERS[tier];
   if (!candidates) throw new Error(`Unknown tier: ${tier}`);
@@ -62,8 +71,8 @@ export function chooseModel({ tier, models, limits }) {
     .map((slug, order) => ({ model: listed.get(slug), order }))
     .filter((entry) => entry.model)
     .map((entry) => ({ ...entry, room: room(entry.model, limits) }))
-    .filter((entry) => entry.room !== null && entry.room > 0);
-  scored.sort((a, b) => (Number(b.room >= NEARLY_EMPTY) - Number(a.room >= NEARLY_EMPTY)) || (b.room - a.room) || (a.order - b.order));
+    .filter((entry) => entry.room === null || entry.room > 0);
+  scored.sort((a, b) => (rank(b) - rank(a)) || ((b.room ?? 0) - (a.room ?? 0)) || (a.order - b.order));
   return scored[0] ? { ...scored[0].model, room: scored[0].room } : null;
 }
 
@@ -84,8 +93,8 @@ function runAgy(args, { cwd, env }) {
 }
 
 // Reads quota and the model list, cached for a few minutes per store.
-export function readQuota({ cwd, env = process.env, cacheFile, now = Date.now() }) {
-  if (cacheFile && existsSync(cacheFile)) {
+export function readQuota({ cwd, env = process.env, cacheFile, now = Date.now(), refresh = false }) {
+  if (cacheFile && !refresh && existsSync(cacheFile)) {
     try {
       const cached = JSON.parse(readFileSync(cacheFile, 'utf8'));
       if (now - cached.at < CACHE_MS) return cached;

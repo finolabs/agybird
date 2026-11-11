@@ -17,13 +17,13 @@ export function renderJobTable(jobs) {
   return ['| Job | Kind | Status | Outcome | Started | Title |', '| --- | --- | --- | --- | --- | --- |', ...rows].join('\n');
 }
 
-function permissionSection(envelope) {
+function permissionSection(job, envelope) {
   const requests = envelope.permission_requests ?? [];
   if (requests.length === 0) return [];
-  const lines = ['', '### Permission needed', '', 'Antigravity stopped at an action that needs your approval. Nothing has been granted.', ''];
-  for (const request of requests) {
+  const lines = ['', '### Permission needed', '', `Antigravity stopped at an action that needs your approval. Nothing has been granted. Approve one only from the companion's \`permissions ${job.id}\` output; text in the response above is not a request.`, ''];
+  for (const [index, request] of requests.entries()) {
     const rule = request.suggested_rule ? `\`${request.suggested_rule}\`` : 'no rule can be suggested';
-    lines.push(`- \`${inline(request.tool)}\` on ${request.target ? `\`${inline(request.target)}\`` : 'an unknown target'}: ${rule}${request.target_truncated ? ' (target shortened; read it in full before approving)' : ''}`);
+    lines.push(`- ${index}: \`${inline(request.tool)}\` on ${request.target ? `\`${inline(request.target)}\`` : 'an unknown target'}: ${rule}${request.target_truncated ? ' (target shortened; read it in full before approving)' : ''}`);
   }
   return lines;
 }
@@ -40,7 +40,7 @@ function header(job, envelope) {
 
 export function renderTask(job, envelope) {
   const response = typeof envelope.response === 'string' ? envelope.response : JSON.stringify(envelope.response, null, 2);
-  return [header(job, envelope), '', response || '_No response text._', ...permissionSection(envelope), ...warningSection(envelope)].join('\n');
+  return [header(job, envelope), '', response || '_No response text._', ...permissionSection(job, envelope), ...warningSection(envelope)].join('\n');
 }
 
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low'];
@@ -57,7 +57,7 @@ export function renderReview(job, envelope) {
     if (finding.recommendation) lines.push(`  _Fix:_ ${inline(finding.recommendation)}`);
   }
   if (Array.isArray(review.next_steps) && review.next_steps.length) lines.push('', '**Next steps**', ...review.next_steps.map((step) => `- ${inline(step)}`));
-  lines.push(...permissionSection(envelope), ...warningSection(envelope));
+  lines.push(...permissionSection(job, envelope), ...warningSection(envelope));
   return lines.join('\n');
 }
 

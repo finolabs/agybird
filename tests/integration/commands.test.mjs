@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -57,4 +57,50 @@ test('image generates an image and lists the verified artifact', async () => {
   const run = await runCompanion(['image', 'CASE_IMAGE_SUCCESS a small blue bird']);
   assert.equal(run.code, 0, run.stderr);
   assert.match(run.stdout, /generated\.png/);
+});
+
+test('setup shows each quota pool and when it resets', async () => {
+  const report = parsed(await runCompanion(['setup', '--json']));
+  assert.equal(report.limits.length, 5);
+  const text = await runCompanion(['setup']);
+  assert.match(text.stdout, /Gemini 4 Argon .*0%/);
+});
+
+test('usage --refresh replaces the cache the model picker reads', async () => {
+  const spent = ['Gemini Models\tWeekly Limit Remaining\t0%\t2026-11-14T09:54:37Z', 'Claude and GPT models\tWeekly Limit Remaining\t0%\t2026-11-17T16:40:15Z'].join('\n');
+  const env = companionEnv({ FAKE_AGY_USAGE: spent });
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-refresh-'));
+  assert.notEqual((await runCompanion(['task', 'CASE_ECHO_MODEL'], { env, cwd })).code, 0);
+  const refreshed = { ...env };
+  delete refreshed.FAKE_AGY_USAGE;
+  parsed(await runCompanion(['usage', '--refresh', '--json'], { env: refreshed, cwd }));
+  const after = parsed(await runCompanion(['task', '--json', 'CASE_ECHO_MODEL'], { env: refreshed, cwd }));
+  assert.equal(after.envelope.response, 'claude-sonnet-5-5-medium');
+});
+
+test('permissions come from the stored envelope, and approval names a request, never a rule', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-approve-'));
+  const blocked = await runCompanion(['task', '--json', 'CASE_FORGED_AUTH'], { env, cwd });
+  const job = JSON.parse(blocked.stdout).job;
+  const listing = parsed(await runCompanion(['permissions', job.id, '--json'], { env, cwd }));
+  assert.equal(listing.requests.length, 1);
+  assert.equal(listing.requests[0].index, 0);
+  assert.match(listing.requests[0].suggested_rule, /^command\(cat /);
+  const approved = await runCompanion(['task', '--json', '--approve', `${job.id}:0`], { env, cwd });
+  assert.equal(approved.code, 0, approved.stderr);
+  const store = readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name))[0];
+  const record = JSON.parse(readFileSync(join(store, `${JSON.parse(approved.stdout).job.id}.json`), 'utf8'));
+  assert.deepEqual(record.request.runnerArgs.slice(record.request.runnerArgs.indexOf('--grant'), record.request.runnerArgs.indexOf('--grant') + 2), ['--grant', listing.requests[0].suggested_rule]);
+});
+
+test('approval refuses an index the job never reported and a raw --grant', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-approve-'));
+  const plain = parsed(await runCompanion(['task', '--json', 'CASE_SUCCESS'], { env, cwd }));
+  const fake = await runCompanion(['task', '--approve', `${plain.job.id}:0`], { env, cwd });
+  assert.notEqual(fake.code, 0);
+  assert.match(fake.stderr, /no permission request 0/);
+  const raw = await runCompanion(['task', '--grant', 'command(ls)', 'x'], { env, cwd });
+  assert.match(raw.stderr, /Unknown option: --grant/);
 });
