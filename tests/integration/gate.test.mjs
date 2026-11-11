@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -87,4 +87,27 @@ test('a malformed hook input lets the stop pass', async () => {
   const run = await runCompanion(['hook', 'stop'], { env, cwd, input: 'not json' });
   assert.equal(run.code, 0);
   assert.notEqual(run.stdout.trim() ? JSON.parse(run.stdout).decision : undefined, 'block');
+});
+
+test('without a light-tier model the gate skips instead of running the default model', async () => {
+  const env = companionEnv({ FAKE_AGY_MODELS: 'other-model-x\tOther Model\n' });
+  const run = await gate({ cwd: repository('CASE_REVIEW change'), env });
+  assert.equal(run.code, 0);
+  assert.match(JSON.parse(run.stdout).systemMessage, /light/);
+  assert.equal(jobCount(env), 0);
+});
+
+test('past its deadline the gate stops agy and lets the stop pass', { skip: process.platform === 'win32' && 'POSIX signals' }, async () => {
+  const env = companionEnv({ AGYBIRD_GATE_DEADLINE_MS: '3000' });
+  const cwd = repository('CASE_STUBBORN change');
+  const started = Date.now();
+  const run = await gate({ cwd, env });
+  assert.ok(Date.now() - started < 30_000, `took ${Date.now() - started}ms`);
+  assert.equal(run.code, 0);
+  assert.match(JSON.parse(run.stdout).systemMessage, /did not finish/);
+  const pidFile = join(cwd, 'fake-agy.pid');
+  if (existsSync(pidFile)) {
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.throws(() => process.kill(pid, 0), /ESRCH/, 'agy must be stopped');
+  }
 });

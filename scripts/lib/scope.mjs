@@ -44,6 +44,7 @@ function filterOverrides(cwd) {
     cwd,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
+    timeout: 60_000,
     shell: false,
     windowsHide: true,
   }));
@@ -71,6 +72,8 @@ function git(cwd, args, { allowFailure = false, maxBuffer = 16 * 1024 * 1024, in
     encoding: 'utf8',
     maxBuffer,
     input,
+    // A git call that hangs (a slow filesystem, a lock) must not hold up a review or the Stop hook.
+    timeout: 60_000,
     shell: false,
     windowsHide: true,
   });

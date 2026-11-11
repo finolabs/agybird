@@ -305,10 +305,11 @@ function summary(job) {
 
 // Shared by every command that runs a model: foreground waits and prints,
 // background returns the job id at once.
-export async function launch({ cwd, kind, title, request, background, env = process.env, model }) {
+export async function launch({ cwd, kind, title, request, background, env = process.env, model, onCreated }) {
   const workspace = workspaceRoot(cwd);
   const directory = workspaceDirectory(workspace, env);
   const job = createJob({ directory, workspace, kind, title, request, model });
+  onCreated?.({ directory, id: job.id });
   if (background) {
     startWorker(directory, job, env);
     return { job: summary(readJob(directory, job.id)), directory };
@@ -544,6 +545,21 @@ async function commandTask(argv, env) {
   output(options, { job: result.job, envelope: result.envelope }, rendered);
 }
 
+// Fills every placeholder in one pass over the template, so a value that
+// itself contains a placeholder (a file named {{DIFF}}) is never expanded.
+export function fillTemplate(template, values) {
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (token, name) => (Object.hasOwn(values, name) ? String(values[name]) : token));
+}
+
+// Escapes the closing tag of a delimited block inside untrusted text.
+function escapeBlock(text, tag) {
+  return String(text).replaceAll(`</${tag}`, `<\\/${tag}`);
+}
+
+function fileList(files) {
+  return escapeBlock(files.map((file) => `- ${file}`).join('\n') || '- (none listed)', 'agybird_changed_files');
+}
+
 function reviewTarget(scope) {
   const base = scope.kind === 'branch' ? `the branch against ${scope.base}` : 'the uncommitted working-tree changes';
   return scope.truncated ? `${base} (the diff was cut to fit; read the listed files for the rest)` : base;
@@ -553,12 +569,12 @@ function reviewTarget(scope) {
 // conversation kept apart from the workspace task session, with a findings schema.
 export function buildReviewRequest({ kind, scope, options, focus = '' }) {
   const template = readFileSync(join(PLUGIN_ROOT, 'prompts', `${kind === 'adversarial-review' ? 'adversarial-review' : 'review'}.md`), 'utf8');
-  const diff = scope.diff.replaceAll('</agybird_review_diff', '<\\/agybird_review_diff');
-  const prompt = template
-    .replace('{{TARGET}}', () => reviewTarget(scope))
-    .replace('{{FOCUS}}', () => (focus ? `Focus the user asked for: ${focus}\n` : ''))
-    .replace('{{FILES}}', () => scope.files.map((file) => `- ${file}`).join('\n') || '- (none listed)')
-    .replace('{{DIFF}}', () => diff);
+  const prompt = fillTemplate(template, {
+    TARGET: reviewTarget(scope),
+    FOCUS: focus ? `Focus the user asked for: ${focus}\n` : '',
+    FILES: fileList(scope.files),
+    DIFF: escapeBlock(scope.diff, 'agybird_review_diff'),
+  });
   // The runner's own state folder keeps grant locks and recovery shared with
   // tasks; --no-record keeps this run from replacing the task session.
   const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
@@ -702,6 +718,7 @@ async function commandImage(argv, env) {
 }
 
 const BLOCKING = new Set(['critical', 'high', 'medium']);
+const GATE_DEADLINE_MS = 12 * 60_000;
 const MAX_AGENT_MESSAGE = 4_000;
 
 function hookInput(text) {
@@ -737,18 +754,44 @@ async function stopGate(env) {
   }
   if (!scope.diff) return;
   try {
+    // The gate runs only on an explicit light-tier model; it never falls back to
+    // agy's default, which may draw on a more expensive allowance.
     const { model } = pickModel({ cwd, env, tier: 'light' });
+    if (!model) {
+      hookNotice('no light-tier model with quota could be chosen; run /agybird:usage.');
+      return;
+    }
     const template = readFileSync(join(PLUGIN_ROOT, 'prompts', 'stop-gate.md'), 'utf8');
-    const message = String(input.last_assistant_message ?? '').slice(0, MAX_AGENT_MESSAGE).replaceAll('</agybird_agent_message', '<\\/agybird_agent_message');
-    const diff = scope.diff.replaceAll('</agybird_review_diff', '<\\/agybird_review_diff');
-    const prompt = template
-      .replace('{{LAST_MESSAGE}}', () => message || '(none)')
-      .replace('{{FILES}}', () => scope.files.map((file) => `- ${file}`).join('\n'))
-      .replace('{{DIFF}}', () => diff);
+    const prompt = fillTemplate(template, {
+      LAST_MESSAGE: escapeBlock(String(input.last_assistant_message ?? '').slice(0, MAX_AGENT_MESSAGE), 'agybird_agent_message') || '(none)',
+      FILES: fileList(scope.files),
+      DIFF: escapeBlock(scope.diff, 'agybird_review_diff'),
+    });
     const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
     if (model) runnerArgs.push('--model', model);
     const request = { category: 'code', mode: 'read', timeout: '8m', runnerArgs, prompt };
-    const result = await launch({ cwd, kind: 'stop-review', title: 'Stop review gate', request, background: false, env, model });
+    // A deadline well inside the hook's own timeout: past it the job is cancelled,
+    // its worker (this process) stops the runner it owns, and the stop passes.
+    let created = null;
+    const deadlineMs = Number(env.AGYBIRD_GATE_DEADLINE_MS) > 0 ? Number(env.AGYBIRD_GATE_DEADLINE_MS) : GATE_DEADLINE_MS;
+    let timer;
+    const expired = new Promise((done) => { timer = setTimeout(() => done(null), deadlineMs); });
+    const result = await Promise.race([
+      launch({ cwd, kind: 'stop-review', title: 'Stop review gate', request, background: false, env, model, onCreated: (job) => { created = job; } }),
+      expired,
+    ]);
+    clearTimeout(timer);
+    if (!result) {
+      if (created) {
+        markCancelled(created.directory, created.id);
+        const until = Date.now() + 10_000;
+        while (Date.now() < until && !readJob(created.directory, created.id)?.stoppedAt) {
+          await new Promise((done) => setTimeout(done, 200));
+        }
+      }
+      hookNotice(`the review did not finish within ${Math.round(deadlineMs / 1000)}s and was stopped.`);
+      process.exit(0);
+    }
     const review = result.envelope?.structured_output;
     if (result.envelope?.status !== 'success' || !review || !Array.isArray(review.findings)) {
       hookNotice(`the review ended as ${result.envelope?.status ?? result.job.status}; see /agybird:result ${result.job.id}.`);

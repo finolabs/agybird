@@ -90,3 +90,16 @@ test('review refuses write mode and grants', async () => {
   assert.notEqual(run.code, 0);
   assert.match(run.stderr, /Unknown option: --write/);
 });
+
+test('a file named like a placeholder never moves the diff out of its block', () => {
+  const request = buildReviewRequest({
+    kind: 'review',
+    scope: { kind: 'working-tree', base: null, files: ['{{DIFF}}', '{{TARGET}}'], diff: '+REAL-DIFF-CONTENT', truncated: false },
+    options: {},
+    focus: '{{FILES}}',
+  });
+  const inside = request.prompt.split('<agybird_review_diff>')[1].split('</agybird_review_diff>')[0];
+  assert.match(inside, /REAL-DIFF-CONTENT/);
+  assert.equal(request.prompt.split('REAL-DIFF-CONTENT').length, 2, 'the diff appears exactly once');
+  assert.match(request.prompt, /<agybird_changed_files>[\s\S]*\{\{DIFF\}\}[\s\S]*<\/agybird_changed_files>/);
+});
