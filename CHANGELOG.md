@@ -4,6 +4,12 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- Added commands for Claude Code and Codex, on a par with OpenAI's `codex` plugin: review, adversarial review, rescue (task delegation through an `agybird-rescue` subagent in Claude Code), status, result, cancel, setup, usage and image. In Codex each command is a skill (`$agybird-review` and the rest). Review and rescue can run in the background.
+- Review and rescue pick their model from `agy -p /usage` when none is named, the usable model of the tier with the most room, and stop with the reset times when the tier is spent.
+- An approval of a permission names a reported request (`--approve <job>:<n>`) and resumes that job's own conversation, mode and model; a raw rule is never passed.
+- Added an opt-in Stop review gate (`/agybird:setup --enable-review-gate`): Antigravity reviews the turn's uncommitted changes read-only and sends Claude back once on a medium or worse finding. Off by default; it spends quota on every gated turn.
+- The runner gained `--no-record`, which keeps a `--new-session` run from replacing the workspace's recorded conversation. Nothing else in the runner or its envelope changed.
+
 ## 0.4.1 - 2026-11-11
 
 Checked against `agy` 1.5.5: the timeout format was read from a live run; the tests use a recorded stream.

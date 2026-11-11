@@ -82,7 +82,7 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 
 ### US6
 - [ ] T10 Directory edition folder, listing fields, parity check in CI
-- [ ] T11 README, PRIVACY, threat model and help updated against what ships
+- [x] T11 README, PRIVACY, threat model and help updated against what ships
 
 ### US7
 - [ ] T12 Release per O1, catalog pin, directory submission pack for Fio

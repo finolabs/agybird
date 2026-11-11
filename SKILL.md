@@ -20,6 +20,8 @@ Use the official Antigravity CLI as a delegated worker while keeping its authent
 5. Read [references/troubleshooting.md](references/troubleshooting.md) only when `agy` is missing, authentication fails, permissions block work, quota is exhausted, or output cannot be parsed.
 6. Read [references/docs.md](references/docs.md) when deep or specialized official Antigravity documentation is needed.
 
+When the plugin is installed, the user can also call its commands directly (`/agybird:review`, `/agybird:rescue` and the rest in Claude Code; `$agybird-review` and the rest in Codex). This skill covers delegation the user asks for in their own words.
+
 ## Core workflow
 
 1. Resolve this skill's absolute directory and verify Node.js 20 or newer.
