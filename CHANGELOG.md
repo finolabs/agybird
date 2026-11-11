@@ -8,7 +8,8 @@ All notable changes to Agybird are documented in this file.
 - Review and rescue pick their model from `agy -p /usage` when none is named, the usable model of the tier with the most room, and stop with the reset times when the tier is spent.
 - An approval of a permission names a reported request (`--approve <job>:<n>`) and resumes that job's own conversation, mode and model; a raw rule is never passed.
 - Added an opt-in Stop review gate (`/agybird:setup --enable-review-gate`): Antigravity reviews the turn's uncommitted changes read-only and sends Claude back once on a medium or worse finding. Off by default; it spends quota on every gated turn.
-- The runner gained `--no-record`, which keeps a `--new-session` run from replacing the workspace's recorded conversation. Nothing else in the runner or its envelope changed.
+- The runner gained `--no-record`, which keeps a `--new-session` run from replacing the workspace's recorded conversation. Its envelope is unchanged.
+- A grant can no longer reach another conversation's run: every run registers itself and its `agy` process before it checks the grant lock, and a grant waits while a run on another conversation is going, including an `agy` that outlived a killed runner. The grant lock is now taken by publishing the next generation under `~/.agybird/grant-locks/<workspace>/` and is never deleted to be taken, which also fixes two concurrent grants on one conversation leaving a one-time rule in place.
 
 ## 0.4.1 - 2026-11-11
 
