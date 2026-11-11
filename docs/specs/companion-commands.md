@@ -89,4 +89,4 @@ Risks: Stop hook spends quota on every gated stop (default off, lighter model, t
 
 ## Evidence
 
-Pending.
+US1 (T1, T2), head 5510ef7: jobs.test.mjs 9/9, companion.test.mjs 10/10, plugin-contract + install-layout 15/15 (Node 26, macOS). `scripts/lib/jobs.mjs` was written before its tests; every later change started from a failing test. Codex read-only review: round 1 on 71f099c REWORK (code: cancel overwritten, cancelled job started, process tree not ensured; security: `$ARGUMENTS` in inline shell, pid reuse), round 2 on 1b20ac3 REWORK (claim-to-spawn window, stale job uncancellable, heartbeat not proof of identity), round 3 on 5670eee code REWORK (stoppedAt after a failed registration) and security APPROVE; with Fio's go for a third round, 5510ef7 code APPROVE and security APPROVE. Disposition: a runner whose worker died is reported with its pid, never signalled; the renderer written ahead of US2 was kept.
