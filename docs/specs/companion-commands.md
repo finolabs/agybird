@@ -99,3 +99,5 @@ US4 (T8), head 15e91d2: gate 11/11, scope 16/16, review 8/8, commands 14/14, com
 
 US5 (T9), head 438baef: codex-skills 5/5, plugin-contract 14/14, install-layout 1/1; claude plugin validate --strict and --profile directory passed; agy plugin validate loads 1 skill and 0 agents. Codex read-only review: code APPROVE (one LOW, the stale agent path in this record, fixed here) and security APPROVE on the first round. Not verified: a real Codex install of the skills and the shared hook.
 
+US6 (T10, T11), head 4d57782: directory-edition 6/6, gate 11/11, commands 14/14, companion 10/10, approvals 5/5, codex-skills 5/5, plugin-contract 14/14, arguments 7/7, image-artifacts 9/9, runner 24/24, docs-contract 6/6, skill-contract 7/7, install-layout 1/1 (Node 26, macOS); claude plugin validate directory/agybird --profile directory --strict passed; root validators unchanged. Codex read-only review: c392eeb code REWORK (CRLF checkouts read the edition as stale), security APPROVE with two LOW disclosure gaps; 4d57782 code APPROVE, security APPROVE. The full suite (npm run check) was not run locally.
+
