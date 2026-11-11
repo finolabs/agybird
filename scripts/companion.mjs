@@ -136,7 +136,6 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    onSpawn?.(child);
     // A separate group no longer hears Ctrl+C from the terminal, so pass it on.
     const forward = (signal) => {
       killTree(child.pid);
@@ -149,9 +148,16 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
     child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
     child.on('error', reject);
+    // Set when the caller could not register the runner; the child is stopped
+    // and the promise settles only after it has exited.
+    let spawnFailure = null;
     child.on('close', (code) => {
       process.removeListener('SIGINT', forward);
       process.removeListener('SIGTERM', forward);
+      if (spawnFailure) {
+        reject(spawnFailure);
+        return;
+      }
       const envelope = lastJsonLine(stdout);
       if (!envelope) {
         reject(new Error(`The runner returned no result (exit ${code}). ${stderr.trim().slice(-300)}`));
@@ -159,6 +165,14 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
       }
       resolvePromise({ envelope, stderr });
     });
+    try {
+      onSpawn?.(child);
+    } catch (error) {
+      spawnFailure = error;
+      child.stdin.destroy();
+      killTree(child.pid);
+      return;
+    }
     child.stdin.end(request.prompt);
   });
 }
@@ -247,9 +261,10 @@ async function executeJob(directory, job, env) {
     return updateJob(directory, job.id, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() });
   } finally {
     clearInterval(watch);
-    // Tells a waiting cancel that nothing of this job runs any more.
+    // Tells a waiting cancel that nothing of this job runs any more, which is
+    // only true when the runner never started or has exited.
     try {
-      updateJob(directory, job.id, { stoppedAt: new Date().toISOString() });
+      if (!runner || runnerExited) updateJob(directory, job.id, { stoppedAt: new Date().toISOString() });
     } catch {
       // the record stays without it; cancel then reports the process as unconfirmed
     }

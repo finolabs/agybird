@@ -131,6 +131,25 @@ test('cancel never signals a recorded pid whose worker is gone', async () => {
   }
 });
 
+test('a failure right after spawn stops the runner before reporting', async () => {
+  const { runRunner } = await import('../../scripts/companion.mjs');
+  const workspace = mkdtempSync(join(tmpdir(), 'agybird-c-ws-'));
+  let runnerPid;
+  await assert.rejects(
+    runRunner({
+      workspace,
+      env: companionEnv(),
+      request: { category: 'code', mode: 'read', timeout: '30s', runnerArgs: [], prompt: 'CASE_HANG forever' },
+      onSpawn: (child) => {
+        runnerPid = child.pid;
+        throw new Error('registration failed');
+      },
+    }),
+    /registration failed/,
+  );
+  assert.throws(() => process.kill(runnerPid, 0), /ESRCH/, 'the runner must be gone once runRunner rejects');
+});
+
 test('slash commands never splice $ARGUMENTS into inline shell', () => {
   for (const name of readdirSync(join(projectRoot, 'commands'))) {
     const text = readFileSync(join(projectRoot, 'commands', name), 'utf8');
