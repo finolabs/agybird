@@ -36,7 +36,7 @@ Open, owned by Fio:
 - [ ] AC9 The same commands work as Codex skills (`$agybird-review` and the rest) from `.codex-plugin`, and the Codex hook file runs the same gate.
 - [ ] AC10 The directory edition passes `claude plugin validate --profile directory --strict`, contains no image capability, no `.DS_Store`, no lockfile install, and every file it runs inside its folder; CI fails when its shared files differ from the full edition.
 - [ ] AC11 README, PRIVACY, threat model and in-plugin help say what each command and the gate send to Google through `agy`, what is stored and where, and that Agybird is unofficial; directory listing fields (`icon`, `documentationUrl`, `supportUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) point at files in the public repository.
-- [ ] AC12 The runner's existing envelope contract and all existing tests are unchanged.
+- [ ] AC12 The runner's envelope contract and existing behaviour are unchanged; its only change is the additive `--no-record` flag (with `--new-session`), and existing tests change only to list that default.
 
 ## Plan
 
