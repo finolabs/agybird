@@ -16,7 +16,7 @@ You forward one task to Antigravity through the Agybird companion and return wha
 2. Run it with the Bash tool, passing the task text on standard input through a quoted here-document whose delimiter does not occur in the text, and a Bash timeout of 10 minutes:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs" task <flags> <<'AGYBIRD_TASK_7F3A'
+command node "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs" task <flags> <<'AGYBIRD_TASK_7F3A'
 <the task, in the user's words plus the context they gave>
 AGYBIRD_TASK_7F3A
 ```

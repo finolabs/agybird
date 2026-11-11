@@ -54,3 +54,17 @@ test('Antigravity loads no subagent: Claude Code agents live outside agents/', (
   assert.ok(existsSync(join(root, 'claude-agents', 'agybird-rescue.md')));
   assert.deepEqual(readdirSync(join(root, 'agents')).filter((name) => name.endsWith('.md')), []);
 });
+
+test('host instructions call node through `command`, so a shell function named node cannot break them', () => {
+  const sources = [
+    ...readdirSync(join(root, 'commands')).map((name) => join(root, 'commands', name)),
+    join(root, 'claude-agents', 'agybird-rescue.md'),
+    ...readdirSync(join(root, '.codex-skills')).map((name) => join(root, '.codex-skills', name, 'SKILL.md')),
+    join(root, 'references', 'common.md'),
+  ];
+  for (const path of sources) {
+    const text = readFileSync(path, 'utf8');
+    // Any call of node followed by a quoted path, an absolute path or the plugin root.
+    assert.doesNotMatch(text, /(?<!command )(?<![\w-])node (?="|\/|<plugin-root>|\$\{CLAUDE_PLUGIN_ROOT\})/, `${path} calls node without command`);
+  }
+});
