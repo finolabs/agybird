@@ -8,7 +8,7 @@ description: Generate an image, or edit reference images, with Antigravity image
 The plugin root is the folder two directories above the one that holds this file. Run the command below with the shell from the user's repository. Pass each of the user's arguments as its own single-quoted word and nothing else; if an argument contains a single quote or a newline, stop and ask the user to rephrase it. Pass the user's description of the image on standard input through a quoted here-document whose delimiter does not occur in it, and allow up to 10 minutes.
 
 ```bash
-node "<plugin-root>/scripts/companion.mjs" image [--reference <absolute path>]... <<'AGYBIRD_INPUT_7F3A'
+command node "<plugin-root>/scripts/companion.mjs" image [--reference <absolute path>]... <<'AGYBIRD_INPUT_7F3A'
 <the user's description of the image>
 AGYBIRD_INPUT_7F3A
 ```

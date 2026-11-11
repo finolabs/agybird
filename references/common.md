@@ -9,13 +9,13 @@ Require Node.js 20 or newer and the official `agy` executable. Run `agy --versio
 Pass the user's task through standard input (`stdin`) so it is not placed in the process argument list. Launch the runner from the skill's absolute path:
 
 ```text
-node /absolute/path/to/agybird/scripts/agybird.mjs --category CATEGORY --cwd /absolute/workspace --mode MODE
+command node /absolute/path/to/agybird/scripts/agybird.mjs --category CATEGORY --cwd /absolute/workspace --mode MODE
 ```
 
-Use the execution tool's stdin channel when it has one. Otherwise use a single-quoted here-document delimiter that does not occur in the prompt; this prevents shell interpolation:
+`command node` runs the real `node` on `PATH` even when the shell defines a function or alias named `node`, as some version managers do. Use the execution tool's stdin channel when it has one. Otherwise use a single-quoted here-document delimiter that does not occur in the prompt; this prevents shell interpolation:
 
 ```bash
-node "/absolute/path/to/agybird/scripts/agybird.mjs" \
+command node "/absolute/path/to/agybird/scripts/agybird.mjs" \
   --category general \
   --cwd "/absolute/workspace" \
   --mode read <<'AGYBIRD_PROMPT_7F3A'

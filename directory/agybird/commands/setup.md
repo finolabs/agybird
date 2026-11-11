@@ -7,7 +7,7 @@ disable-model-invocation: true
 Run this with the Bash tool, adding the user's flag after `setup` only if it is exactly `--enable-review-gate` or `--disable-review-gate`. Pass nothing else.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs" setup
+command node "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs" setup
 ```
 
 The user's arguments: $ARGUMENTS
