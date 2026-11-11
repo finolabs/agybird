@@ -112,6 +112,25 @@ test('cancel ends a provider process that ignores SIGTERM', { skip: process.plat
   assert.equal(gone, true);
 });
 
+test('cancel never signals a recorded pid whose worker is gone', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-c-ws-'));
+  // An unrelated process that happens to hold the pid the record names.
+  const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: process.platform !== 'win32', stdio: 'ignore' });
+  try {
+    const { workspaceDirectory, workspaceRoot, writeJob, newJobId } = await import('../../scripts/lib/jobs.mjs');
+    const directory = workspaceDirectory(workspaceRoot(cwd), env);
+    const stale = new Date(Date.now() - 5_000).toISOString();
+    const id = newJobId();
+    writeJob(directory, { id, kind: 'task', status: 'running', pid: bystander.pid, runnerPid: bystander.pid, createdAt: stale, heartbeatAt: new Date(Date.now() - 120_000).toISOString(), timeoutMs: 600_000 });
+    const result = json(await runCompanion(['cancel', id, '--json'], { env, cwd }));
+    assert.equal(result.stopped, false);
+    process.kill(bystander.pid, 0);
+  } finally {
+    bystander.kill('SIGKILL');
+  }
+});
+
 test('slash commands never splice $ARGUMENTS into inline shell', () => {
   for (const name of readdirSync(join(projectRoot, 'commands'))) {
     const text = readFileSync(join(projectRoot, 'commands', name), 'utf8');

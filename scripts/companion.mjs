@@ -31,6 +31,9 @@ import { renderJobTable, renderOutcome } from './lib/render.mjs';
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 const COMPANION_PATH = fileURLToPath(import.meta.url);
+// How often a worker looks for a cancel, and how long cancel waits for it.
+const CANCEL_POLL_MS = 1_000;
+const CANCEL_WAIT_MS = 15_000;
 
 // Slash commands pass "$ARGUMENTS" as one string. Split it the way a shell
 // would for plain words and quotes, without ever invoking a shell.
@@ -194,20 +197,42 @@ async function executeJob(directory, job, env) {
   const request = { ...job.request, prompt: readFileSync(promptPath(directory, job.id), 'utf8') };
   // Only a queued job can be claimed; a job cancelled before this point never runs.
   if (!claimJob(directory, job.id, process.pid)) return readJob(directory, job.id);
-  const beat = setInterval(() => {
+  // Only this process may stop the runner: it holds the child handle, so it
+  // knows the pid is still its own. Cancel just marks the record and waits.
+  let runner = null;
+  let runnerExited = false;
+  let lastBeat = 0;
+  const stopIfCancelled = () => {
     try {
-      updateJob(directory, job.id, { heartbeatAt: new Date().toISOString() });
+      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') killTree(runner.pid);
     } catch {
-      // the next beat retries
+      // the next check retries
     }
-  }, HEARTBEAT_MS);
-  beat.unref();
+  };
+  const watch = setInterval(() => {
+    stopIfCancelled();
+    if (Date.now() - lastBeat >= HEARTBEAT_MS) {
+      lastBeat = Date.now();
+      try {
+        updateJob(directory, job.id, { heartbeatAt: new Date().toISOString() });
+      } catch {
+        // the next beat retries
+      }
+    }
+  }, CANCEL_POLL_MS);
+  watch.unref();
   try {
     const { envelope } = await runRunner({
       workspace: job.workspace,
       request,
       env,
-      onSpawn: (child) => updateJob(directory, job.id, { runnerPid: child.pid }),
+      onSpawn: (child) => {
+        runner = child;
+        child.once('exit', () => { runnerExited = true; });
+        updateJob(directory, job.id, { runnerPid: child.pid });
+        // A cancel that landed between the claim and this spawn is honoured now.
+        stopIfCancelled();
+      },
     });
     writeFileSync(resultPath(directory, job.id), `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
     const rendered = renderOutcome(job, envelope);
@@ -221,7 +246,13 @@ async function executeJob(directory, job, env) {
   } catch (error) {
     return updateJob(directory, job.id, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() });
   } finally {
-    clearInterval(beat);
+    clearInterval(watch);
+    // Tells a waiting cancel that nothing of this job runs any more.
+    try {
+      updateJob(directory, job.id, { stoppedAt: new Date().toISOString() });
+    } catch {
+      // the record stays without it; cancel then reports the process as unconfirmed
+    }
   }
 }
 
@@ -315,21 +346,39 @@ async function commandResult(argv, env) {
 async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
-  const job = resolveJob(directory, positional[0], { preferActive: true });
-  // Mark first under the job lock, so a worker that reports in while it dies
-  // cannot overwrite the cancel, and a queued job is never claimed afterwards.
+  // Read the record as stored: settling a stale job first would hide that its
+  // runner may still be alive.
+  const job = positional[0] ? readJob(directory, positional[0]) : resolveJob(directory, undefined, { preferActive: true });
+  if (!job) throw new Error(`No job ${positional[0]} in this workspace`);
+  // Mark under the job lock, so a worker that reports in while it dies cannot
+  // overwrite the cancel, and a queued job is never claimed afterwards.
   const { before, after } = markCancelled(directory, job.id);
+  const unconfirmed = (pid) => `If Antigravity process ${pid} is still running, end it yourself; Agybird does not signal a process it cannot prove is its own.`;
   if (before.status !== 'queued' && before.status !== 'running') {
-    output(options, { job: summary(after) }, `Job ${job.id} already ended as ${before.status}.`);
+    const hint = before.runnerPid && !before.stoppedAt ? ` ${unconfirmed(before.runnerPid)}` : '';
+    output(options, { job: summary(after), stopped: !hint }, `Job ${job.id} already ended as ${before.status}.${hint}`);
     return;
   }
-  // Signal only a runner whose worker still beats: a stale pid may belong to
-  // an unrelated process by now.
-  const stopped = before.runnerPid && heartbeatFresh(before) ? killTree(before.runnerPid) : true;
+  if (before.status === 'queued') {
+    output(options, { job: summary(after), stopped: true }, `Cancelled ${job.id} before it started.`);
+    return;
+  }
+  // The worker stops its own runner; a worker that no longer beats cannot.
+  let stopped = false;
+  if (heartbeatFresh(before)) {
+    const deadline = Date.now() + CANCEL_WAIT_MS;
+    while (Date.now() < deadline) {
+      if (readJob(directory, job.id)?.stoppedAt) {
+        stopped = true;
+        break;
+      }
+      await new Promise((done) => setTimeout(done, 200));
+    }
+  }
   output(
     options,
-    { job: summary(after), stopped },
-    stopped ? `Cancelled ${job.id}.` : `Marked ${job.id} cancelled, but its Antigravity process did not stop; end process ${before.runnerPid} yourself.`,
+    { job: summary(readJob(directory, job.id) ?? after), stopped },
+    stopped ? `Cancelled ${job.id}.` : `Marked ${job.id} cancelled, but its worker did not confirm the stop.${before.runnerPid ? ` ${unconfirmed(before.runnerPid)}` : ''}`,
   );
 }
 
