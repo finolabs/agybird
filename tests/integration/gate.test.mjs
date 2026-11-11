@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -109,5 +109,36 @@ test('past its deadline the gate stops agy and lets the stop pass', { skip: proc
   if (existsSync(pidFile)) {
     const pid = Number(readFileSync(pidFile, 'utf8'));
     assert.throws(() => process.kill(pid, 0), /ESRCH/, 'agy must be stopped');
+  }
+});
+
+test('a git that hangs cannot hold the hook past its deadline', { skip: process.platform === 'win32' && 'uses a POSIX shell script as git' }, async () => {
+  const cwd = repository('CASE_REVIEW change');
+  const realEnv = companionEnv();
+  assert.equal((await runCompanion(['setup', '--enable-review-gate'], { env: realEnv, cwd })).code, 0);
+  const stall = mkdtempSync(join(tmpdir(), 'agybird-stall-'));
+  writeFileSync(join(stall, 'git'), '#!/bin/sh\nsleep 120\n', { mode: 0o755 });
+  const env = { ...realEnv, PATH: `${stall}:${realEnv.PATH}`, AGYBIRD_GATE_DEADLINE_MS: '3000', AGYBIRD_GIT_TIMEOUT_MS: '1000' };
+  const started = Date.now();
+  const run = await runCompanion(['hook', 'stop'], { env, cwd, input: JSON.stringify({ hook_event_name: 'Stop', cwd, stop_hook_active: false }) });
+  assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started}ms`);
+  assert.equal(run.code, 0);
+  assert.notEqual(run.stdout.trim() ? JSON.parse(run.stdout).decision : undefined, 'block');
+});
+
+test('a job that cannot be created ends the hook at once with a notice', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'needs POSIX permissions as a normal user' }, async () => {
+  const env = companionEnv();
+  const cwd = repository('CASE_REVIEW change');
+  assert.equal((await runCompanion(['setup', '--enable-review-gate'], { env, cwd })).code, 0);
+  assert.equal((await runCompanion(['usage', '--json'], { env, cwd })).code, 0);
+  const store = readdirSync(env.AGYBIRD_JOBS_DIR).map((name) => join(env.AGYBIRD_JOBS_DIR, name)).find((path) => !path.endsWith('.json'));
+  chmodSync(store, 0o500);
+  try {
+    const started = Date.now();
+    const run = await runCompanion(['hook', 'stop'], { env, cwd, input: JSON.stringify({ hook_event_name: 'Stop', cwd, stop_hook_active: false }) });
+    assert.ok(Date.now() - started < 15_000, `took ${Date.now() - started}ms`);
+    assert.match(JSON.parse(run.stdout).systemMessage, /skipped/);
+  } finally {
+    chmodSync(store, 0o700);
   }
 });

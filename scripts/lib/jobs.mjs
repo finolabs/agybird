@@ -38,9 +38,12 @@ export function jobsRoot(env = process.env) {
 }
 
 export function workspaceRoot(cwd) {
+  // Bounded, so a stalled git can never hold a hook or a command; on a timeout
+  // the folder itself is the workspace.
   const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd,
     encoding: 'utf8',
+    timeout: Number(process.env.AGYBIRD_GIT_TIMEOUT_MS) > 0 ? Number(process.env.AGYBIRD_GIT_TIMEOUT_MS) : 30_000,
     shell: false,
     windowsHide: true,
   });

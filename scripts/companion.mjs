@@ -737,6 +737,10 @@ function hookNotice(message) {
 // The Stop review gate. It never fails the stop: anything that keeps it from
 // reviewing lets the turn end with a notice, and it blocks at most once in a row.
 async function stopGate(env) {
+  // The whole hook, preparation included, lives inside one deadline well within
+  // the hook timeout; each blocking step gets only the time that is left.
+  const deadlineMs = Number(env.AGYBIRD_GATE_DEADLINE_MS) > 0 ? Number(env.AGYBIRD_GATE_DEADLINE_MS) : GATE_DEADLINE_MS;
+  const deadlineAt = Date.now() + deadlineMs;
   const input = hookInput(await readStdin());
   if (!input) {
     hookNotice('the hook input could not be read.');
@@ -747,7 +751,7 @@ async function stopGate(env) {
   let scope;
   try {
     if (readConfig(cwd, env).reviewGate !== true) return;
-    scope = collectScope({ cwd, scope: 'working-tree' });
+    scope = collectScope({ cwd, scope: 'working-tree', deadline: deadlineAt });
   } catch (error) {
     hookNotice(error.message);
     return;
@@ -773,14 +777,17 @@ async function stopGate(env) {
     // A deadline well inside the hook's own timeout: past it the job is cancelled,
     // its worker (this process) stops the runner it owns, and the stop passes.
     let created = null;
-    const deadlineMs = Number(env.AGYBIRD_GATE_DEADLINE_MS) > 0 ? Number(env.AGYBIRD_GATE_DEADLINE_MS) : GATE_DEADLINE_MS;
     let timer;
-    const expired = new Promise((done) => { timer = setTimeout(() => done(null), deadlineMs); });
-    const result = await Promise.race([
-      launch({ cwd, kind: 'stop-review', title: 'Stop review gate', request, background: false, env, model, onCreated: (job) => { created = job; } }),
-      expired,
-    ]);
-    clearTimeout(timer);
+    const expired = new Promise((done) => { timer = setTimeout(() => done(null), Math.max(0, deadlineAt - Date.now())); });
+    let result;
+    try {
+      result = await Promise.race([
+        launch({ cwd, kind: 'stop-review', title: 'Stop review gate', request, background: false, env, model, onCreated: (job) => { created = job; } }),
+        expired,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
     if (!result) {
       if (created) {
         markCancelled(created.directory, created.id);

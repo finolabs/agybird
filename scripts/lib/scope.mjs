@@ -44,7 +44,7 @@ function filterOverrides(cwd) {
     cwd,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
-    timeout: 60_000,
+    timeout: callTimeout(),
     shell: false,
     windowsHide: true,
   }));
@@ -64,6 +64,15 @@ function attributeSource(top) {
 }
 
 let overrides = null;
+// Absolute time by which collection must end; every git call gets what is left.
+let deadlineAt = Infinity;
+
+function callTimeout() {
+  const cap = Number(process.env.AGYBIRD_GIT_TIMEOUT_MS) > 0 ? Number(process.env.AGYBIRD_GIT_TIMEOUT_MS) : 60_000;
+  const left = deadlineAt - Date.now();
+  if (left <= 0) throw new Error('Collecting the diff ran out of time.');
+  return Math.max(1, Math.min(cap, left));
+}
 let attrSource = null;
 
 function git(cwd, args, { allowFailure = false, maxBuffer = 16 * 1024 * 1024, input } = {}) {
@@ -73,7 +82,7 @@ function git(cwd, args, { allowFailure = false, maxBuffer = 16 * 1024 * 1024, in
     maxBuffer,
     input,
     // A git call that hangs (a slow filesystem, a lock) must not hold up a review or the Stop hook.
-    timeout: 60_000,
+    timeout: callTimeout(),
     shell: false,
     windowsHide: true,
   });
@@ -204,7 +213,8 @@ function emptyTree(top) {
   return gitText(top, ['hash-object', '-t', 'tree', '--stdin'], { input: '' }).trim();
 }
 
-export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX_BYTES }) {
+export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX_BYTES, deadline = Infinity }) {
+  deadlineAt = deadline;
   if (!['auto', 'working-tree', 'branch'].includes(scope)) throw new Error(`Invalid scope: ${scope}; use auto, working-tree or branch`);
   if (base !== undefined && !SAFE_REF.test(base)) throw new Error(`Invalid base: ${base}`);
   if (gitText(cwd, ['rev-parse', '--is-inside-work-tree'], { allowFailure: true })?.trim() !== 'true') {

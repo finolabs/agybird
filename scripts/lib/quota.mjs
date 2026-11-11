@@ -82,7 +82,7 @@ function runAgy(args, { cwd, env }) {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: 60_000,
+    timeout: 30_000,
     shell: false,
     windowsHide: true,
   });
