@@ -403,7 +403,8 @@ test('refuses to start a different conversation while another run holds a grant'
   // The same conversation may proceed: the grant was approved for it.
   const sameSession = await runRunner({ ...dirs, prompt: 'CASE_SUCCESS' });
   assert.equal(parseSingleEnvelope(sameSession.stdout).status, 'success');
-  assert.deepEqual(readdirSync(join(state, 'grant-locks')), [], 'the lock is released with the grant');
+  const { liveGrantLock } = await import('../../scripts/agybird.mjs');
+  assert.equal(liveGrantLock(dirs.cwd ?? sameSession.cwd, state), null, 'the lock is free once the holder is gone');
 });
 
 test('validates an absolute reference image before process execution', async () => {

@@ -104,7 +104,6 @@ test('a dead holder is superseded, not deleted, and only one run wins the next g
   assert.equal(JSON.parse(readFileSync(bLock, 'utf8')).conversation, 'conv-b');
   releaseGrantLock(bLock);
   assert.equal(liveGrantLock(cwd, directory, isRunning), null, 'released means free');
-  assert.deepEqual(lockFiles(directory), [], 'nothing is left after release');
 });
 
 test('a lock left in the previous single-file layout is still honoured', () => {
@@ -116,4 +115,51 @@ test('a lock left in the previous single-file layout is still honoured', () => {
   writeFileSync(legacy, JSON.stringify({ pid: process.pid, conversation: 'conv-legacy' }));
   assert.equal(liveGrantLock(cwd, directory, (pid) => pid === process.pid)?.conversation, 'conv-legacy');
   assert.equal(acquireGrantLock(cwd, 'conv-b', directory, (pid) => pid === process.pid), null);
+});
+
+test('a contender that wakes after the lock was released and taken again cannot take it too', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
+  const stale = acquireGrantLock(cwd, 'conv-old', directory, () => true);
+  writeFileSync(stale, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
+  const CEE = 333333;
+  let cLock = null;
+  // A sees the dead holder of generation 0 and pauses; meanwhile B takes the
+  // lock and releases it, and C takes it.
+  const isRunning = (pid) => {
+    if (pid === 111111 && cLock === null) {
+      const bLock = acquireGrantLock(cwd, 'conv-b', directory, () => false);
+      releaseGrantLock(bLock);
+      cLock = acquireGrantLock(cwd, 'conv-c', directory, () => false);
+      writeFileSync(cLock, JSON.stringify({ pid: CEE, conversation: 'conv-c' }));
+      return false;
+    }
+    return pid === CEE;
+  };
+  assert.equal(acquireGrantLock(cwd, 'conv-a', directory, isRunning), null, 'A must not take a lock C holds');
+  assert.equal(liveGrantLock(cwd, directory, isRunning)?.conversation, 'conv-c');
+});
+
+test('a contender whose generation was pruned meanwhile backs off', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-lock-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-lock-ws-'));
+  const first = acquireGrantLock(cwd, 'conv-old', directory, () => true);
+  writeFileSync(first, JSON.stringify({ pid: 111111, conversation: 'conv-old' }));
+  const folder = dirname(first);
+  const DEE = 444444;
+  let raced = false;
+  const isRunning = (pid) => {
+    if (pid === 111111 && !raced) {
+      raced = true;
+      // Many grants later: a live holder at generation 40, older ones pruned.
+      for (let n = 1; n < 40; n += 1) writeFileSync(join(folder, `${n}.json`), JSON.stringify({ released: true }));
+      writeFileSync(join(folder, '40.json'), JSON.stringify({ pid: DEE, conversation: 'conv-d' }));
+      for (let n = 0; n < 20; n += 1) rmSync(join(folder, `${n}.json`), { force: true });
+      return false;
+    }
+    return pid === DEE;
+  };
+  assert.equal(acquireGrantLock(cwd, 'conv-a', directory, isRunning), null);
+  assert.equal(liveGrantLock(cwd, directory, isRunning)?.conversation, 'conv-d');
+  assert.equal(readdirSync(folder).includes('1.json'), false, 'A removed the generation it published below the lock');
 });

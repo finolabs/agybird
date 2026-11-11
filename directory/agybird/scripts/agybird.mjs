@@ -14,7 +14,6 @@ import {
   readSync,
   realpathSync,
   renameSync,
-  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -367,9 +366,14 @@ function currentGrantLock(cwd, directory) {
   } catch {
     // no folder yet
   }
-  if (generation >= 0) return { path: join(folder, `${generation}.json`), generation };
-  const legacy = legacyGrantLockPath(cwd, directory);
-  return statOrNull(legacy) ? { path: legacy, generation: 0 } : null;
+  return generation >= 0 ? { path: join(folder, `${generation}.json`), generation } : null;
+}
+
+// A live lock in the single-file layout of earlier versions, which a run of an
+// older Agybird may still hold. It is read, never removed.
+function legacyHolder(cwd, directory, isRunning) {
+  const holder = readJsonOrNull(legacyGrantLockPath(cwd, directory));
+  return holder && holder.released !== true && lockIsLive(holder, isRunning) ? holder : null;
 }
 
 // A lock is published whole: its content is written to a private file first and
@@ -407,6 +411,8 @@ function publishExclusive(path, content) {
 // A lock that cannot be read is treated as held until it is this old.
 const UNREADABLE_LOCK_MS = 60_000;
 const HELD = Object.freeze({ pid: null, conversation: null });
+// Released generations kept below the lock, so a slow contender meets EEXIST.
+const KEPT_GENERATIONS = 20;
 
 function lockIsLive(holder, isRunning) {
   return Boolean(holder && Number.isInteger(holder.pid) && isRunning(holder.pid));
@@ -417,6 +423,7 @@ function lockIsLive(holder, isRunning) {
 function holderOf(current, isRunning) {
   if (!current) return null;
   const holder = readJsonOrNull(current.path);
+  if (holder?.released === true) return null;
   if (lockIsLive(holder, isRunning)) return holder;
   if (holder) return null;
   const stat = statOrNull(current.path);
@@ -425,7 +432,7 @@ function holderOf(current, isRunning) {
 
 // The holder of a live grant in this workspace, or null when the lock is free.
 export function liveGrantLock(cwd, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
-  return holderOf(currentGrantLock(cwd, directory), isRunning);
+  return legacyHolder(cwd, directory, isRunning) ?? holderOf(currentGrantLock(cwd, directory), isRunning);
 }
 
 export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTORY, isRunning = processIsRunning) {
@@ -434,7 +441,7 @@ export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTOR
   const content = JSON.stringify({ pid: process.pid, conversation: conversationId ?? null }, null, 1);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = currentGrantLock(cwd, directory);
-    if (holderOf(current, isRunning)) return null;
+    if (legacyHolder(cwd, directory, isRunning) || holderOf(current, isRunning)) return null;
     const next = (current?.generation ?? -1) + 1;
     const path = join(folder, `${next}.json`);
     let published;
@@ -447,12 +454,19 @@ export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTOR
       continue;
     }
     if (published) {
-      // Earlier generations can never be the lock again; clearing them is tidy, not required.
+      // A contender that saw an old generation may publish below the lock after
+      // older generations were pruned; it holds the lock only if it is highest.
+      if (currentGrantLock(cwd, directory)?.generation !== next) {
+        rmSync(path, { force: true });
+        continue;
+      }
+      // Generation numbers are never reused: release marks a generation
+      // released instead of deleting it, and only generations far below the
+      // lock are pruned.
       for (const name of readdirSync(folder)) {
         const match = /^(\d{1,15})\.json$/.exec(name);
-        if (match && Number(match[1]) < next) rmSync(join(folder, name), { force: true });
+        if (match && Number(match[1]) < next - KEPT_GENERATIONS) rmSync(join(folder, name), { force: true });
       }
-      rmSync(legacyGrantLockPath(cwd, directory), { force: true });
       return path;
     }
     // Another run published this generation first; look again.
@@ -460,13 +474,14 @@ export function acquireGrantLock(cwd, conversationId, directory = STATE_DIRECTOR
   return null;
 }
 
+// Marks the holder's own generation released. Deleting it would let a slower
+// contender publish the same generation number again.
 export function releaseGrantLock(path) {
   if (!path) return;
-  rmSync(path, { force: true });
   try {
-    rmdirSync(dirname(path));
+    writeJsonAtomically(path, { released: true, pid: process.pid });
   } catch {
-    // not empty, or already gone
+    rmSync(path, { force: true });
   }
 }
 
