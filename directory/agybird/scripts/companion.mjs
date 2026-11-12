@@ -671,9 +671,13 @@ async function commandSetup(argv, env) {
   const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
   const cwd = options.cwd ?? process.cwd();
+  // An edition built without hooks/ (the Codex directory edition) has no Stop
+  // hook to run the gate, so it must not let the user switch it on.
+  const gateAvailable = existsSync(join(PLUGIN_ROOT, 'hooks', 'hooks.json'));
+  if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
-  const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGate: readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
+  const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
   try {
     const binary = resolveAgyBinary(env);
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
@@ -694,7 +698,7 @@ async function commandSetup(argv, env) {
   const text = [
     `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
     `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
-    `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}`,
+    gateAvailable ? `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}` : 'Review gate: not included in this edition',
     ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
   ].join('\n');

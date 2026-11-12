@@ -42,3 +42,26 @@ Policy section 4B excludes software that uses AI models to generate images. `dir
 ## After submitting
 
 The directory scans each new commit on the ref it follows. Rebuild the edition (`node scripts/build-directory-edition.mjs`) in the same pull request as any change to a shared file, raise the version with each release, and tell Anthropic about a material change to what the plugin sends or where (policy 3H).
+
+# OpenAI Codex plugin directory
+
+Prepared for Fio to submit from the OpenAI plugin submission portal. Nothing has been submitted. Sources read on 2026-11-12: OpenAI's [plugin submission](https://developers.openai.com/plugins/deploy/submission), [desktop-only plugins](https://developers.openai.com/plugins/deploy/desktop-only) and [build plugins](https://developers.openai.com/codex/plugins/build) pages.
+
+## What to submit
+
+| Field | Value |
+| --- | --- |
+| Path | **Create plugin** → **Skills only** → **Upload ZIP** (desktop-only: Agybird runs the local `agy` CLI) |
+| ZIP | `dist/agybird-codex-<version>.zip`, built by `node scripts/build-codex-edition.mjs` from the release tag (needs `zip`) |
+| Manifest | `.codex-plugin/plugin.json`, legacy layout, with `requires_local_executor: true` at the top level |
+| Default prompts | the three `interface.defaultPrompt` entries in the manifest |
+| Release notes | the version's section of `CHANGELOG.md` |
+
+The ZIP holds the Codex skills, the runner and companion, the prompts, schema, references, icons and license. It leaves out `hooks/`, because OpenAI does not accept plugins with lifecycle hooks and Codex loads `hooks/hooks.json` on its own; the review gate goes with it, and `$agybird-setup` in this edition neither offers nor accepts it. Claude-only parts (commands, the Claude agent, the Claude and Antigravity manifests) are left out too. Image generation stays: the OpenAI pages name no restriction on it.
+
+## Before submitting (Fio)
+
+- Complete individual or business verification in the OpenAI organization settings, and submit as the organization owner or with Apps Management Write.
+- Desktop-only plugins may need allowlisting: if the portal rejects `requires_local_executor`, send the organization ID to an OpenAI representative and wait for confirmation.
+- Test a clean Codex desktop install of the unpacked ZIP and the main skills first.
+- The policy attestations in the portal are Fio's to make.
