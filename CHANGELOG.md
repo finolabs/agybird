@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.4 - 2026-11-12
+
 - Added `scripts/build-codex-edition.mjs`, which builds the ZIP for OpenAI's Codex plugin directory: the Codex plugin without its Stop hook, which that directory does not accept, and so without the review gate.
 - `setup` refuses `--enable-review-gate` in an edition that ships no Stop hook, and its report says the gate is not included (`reviewGateAvailable` in `--json`).
 - The Anthropic directory edition (`directory/agybird`) leaves out the Stop hook and its review gate, and its `/agybird:setup` no longer offers the gate. An edition without the Stop hook does not serve the `hook` command either.

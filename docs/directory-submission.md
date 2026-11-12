@@ -9,7 +9,7 @@ Prepared for Fio to submit from his own claude.ai account in the developer porta
 | Kind | Plugin bundle |
 | Repository | `finolabs/agybird` |
 | Plugin folder | `directory/agybird` (the folder holding `.claude-plugin/plugin.json`) |
-| Ref the directory follows | tag `v0.4.3`, the latest release that ships this edition; move it to each later release tag |
+| Ref the directory follows | tag `v0.4.4`, the latest release that ships this edition; move it to each later release tag |
 | Name | `agybird` (display name `Agybird`) |
 | Description | taken from `directory/agybird/.claude-plugin/plugin.json` (142 characters) |
 | Icon | `directory/agybird/assets/icon.svg`; a 512 px PNG is at `assets/icon.png` if the form asks for one |

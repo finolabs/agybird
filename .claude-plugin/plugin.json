@@ -7,7 +7,7 @@
   "supportUrl": "https://github.com/finolabs/agybird/issues",
   "privacyPolicyUrl": "https://github.com/finolabs/agybird/blob/main/PRIVACY.md",
   "termsOfServiceUrl": "https://github.com/finolabs/agybird/blob/main/TERMS.md",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Delegate code work, image generation or editing, and general tasks to the official Google Antigravity CLI through an existing Gemini subscription.",
   "author": {
     "name": "Fioenix",
