@@ -37,6 +37,9 @@ test('the edition runner refuses the image category and its companion has no ima
   assert.throws(() => runner.parseArgs(['--category', 'code', '--cwd', cwd, '--reference', '/x.png']), /Unknown option: --reference/);
   const companion = await import(pathToFileURL(join(edition, 'scripts', 'companion.mjs')).href);
   assert.equal('image' in companion.COMMANDS, false);
+  assert.equal('hook' in companion.COMMANDS, false, 'the edition has no Stop hook to serve');
+  const full = await import(pathToFileURL(join(root, 'scripts', 'companion.mjs')).href);
+  assert.equal('hook' in full.COMMANDS, true);
 });
 
 test('the edition manifest follows the package version and names the agent', () => {
