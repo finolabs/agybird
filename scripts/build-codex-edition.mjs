@@ -47,6 +47,9 @@ export function codexEditionFiles() {
   for (const path of OVERRIDES) files.set(path, readFileSync(join(EDITION, relative('.codex-skills', path))));
   const manifest = JSON.parse(files.get('.codex-plugin/plugin.json'));
   if (manifest.version !== JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version) throw new Error('.codex-plugin/plugin.json version differs from package.json');
+  // The edition ships no hooks/, so it must not point Codex at a hook file.
+  delete manifest.hooks;
+  files.set('.codex-plugin/plugin.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
   return files;
 }
 

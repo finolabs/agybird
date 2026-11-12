@@ -6,7 +6,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs\" hook stop",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs",
+              "hook",
+              "stop"
+            ],
             "timeout": 900
           }
         ]

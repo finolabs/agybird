@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- The Claude Code Stop hook runs `node` with its arguments as a list instead of a shell line, so the review gate works on Windows without Git Bash. Codex, whose hooks take no argument list, reads its own `hooks/codex-hooks.json`, named in its manifest.
+
 ## 0.4.4 - 2026-11-12
 
 - Added `scripts/build-codex-edition.mjs`, which builds the ZIP for OpenAI's Codex plugin directory: the Codex plugin without its Stop hook, which that directory does not accept, and so without the review gate.
