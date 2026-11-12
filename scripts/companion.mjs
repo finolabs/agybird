@@ -707,7 +707,7 @@ async function commandSetup(argv, env) {
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
     report.agy = { found: true, version: version.stdout.trim() || null, path: binary.displayPath };
   } catch (error) {
-    report.problems.push(`${error.message}. Install it from https://antigravity.google/docs/cli/install and sign in by running agy once.`);
+    report.problems.push(`${error.message}. Install the official Antigravity CLI as the Agybird README says, and sign in by running agy once.`);
   }
   if (report.agy.found) {
     try {

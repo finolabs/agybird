@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Builds directory/agybird/, the edition submitted to Anthropic's plugin
 // directory. The directory policy excludes AI image generation, so this edition
-// is the full plugin with every image-only region removed. Sources stay at the
+// is the full plugin with every image-only region removed. It also leaves out
+// the Stop hook and its review gate: a command hook from an organization that
+// is not Verified holds the listing for review and will later be refused. Sources stay at the
 // repository root; never edit the generated folder by hand.
 //
 //   node scripts/build-directory-edition.mjs          rebuild the folder
@@ -26,7 +28,6 @@ const CODE_FILES = [
 const COPIED_FILES = [
   'prompts/review.md',
   'prompts/adversarial-review.md',
-  'prompts/stop-gate.md',
   'schemas/review-output.schema.json',
   'commands/review.md',
   'commands/adversarial-review.md',
@@ -34,10 +35,8 @@ const COPIED_FILES = [
   'commands/status.md',
   'commands/result.md',
   'commands/cancel.md',
-  'commands/setup.md',
   'commands/usage.md',
   'claude-agents/agybird-rescue.md',
-  'hooks/hooks.json',
   'references/code.md',
   'references/docs.md',
   'LICENSE',
@@ -92,6 +91,7 @@ export function editionFiles() {
   for (const [path, edits] of Object.entries(REFERENCE_EDITS)) files.set(path, applyEdits(read(path), edits, path));
   files.set('SKILL.md', readFileSync(join(EDITION, 'SKILL.md'), 'utf8'));
   files.set('README.md', readFileSync(join(EDITION, 'README.md'), 'utf8'));
+  files.set('commands/setup.md', readFileSync(join(EDITION, 'commands', 'setup.md'), 'utf8'));
   const manifest = JSON.parse(readFileSync(join(EDITION, 'plugin.json'), 'utf8'));
   manifest.version = JSON.parse(read('package.json')).version;
   files.set('.claude-plugin/plugin.json', `${JSON.stringify(manifest, null, 2)}\n`);

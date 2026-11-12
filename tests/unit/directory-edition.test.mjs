@@ -57,3 +57,12 @@ test('line endings do not make an unchanged file read as stale', () => {
   assert.equal(sameContent('a\r\nb\r\n', 'a\nb\n'), true);
   assert.equal(sameContent('a\nb\n', 'a\nc\n'), false);
 });
+
+test('the directory edition ships no hook, no gate and no URL in its scripts', () => {
+  for (const path of files(edition)) {
+    const name = path.slice(edition.length + 1).split('\\').join('/');
+    assert.doesNotMatch(name, /^hooks\/|^prompts\/stop-gate\.md$/, `${name} belongs to the review gate`);
+    if (name.startsWith('scripts/')) assert.doesNotMatch(readFileSync(path, 'utf8'), /https?:\/\//, `${name} names a URL`);
+    if (name.startsWith('commands/') || name === 'README.md') assert.doesNotMatch(readFileSync(path, 'utf8'), /review gate|--enable-review-gate/i, `${name} offers the gate`);
+  }
+});
