@@ -23,7 +23,7 @@ This is an Agent Skill, a small local runner and a set of [commands](#commands),
 - Node.js 20 or newer.
 - The [official Antigravity CLI](https://antigravity.google/docs/cli/install), installed and authenticated by running `agy` interactively.
 - A Google account and Antigravity plan that is eligible for the requested capability.
-- Last checked live with `agy` 1.5.5 on macOS: a read-only run, an expired timeout, and the commands' review, a task with automatic model choice, usage and the review gate. Image, write and permission-grant runs were last checked live on earlier `agy` releases, and in an installed Claude Code only `/agybird:setup` has run so far (0.4.2, through `command node`); the other commands and Codex have not been checked installed. CI runs the suite on Linux, macOS, and Windows against a simulated `agy`, so a newer CLI that changes its JSON stream can break the runner until a release catches up.
+- Last checked live with `agy` 1.5.5 on macOS: a read-only run, an expired timeout, and the commands' review, a task with automatic model choice, usage and the review gate. Image, write and permission-grant runs were last checked live on earlier `agy` releases, and in an installed Claude Code only `/agybird:setup` has run so far (0.4.3, through `command node`); the other commands and Codex have not been checked installed. CI runs the suite on Linux, macOS, and Windows against a simulated `agy`, so a newer CLI that changes its JSON stream can break the runner until a release catches up.
 
 Google continues to enforce subscription eligibility, quota and credit availability, permissions, sandbox configuration, and generated-content policy. Agybird does not bypass any of them.
 
@@ -147,7 +147,7 @@ npm ci
 npm run check
 ```
 
-`directory/agybird/` is the edition submitted to Anthropic's plugin directory, whose policy excludes AI image generation: the same plugin with every `// agybird:image-start` region removed. It is generated, never edited by hand; run `node scripts/build-directory-edition.mjs` after changing a shared file, and the test suite fails while it is out of date.
+`directory/agybird/` is the edition submitted to Anthropic's plugin directory, whose policy excludes AI image generation: the same plugin with every `// agybird:image-start` region removed, and without the Stop hook and its review gate. `node scripts/build-codex-edition.mjs` builds `dist/agybird-codex-<version>.zip` for OpenAI's Codex plugin directory, which does not accept hooks: the Codex plugin without the hook and the gate. It is generated, never edited by hand; run `node scripts/build-directory-edition.mjs` after changing a shared file, and the test suite fails while it is out of date.
 
 Tests use a fake provider process and require no Google credentials. Live tests are manual and must never run in public CI.
 
