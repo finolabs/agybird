@@ -12,6 +12,7 @@
   "license": "MIT",
   "keywords": ["antigravity", "agy", "gemini", "delegation", "code-review", "agent-skills"],
   "skills": "./.codex-skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "Agybird",
     "shortDescription": "Delegate work to Antigravity",

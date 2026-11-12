@@ -57,7 +57,7 @@ Prepared for Fio to submit from the OpenAI plugin submission portal. Nothing has
 | Default prompts | the three `interface.defaultPrompt` entries in the manifest |
 | Release notes | the version's section of `CHANGELOG.md` |
 
-The ZIP holds the Codex skills, the runner and companion, the prompts, schema, references, icons and license. It leaves out `hooks/`, because OpenAI does not accept plugins with lifecycle hooks and Codex loads `hooks/hooks.json` on its own; the review gate goes with it, and `$agybird-setup` in this edition neither offers nor accepts it. Claude-only parts (commands, the Claude agent, the Claude and Antigravity manifests) are left out too. Image generation stays: the OpenAI pages name no restriction on it.
+The ZIP holds the Codex skills, the runner and companion, the prompts, schema, references, icons and license. It leaves out `hooks/` and drops the manifest's `hooks` entry, because OpenAI does not accept plugins with lifecycle hooks; the review gate goes with it, and `$agybird-setup` in this edition neither offers nor accepts it. Claude-only parts (commands, the Claude agent, the Claude and Antigravity manifests) are left out too. Image generation stays: the OpenAI pages name no restriction on it.
 
 ## Before submitting (Fio)
 

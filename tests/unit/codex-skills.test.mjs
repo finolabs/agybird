@@ -42,10 +42,15 @@ test('each command skill names its folder, runs only on request and calls a real
   }
 });
 
-test('Codex shares the Stop hook file, which resolves through CLAUDE_PLUGIN_ROOT on both hosts', () => {
-  assert.equal('hooks' in codex, false, 'Codex reads hooks/hooks.json by default');
-  assert.ok(existsSync(join(root, 'hooks', 'hooks.json')));
-  assert.match(readFileSync(join(root, 'hooks', 'hooks.json'), 'utf8'), /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/companion\.mjs\\" hook stop/);
+test('Claude Code runs the Stop hook in exec form; Codex, which has no args field, gets its own shell-form file', () => {
+  const claude = JSON.parse(readFileSync(join(root, 'hooks', 'hooks.json'), 'utf8')).hooks.Stop[0].hooks[0];
+  assert.equal(claude.command, 'node');
+  assert.deepEqual(claude.args, ['${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs', 'hook', 'stop']);
+  assert.equal(codex.hooks, './hooks/codex-hooks.json', 'an explicit Codex hooks path replaces discovery of hooks/hooks.json');
+  const shell = JSON.parse(readFileSync(join(root, 'hooks', 'codex-hooks.json'), 'utf8')).hooks.Stop[0].hooks[0];
+  assert.equal('args' in shell, false);
+  assert.match(shell.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/companion\.mjs" hook stop$/);
+  assert.equal(shell.timeout, claude.timeout);
 });
 
 test('Antigravity loads no subagent: Claude Code agents live outside agents/', () => {
