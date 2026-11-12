@@ -10,3 +10,4 @@ tmp/
 work/
 tests/live/output/
 docs/verification/private/
+dist/

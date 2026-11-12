@@ -4,6 +4,9 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- Added `scripts/build-codex-edition.mjs`, which builds the ZIP for OpenAI's Codex plugin directory: the Codex plugin without its Stop hook, which that directory does not accept, and so without the review gate.
+- `setup` refuses `--enable-review-gate` in an edition that ships no Stop hook, and its report says the gate is not included (`reviewGateAvailable` in `--json`).
+
 ## 0.4.3 - 2026-11-11
 
 - Commands, the rescue agent, the Codex skills and the skill's runner instructions call `command node` instead of `node`, so a shell function or alias named `node` (such as a version manager's lazy loader) can no longer break them.
