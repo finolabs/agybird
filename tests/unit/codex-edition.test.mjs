@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
@@ -32,7 +33,7 @@ test('the Codex edition keeps every skill and every file its skills and manifest
   assert.ok(manifest.interface.displayName.length <= 30 && manifest.interface.shortDescription.length <= 30);
 });
 
-test('the edition setup skill and companion offer no review gate', () => {
+test('the edition setup skill and companion offer no review gate', async () => {
   assert.doesNotMatch(text('.codex-skills/agybird-setup/SKILL.md'), /gate|hook/i);
   const root = mkdtempSync(join(tmpdir(), 'agybird-codex-edition-'));
   writeEdition(root, files);
@@ -43,4 +44,6 @@ test('the edition setup skill and companion offer no review gate', () => {
   assert.match(enable.stderr, /no review gate/i);
   const plain = spawnSync(process.execPath, [join(root, 'scripts', 'companion.mjs'), 'setup', '--json'], { cwd, env, encoding: 'utf8' });
   assert.equal(JSON.parse(plain.stdout).reviewGateAvailable, false);
+  const companion = await import(pathToFileURL(join(root, 'scripts', 'companion.mjs')).href);
+  assert.equal('hook' in companion.COMMANDS, false);
 });

@@ -37,6 +37,9 @@ test('the edition runner refuses the image category and its companion has no ima
   assert.throws(() => runner.parseArgs(['--category', 'code', '--cwd', cwd, '--reference', '/x.png']), /Unknown option: --reference/);
   const companion = await import(pathToFileURL(join(edition, 'scripts', 'companion.mjs')).href);
   assert.equal('image' in companion.COMMANDS, false);
+  assert.equal('hook' in companion.COMMANDS, false, 'the edition has no Stop hook to serve');
+  const full = await import(pathToFileURL(join(root, 'scripts', 'companion.mjs')).href);
+  assert.equal('hook' in full.COMMANDS, true);
 });
 
 test('the edition manifest follows the package version and names the agent', () => {
@@ -56,4 +59,13 @@ test('image regions must be balanced', () => {
 test('line endings do not make an unchanged file read as stale', () => {
   assert.equal(sameContent('a\r\nb\r\n', 'a\nb\n'), true);
   assert.equal(sameContent('a\nb\n', 'a\nc\n'), false);
+});
+
+test('the directory edition ships no hook, no gate and no URL in its scripts', () => {
+  for (const path of files(edition)) {
+    const name = path.slice(edition.length + 1).split('\\').join('/');
+    assert.doesNotMatch(name, /^hooks\/|^prompts\/stop-gate\.md$/, `${name} belongs to the review gate`);
+    if (name.startsWith('scripts/')) assert.doesNotMatch(readFileSync(path, 'utf8'), /https?:\/\//, `${name} names a URL`);
+    if (name.startsWith('commands/') || name === 'README.md') assert.doesNotMatch(readFileSync(path, 'utf8'), /review gate|--enable-review-gate/i, `${name} offers the gate`);
+  }
 });

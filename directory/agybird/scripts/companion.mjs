@@ -36,6 +36,10 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
+// An edition built without hooks/ (the Codex and Anthropic directory editions)
+// has no Stop hook to run the review gate: it neither offers the gate nor
+// serves the hook command, which would read a prompt the edition leaves out.
+const GATE_AVAILABLE = existsSync(join(PLUGIN_ROOT, 'hooks', 'hooks.json'));
 export const REVIEW_SCHEMA_PATH = join(PLUGIN_ROOT, 'schemas', 'review-output.schema.json');
 // How often a worker looks for a cancel, and how long cancel waits for it.
 const CANCEL_POLL_MS = 1_000;
@@ -671,9 +675,7 @@ async function commandSetup(argv, env) {
   const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
   const cwd = options.cwd ?? process.cwd();
-  // An edition built without hooks/ (the Codex directory edition) has no Stop
-  // hook to run the gate, so it must not let the user switch it on.
-  const gateAvailable = existsSync(join(PLUGIN_ROOT, 'hooks', 'hooks.json'));
+  const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
@@ -683,7 +685,7 @@ async function commandSetup(argv, env) {
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
     report.agy = { found: true, version: version.stdout.trim() || null, path: binary.displayPath };
   } catch (error) {
-    report.problems.push(`${error.message}. Install it from https://antigravity.google/docs/cli/install and sign in by running agy once.`);
+    report.problems.push(`${error.message}. Install the official Antigravity CLI as the Agybird README says, and sign in by running agy once.`);
   }
   if (report.agy.found) {
     try {
@@ -829,7 +831,7 @@ export const COMMANDS = {
   task: commandTask,
   usage: commandUsage,
   permissions: commandPermissions,
-  hook: commandHook,
+  ...(GATE_AVAILABLE ? { hook: commandHook } : {}),
   setup: commandSetup,
   review: reviewCommand('review'),
   'adversarial-review': reviewCommand('adversarial-review'),
