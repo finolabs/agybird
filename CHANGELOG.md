@@ -4,7 +4,7 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
-- Added the runner flag `--swarm`, which puts `/swarm` in front of the delegated task so `agy` 1.5.5+ runs it as a coordinator with worker agents. It needs `--new-session` and category `code` or `general`; workers do not appear in `subagents[]`. Checked live with `agy` 1.5.8 in `read` mode only.
+- Added the runner flag `--swarm`, which puts `/swarm` in front of the delegated task so `agy` runs it as a coordinator with worker agents (swarms are in the `agy` changelog from 1.5.5). It needs `--new-session`, `read` mode and category `code` or `general`; `write` is refused because worker modes and denials are unchecked. Workers do not appear in `subagents[]`. Checked live with `agy` 1.5.8 only.
 - The Claude Code Stop hook runs `node` with its arguments as a list instead of a shell line, so the review gate works on Windows without Git Bash. Codex, whose hooks take no argument list, reads its own `hooks/codex-hooks.json`, named in its manifest.
 
 ## 0.4.4 - 2026-11-12

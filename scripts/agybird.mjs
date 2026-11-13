@@ -163,6 +163,10 @@ export function validateRequest(options) {
     if (!options.newSession) {
       throw new Error('--swarm needs --new-session');
     }
+    // Only the coordinator is bound to --mode; whether workers inherit it, and how they are denied, is unchecked.
+    if (options.mode !== 'read') {
+      throw new Error('--swarm is only valid in read mode');
+    }
   }
   if (options.newSession && options.conversation !== undefined) {
     throw new Error('--new-session cannot be combined with --conversation');

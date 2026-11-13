@@ -170,3 +170,11 @@ test('--swarm is a flag that needs a fresh code or general session', () => {
     /--swarm is only valid with category code or general/,
   );
 });
+
+test('--swarm is refused in write mode until workers are checked there', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-swarm-write-'));
+  assert.throws(
+    () => validateRequest(parseArgs(['--category', 'code', '--cwd', cwd, '--mode', 'write', '--new-session', '--swarm'])),
+    /--swarm is only valid in read mode/,
+  );
+});
