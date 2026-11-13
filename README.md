@@ -1,10 +1,21 @@
-# Agybird
-
 ![Agybird — Delegate work to the Antigravity CLI you already use.](assets/wordmark.svg#gh-light-mode-only)
 ![Agybird — Delegate work to the Antigravity CLI you already use.](assets/wordmark-dark.svg#gh-dark-mode-only)
 
-[![release](https://img.shields.io/github/v/release/finolabs/agybird)](https://github.com/finolabs/agybird/releases/latest)
-[![CI](https://github.com/finolabs/agybird/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/finolabs/agybird/actions/workflows/ci.yml)
+<p align="center"><strong>Delegate work to the Antigravity CLI you already use.</strong><br>
+Hand code, image generation and general tasks from Claude Code or Codex to the official Google Antigravity CLI (<code>agy</code>), on your own Gemini subscription. Unofficial; not affiliated with Google.</p>
+
+<p align="center">
+  <a href="https://github.com/finolabs/agybird/releases/latest"><img src="https://img.shields.io/github/v/release/finolabs/agybird" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/finolabs/agybird" alt="License: MIT"></a>
+  <a href="https://github.com/finolabs/agybird/actions/workflows/ci.yml"><img src="https://github.com/finolabs/agybird/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="#as-a-claude-code-plugin"><img src="https://img.shields.io/badge/Claude%20Code-plugin-7FE2CE" alt="Claude Code plugin"></a>
+  <a href="#as-a-codex-plugin"><img src="https://img.shields.io/badge/Codex-plugin-7FE2CE" alt="Codex plugin"></a>
+  <a href="#as-an-antigravity-plugin"><img src="https://img.shields.io/badge/Antigravity-plugin-7FE2CE" alt="Antigravity plugin"></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/banner.png" alt="Banner: Agybird, delegate work to the Antigravity CLI you already use. The prompt &quot;Use agy to review this repo, read-only, and cite the lines&quot; returns a JSON envelope with status success and evidence.session_resumed true." width="920">
+</p>
 
 Agybird is an MIT-licensed Agent Skill that lets Claude Code and Codex delegate work to the official Google Antigravity CLI (`agy`). It uses the user's existing Antigravity authentication and Gemini subscription instead of extracting credentials or calling private APIs.
 
@@ -17,6 +28,30 @@ Agybird is unofficial and is not affiliated with Google.
 - **General:** read-only analysis by default, structured JSON output, or explicit deliverable creation.
 
 This is an Agent Skill, a small local runner and a set of [commands](#commands), not an MCP server. Claude Code or Codex remains the orchestrator; `agy` remains the authenticated provider process.
+
+## Install at a glance
+
+Run the commands for your host, then open a new chat. See [Install](#install) for updates, migration and the plain-skill option.
+
+**Claude Code** (in a terminal):
+
+```bash
+claude plugin marketplace add finolabs/plugins
+claude plugin install agybird@finolabs
+```
+
+**Codex** (in a terminal):
+
+```bash
+codex plugin marketplace add finolabs/plugins
+codex plugin add agybird@finolabs
+```
+
+**Antigravity** (in a terminal):
+
+```bash
+agy plugin install https://github.com/finolabs/agybird
+```
 
 ## Requirements
 
@@ -78,6 +113,28 @@ npx skills add finolabs/agybird --global --agent claude-code codex
 ```
 
 The command uses the open-source [Skills CLI](https://github.com/vercel-labs/skills). Review its prompt before confirming destinations.
+
+## For AI agents: install and set up
+
+You were given this repository's link to install it for the user. Follow these steps in order.
+
+1. **Find your host**: Claude Code, Codex, Antigravity, or another agent that reads Agent Skills.
+2. **Confirm with the user before installing.** The install changes their agent configuration for every project, and Agybird runs the user's own `agy` on their Gemini subscription, which spends their quota. Offer the plugin by default and the plain skill as the alternative; install only one of the two, since both together list the skill twice.
+3. **Check the requirements**: Node.js 20 or newer, and `agy` installed and signed in (the user runs `agy` once interactively; you never handle their credentials).
+4. **Check for an existing install**: run `claude plugin list` or `codex plugin list`. If Agybird is installed as `agybird@agybird` or from the older `Finolabs` catalog, stop and ask the user, then follow the [migration guide](docs/migration.md).
+5. **Install** with your host's commands:
+
+   | Host | Commands |
+   | --- | --- |
+   | Claude Code | `claude plugin marketplace add finolabs/plugins`, then `claude plugin install agybird@finolabs` |
+   | Codex | `codex plugin marketplace add finolabs/plugins`, then `codex plugin add agybird@finolabs` |
+   | Antigravity | `agy plugin install https://github.com/finolabs/agybird` |
+   | Other agents | `npx skills add finolabs/agybird` |
+
+6. **Verify** that `claude plugin list`, `codex plugin list` or `agy plugin list` shows `agybird`, and report the output to the user as it is, failures included.
+7. **Hand over.** Tell the user to open a new session and run `/agybird:setup` (`$agybird-setup` on Codex) to check `agy` and its sign-in.
+
+Done when the host lists `agybird` and the user knows to open a new session and run setup.
 
 ## Use
 
@@ -154,6 +211,10 @@ Tests use a fake provider process and require no Google credentials. Live tests 
 The optional live wrapper refuses to spend credits unless `AGYBIRD_LIVE_CONFIRM=1` is set for that invocation. It still preserves the current Antigravity model, sandbox, permissions, and `useG1Credits` setting.
 
 The automated suite is the current contract. Two earlier reports are kept as dated snapshots: [deterministic verification](docs/verification/2026-08-02-simulated.md) and [live macOS verification with `agy` 1.1.9](docs/verification/2026-08-02-live-macos.md). Both predate the permission and session work, so they record a denial as `blocked` where the runner now reports `needs_permission`. They are history, not a description of current behaviour.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities as [SECURITY.md](SECURITY.md) describes.
 
 ## License
 

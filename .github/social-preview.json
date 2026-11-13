@@ -1,0 +1,11 @@
+{
+  "name": "Agybird",
+  "tagline": "Delegate work to the\nAntigravity CLI you already use.",
+  "mark": "../assets/icon-dark.svg",
+  "input": "Use agy to review this repo,\nread-only, and cite the lines.",
+  "output": "{\n  \"status\": \"success\",\n  \"evidence\": {\n    \"session_resumed\": true\n  }\n}",
+  "footer": [
+    "A plugin for **Claude Code** and **Codex**",
+    "MIT licensed, unofficial, github.com/finolabs/agybird"
+  ]
+}
