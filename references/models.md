@@ -18,7 +18,7 @@ Quota belongs to pools, not to single models. `gemini-*` models draw on "Gemini 
 
 ## Choose a tier
 
-List current slugs with `agy models`. A slug already carries its reasoning level (`-low`, `-medium`, `-high`), so pick the slug and leave out `--effort` unless the user asks for a level the slug does not express. The tiers below are a starting heuristic from the `agy` 1.4.7 list, not a benchmark. Map new slugs to the nearest tier.
+List current slugs with `agy models`. A slug already carries its reasoning level (`-low`, `-medium`, `-high`), so pick the slug and leave out `--effort` unless the user asks for a level the slug does not express. The tiers below are a starting heuristic from the `agy` 1.4.7 list, extended with 1.5.8 slugs, not a benchmark. Map new slugs to the nearest tier.
 
 | Tier | Use for | Gemini pool | Claude and GPT pool |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ List current slugs with `agy models`. A slug already carries its reasoning level
 | Standard | Most debugging, multi-file changes, tests, analysis over local context | `gemini-3.8-flash-high`, `gemini-4-argon-low`, `gemini-4-argon-medium`, `gemini-4-hydrogen-low`, `gemini-4-hydrogen-medium` | `claude-sonnet-5-5-medium` |
 | Heavy | Architecture, subtle or cross-cutting bugs, long refactors, a lower tier that already failed | `gemini-4-argon-high`, `gemini-4-hydrogen-high`, `gemini-4-hydrogen-xhigh` | `claude-sonnet-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-high` |
 
-`gemini-4-hydrogen-*` slugs appear in `agy models` from `agy` 1.5.8. They are placed by reasoning level only, not benchmarked, and only `-low` has been run through Agybird. `agy -p /usage` shows no limit of their own for them, so they draw on "Gemini Models" like other `gemini-*` slugs. `gemini-pro-orchestrator-g1-pro` ("Orchestrator (Argon)") is not tiered; do not choose it unless the user asks. `gemini-4-carbon-*` appears only with `GEMINI_API_KEY` or Application Default Credentials sign-in and has not been checked.
+`gemini-4-hydrogen-*` slugs appear in `agy models` from `agy` 1.5.8. They are placed by reasoning level only, not benchmarked, and only `-low` has been run through Agybird. `agy -p /usage` shows no limit of their own for them, so they appear to draw on "Gemini Models" like other `gemini-*` slugs; this is inferred from that output, not confirmed, so keep checking any limit of their own after an error. The automatic model choice of the companion commands (`/agybird:task`) uses a fixed slug list that does not include them yet, so it never picks a Hydrogen slug; choose one only with `--model`. `gemini-pro-orchestrator-g1-pro` ("Orchestrator (Argon)") is not tiered; do not choose it unless the user asks. `gemini-4-carbon-*` appears only with `GEMINI_API_KEY` or Application Default Credentials sign-in, has not been checked and is not tiered; do not choose it unless the user asks.
 
 Start at Light or Standard. Move up a tier only when the task clearly needs it or a lower tier produced a weak result; say why. Pass the chosen slug with `--model` on the first run of the objective and keep it for follow-ups unless a fallback is needed. When the user asks to keep the current model, pass no `--model`.
 
