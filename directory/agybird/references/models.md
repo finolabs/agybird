@@ -23,8 +23,10 @@ List current slugs with `agy models`. A slug already carries its reasoning level
 | Tier | Use for | Gemini pool | Claude and GPT pool |
 | --- | --- | --- | --- |
 | Light | Lookups, summaries, structured extraction, small single-file edits | `gemini-3.8-flash-low`, `gemini-3.8-flash-medium` | `claude-sonnet-5-5-low`, `gpt-oss-120b-medium` |
-| Standard | Most debugging, multi-file changes, tests, analysis over local context | `gemini-3.8-flash-high`, `gemini-4-argon-low`, `gemini-4-argon-medium` | `claude-sonnet-5-5-medium` |
-| Heavy | Architecture, subtle or cross-cutting bugs, long refactors, a lower tier that already failed | `gemini-4-argon-high` | `claude-sonnet-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-high` |
+| Standard | Most debugging, multi-file changes, tests, analysis over local context | `gemini-3.8-flash-high`, `gemini-4-argon-low`, `gemini-4-argon-medium`, `gemini-4-hydrogen-low`, `gemini-4-hydrogen-medium` | `claude-sonnet-5-5-medium` |
+| Heavy | Architecture, subtle or cross-cutting bugs, long refactors, a lower tier that already failed | `gemini-4-argon-high`, `gemini-4-hydrogen-high`, `gemini-4-hydrogen-xhigh` | `claude-sonnet-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-high` |
+
+`gemini-4-hydrogen-*` slugs appear in `agy models` from `agy` 1.5.8. They are placed by reasoning level only, not benchmarked, and only `-low` has been run through Agybird. `agy -p /usage` shows no limit of their own for them, so they draw on "Gemini Models" like other `gemini-*` slugs. `gemini-pro-orchestrator-g1-pro` ("Orchestrator (Argon)") is not tiered; do not choose it unless the user asks. `gemini-4-carbon-*` appears only with `GEMINI_API_KEY` or Application Default Credentials sign-in and has not been checked.
 
 Start at Light or Standard. Move up a tier only when the task clearly needs it or a lower tier produced a weak result; say why. Pass the chosen slug with `--model` on the first run of the objective and keep it for follow-ups unless a fallback is needed. When the user asks to keep the current model, pass no `--model`.
 
