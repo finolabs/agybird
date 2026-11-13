@@ -61,3 +61,10 @@ test('keeps a minimum kill grace and caps it for long timeouts', () => {
   assert.equal(killGrace('10m'), 10_000);
   assert.equal(killDeadline('50ms'), 5_050);
 });
+
+test('--swarm puts the /swarm command in front of the delegated prompt', () => {
+  const args = buildAgyArgs({ mode: 'read', timeout: '10m', swarm: true }, 'task');
+  assert.equal(args[0], '-p');
+  assert.equal(args[1], '/swarm task');
+  assert.equal(buildAgyArgs({ mode: 'read', timeout: '10m', swarm: false }, 'task')[1], 'task');
+});

@@ -43,6 +43,7 @@ const FLAG_OPTIONS = new Map([
   ['--sandbox', 'sandbox'],
   ['--new-session', 'newSession'],
   ['--no-record', 'noRecord'],
+  ['--swarm', 'swarm'],
 ]);
 
 export function parseArgs(argv) {
@@ -56,6 +57,7 @@ export function parseArgs(argv) {
     sandbox: false,
     newSession: false,
     noRecord: false,
+    swarm: false,
     timeout: '10m',
   };
 
@@ -152,6 +154,15 @@ export function validateRequest(options) {
   // A run that is not recorded must not resume one either: it stands alone.
   if (options.noRecord && !options.newSession) {
     throw new Error('--no-record needs --new-session');
+  }
+  // /swarm was checked on a fresh session only, so a resumed one is refused rather than guessed at.
+  if (options.swarm) {
+    if (!['code', 'general'].includes(options.category)) {
+      throw new Error('--swarm is only valid with category code or general');
+    }
+    if (!options.newSession) {
+      throw new Error('--swarm needs --new-session');
+    }
   }
   if (options.newSession && options.conversation !== undefined) {
     throw new Error('--new-session cannot be combined with --conversation');
@@ -716,8 +727,9 @@ export function buildDelegationPrompt(options, userPrompt) {
 }
 
 export function buildAgyArgs(options, delegatedPrompt) {
+  // agy expands /swarm only at the start of the prompt, so the command goes in front of the wrapped task.
   const args = [
-    '-p', delegatedPrompt,
+    '-p', options.swarm ? `/swarm ${delegatedPrompt}` : delegatedPrompt,
     '--mode', options.mode === 'write' ? 'accept-edits' : 'plan',
     '--output-format', 'stream-json',
     '--print-timeout', options.timeout,
