@@ -43,6 +43,7 @@ test('parses the complete supported argument surface', () => {
     sandbox: true,
     newSession: false,
     noRecord: false,
+    swarm: false,
     timeout: '45s',
   });
   assert.doesNotThrow(() => validateRequest(options));
@@ -149,4 +150,31 @@ test('rejects references outside image work and invalid timeouts', () => {
       /Invalid timeout/,
     );
   }
+});
+
+test('--swarm is a flag that needs a fresh code or general session', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-swarm-'));
+  assert.equal(parseArgs(['--category', 'general', '--cwd', cwd]).swarm, false);
+
+  const ok = parseArgs(['--category', 'code', '--cwd', cwd, '--new-session', '--swarm']);
+  assert.equal(ok.swarm, true);
+  assert.doesNotThrow(() => validateRequest(ok));
+
+  // Swarm was checked on a fresh session only, never on a resumed one.
+  assert.throws(
+    () => validateRequest(parseArgs(['--category', 'general', '--cwd', cwd, '--swarm'])),
+    /--swarm needs --new-session/,
+  );
+  assert.throws(
+    () => validateRequest(parseArgs(['--category', 'image', '--cwd', cwd, '--new-session', '--swarm'])),
+    /--swarm is only valid with category code or general/,
+  );
+});
+
+test('--swarm is refused in write mode until workers are checked there', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-swarm-write-'));
+  assert.throws(
+    () => validateRequest(parseArgs(['--category', 'code', '--cwd', cwd, '--mode', 'write', '--new-session', '--swarm'])),
+    /--swarm is only valid in read mode/,
+  );
 });
