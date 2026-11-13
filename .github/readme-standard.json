@@ -1,0 +1,13 @@
+{
+  "sections": {
+    "what-you-get": "What it covers",
+    "supported-platforms": "Requirements",
+    "privacy": "Data and network"
+  },
+  "badge_color": "7FE2CE",
+  "catalog": {
+    "repository": "finolabs/plugins",
+    "marketplace": "finolabs"
+  },
+  "banner_follow_up": "finolabs-social-preview"
+}
