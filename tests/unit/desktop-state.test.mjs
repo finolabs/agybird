@@ -34,9 +34,20 @@ test('a dialog becomes a request with its question, rule scope and options, neve
   assert.equal(request.scope, 'ls');
   assert.equal(request.grantable, false);
   assert.equal(request.target_truncated, true);
-  assert.ok(request.question.length <= 301);
+  assert.ok(request.target.length <= 301);
+  // The question the user is shown before approving is the whole one.
+  assert.equal(request.question, `Allow ${'x'.repeat(400)}?`);
+  assert.equal(request.question_truncated, false);
   assert.equal(permissionRequest({ question: 'Allow\n  ls?', options: [] }).target_truncated, false);
   assert.equal(request.question_full, `Allow ${'x'.repeat(400)}?`);
+});
+
+test('a question too long to show whole is marked truncated and still kept whole for the match', () => {
+  const long = `Allow ${'x'.repeat(4_100)} tail`;
+  const request = permissionRequest({ question: long, options: [] });
+  assert.equal(request.question_truncated, true);
+  assert.equal(request.question_full, long);
+  assert.ok(request.question.length <= 4_001);
 });
 
 test('the structured output is the last fenced JSON block and must hold the required keys', () => {

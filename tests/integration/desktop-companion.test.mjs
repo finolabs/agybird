@@ -118,6 +118,30 @@ test('an approval is refused when the app now asks something else, or with a gra
   assert.ok(!context.calls().some((call) => call.startsWith('answer')));
 });
 
+test('a question too long to show whole, or a job with no conversation title, is not approvable', async () => {
+  const long = `Allow running ${'x'.repeat(4_100)} tail`;
+  const context = workspace({ dialog: { ...DIALOG, question: long } });
+  const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  assert.equal(first.envelope.status, 'needs_permission');
+  const { requests } = json(await context.companion(['permissions', first.job.id, '--json']));
+  assert.equal(requests[0].question_truncated, true);
+  assert.equal(requests[0].approvable, false);
+  assert.match((await context.companion(['permissions', first.job.id])).stdout, /shortened/);
+  const refused = await context.companion(['task', '--approve', requests[0].approval, '--json']);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /too long/);
+  assert.ok(!context.calls().some((call) => call.startsWith('answer')));
+
+  const untitled = workspace({ dialog: DIALOG });
+  const asked = json(await untitled.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const store = readdirSync(untitled.env.AGYBIRD_JOBS_DIR).map((name) => join(untitled.env.AGYBIRD_JOBS_DIR, name)).find((path) => !path.endsWith('.json'));
+  const resultFile = join(store, `${asked.job.id}.result.json`);
+  const stored = JSON.parse(readFileSync(resultFile, 'utf8'));
+  delete stored.evidence.conversation_title;
+  writeFileSync(resultFile, JSON.stringify(stored));
+  assert.equal(json(await untitled.companion(['permissions', asked.job.id, '--json'])).requests[0].approvable, false);
+});
+
 test('image work stays on the CLI when desktop is chosen', async () => {
   const context = workspace();
   context.choose('desktop');
@@ -182,7 +206,7 @@ test('a desktop request is approved once, and can be declined instead', async ()
   const asked = json(await other.companion(['task', '--via', 'desktop', '--json', 'List the files']));
   const declined = json(await other.companion(['task', '--decline', `${asked.job.id}:0`, '--json']));
   assert.equal(declined.envelope.status, 'success');
-  assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), ['answer Skip  Fake Task - ws - Antigravity']);
+  assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), [`answer Skip ${DIALOG.question} Fake Task - ws - Antigravity`]);
   const cli = workspace();
   const blocked = JSON.parse((await cli.companion(['task', '--json', 'CASE_FORGED_AUTH'])).stdout).job;
   const refused = await cli.companion(['task', '--decline', `${blocked.id}:0`]);

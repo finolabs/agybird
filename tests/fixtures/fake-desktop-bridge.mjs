@@ -9,6 +9,8 @@
 // shows as running, with the earlier reply still on screen), dialog
 // ({ question, options }), replyBeforeDialog (on screen while the dialog waits),
 // reply, paste (what paste-input reads back instead of the clipboard), clipboard,
+// dialog.fragments (the question as separate text nodes), extraDialog (a second
+// { question, options } dialog shown below the first),
 // copyNoop (Copy leaves the clipboard as it was), title (the conversation title
 // once sent), switchAfter (snapshots after which the app shows another
 // conversation), onSend ({ path, content }: a file the "agent" writes when the
@@ -17,8 +19,12 @@
 
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 
+import { loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
+
+// The answer is decided by the shipped desktop-ax.js decisions, run on the
+// node list this fake app would show.
+const decisions = loadAxDecisions();
 const LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
-const OPTION_1 = '1 Yes, allow this time';
 const file = process.env.AGYBIRD_FAKE_DESKTOP_STATE;
 const state = {
   trusted: true,
@@ -80,6 +86,27 @@ function shown(expected) {
   return expected === undefined || expected === title();
 }
 
+// The accessibility nodes of the window: its titled web area and, while one
+// waits, each dialog as the app renders it.
+function screenNodes(withDialogs) {
+  const nodes = [{ depth: 0, role: 'AXWindow', label: 'Antigravity' }, { depth: 1, role: 'AXWebArea', label: '' }, { depth: 1, role: 'AXWebArea', label: title() }];
+  if (!withDialogs) return nodes;
+  for (const dialog of [state.dialog, state.extraDialog].filter(Boolean)) {
+    nodes.push(
+      { depth: 2, role: 'AXGroup', label: '' },
+      ...(dialog.fragments ?? [dialog.question]).map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value })),
+      ...dialog.options.map((label) => ({ depth: 3, role: 'AXRadioButton', label })),
+      { depth: 3, role: 'AXButton', label: 'Skip' },
+      { depth: 3, role: 'AXButton', label: 'Submit' },
+    );
+  }
+  return nodes;
+}
+
+function waiting() {
+  return Boolean(state.dialog) && !state.answered;
+}
+
 function answer() {
   if (command === 'clipboard-get') return { text: state.clipboard };
   if (command === 'clipboard-set') {
@@ -93,7 +120,8 @@ function answer() {
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
-      const dialog = state.sent && !lagging && state.dialog && !state.answered ? state.dialog : null;
+      const found = state.sent && !lagging && waiting() ? decisions.dialogs(screenNodes(true))[0] : null;
+      const dialog = found ? { question: found.question, options: [...found.options] } : null;
       const running = Boolean(state.sent) && !lagging && !dialog && (state.stuck || state.runningPolls > 0);
       if (running && !state.stuck) state.runningPolls -= 1;
       let reply = null;
@@ -130,12 +158,10 @@ function answer() {
       return { ok: true };
     case 'answer': {
       const [option, question, expectedTitle] = args;
-      if (!['1', 'Skip'].includes(option)) return { error: 'refused: only 1 or Skip may be answered' };
-      if (!state.dialog || state.answered) return { error: 'not_found: permission dialog' };
-      if (!shown(expectedTitle)) return { error: 'other_conversation' };
-      if (option === '1') {
-        if (question !== state.dialog.question) return { error: 'question_changed' };
-        if (state.dialog.options[0] !== OPTION_1) return { error: 'not_found: option 1' };
+      try {
+        decisions.chooseAnswer(screenNodes(waiting()), option, question, expectedTitle);
+      } catch (error) {
+        return { error: error.message };
       }
       state.answered = option;
       if (option === '1') begin();

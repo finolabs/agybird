@@ -301,7 +301,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       warnings.push(...presetWarnings(waiting.preset));
       baselineReply = waiting.reply;
       sent = true;
-      await bridge(resume.answer === '1' ? ['answer', '1', resume.question, conversation] : ['answer', 'Skip', '', conversation]);
+      await bridge(['answer', resume.answer, resume.question, conversation]);
     } else {
       saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
@@ -374,7 +374,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       }
       if (state.dialog) {
         if (changesSince() && options.mode === 'read') {
-          await call(['answer', 'Skip', '', expected()]).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
+          await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected()]).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
           throw new Error('The run changed the working tree in read mode before it asked for a permission; Agybird declined the prompt.');
         }
         await cleanup();

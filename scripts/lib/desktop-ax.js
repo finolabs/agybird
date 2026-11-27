@@ -14,9 +14,117 @@ ObjC.bindFunction('AXIsProcessTrusted', ['bool', []]);
 const BUNDLE_ID = 'com.google.antigravity';
 const MAX_NODES = 20000;
 const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
+
+// desktop-decisions:start
+// Pure decisions over the flat node list a tree walk returns: { role, label,
+// depth } plus `value` where a test recorded one. Nothing here calls the
+// accessibility API, so desktop-bridge.mjs loadAxDecisions() evaluates this
+// region alone and the unit tests run it on recorded node lists. osascript
+// loads this one file, so the region stays inside it rather than in a module
+// JXA could not import.
+const UNTITLED = 'Antigravity';
 const ANSWERS = ['1', 'Skip'];
 const OPTION_1 = '1 Yes, allow this time';
-const MAX_QUESTION = 4000;
+// Controls whose text is their own label, not part of what a dialog asks.
+const CONTROLS = ['AXRadioButton', 'AXButton', 'AXCheckBox', 'AXPopUpButton', 'AXTextArea', 'AXTextField'];
+
+function readNode(node) {
+  return node.value || node.label || '';
+}
+
+// The runner matches the whole question, flattened as it stores it, with no cap.
+function flatten(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+// The index just past the subtree of nodes[index] in a depth-first list.
+function subtreeEnd(nodes, index) {
+  let end = index + 1;
+  while (end < nodes.length && nodes[end].depth > nodes[index].depth) end += 1;
+  return end;
+}
+
+function parentOf(nodes, index) {
+  for (let parent = index - 1; parent >= 0; parent -= 1) if (nodes[parent].depth < nodes[index].depth) return parent;
+  return -1;
+}
+
+const isOption1 = (node) => node.role === 'AXRadioButton' && /^1 /.test(node.label);
+const isButton = (node, prefix) => node.role === 'AXButton' && node.label.startsWith(prefix);
+
+// The conversation on screen, as the web area's title: "<title> - <project> -
+// Antigravity", or "Antigravity" before a new conversation has been sent.
+// The window holds an untitled web area beside the titled one.
+function title(nodes) {
+  const area = nodes.find((node) => node.role === 'AXWebArea' && node.label);
+  return area ? area.label : null;
+}
+
+// Every permission dialog on screen. A dialog is the smallest group that holds
+// an option 1 radio and a Skip button. Its question is every static text inside
+// that group, in order, outside the options, buttons and inputs: rendered
+// Markdown splits a question into word and code-span nodes. Its options, Skip
+// and Submit are found inside the same group only. A group holding two option
+// 1 radios is marked ambiguous.
+function dialogs(nodes, read) {
+  const textOf = read || readNode;
+  const found = [];
+  const groups = [];
+  nodes.forEach((node, index) => {
+    if (!isOption1(node)) return;
+    for (let group = parentOf(nodes, index); group >= 0; group = parentOf(nodes, group)) {
+      const end = subtreeEnd(nodes, group);
+      const inside = (test) => {
+        for (let at = group + 1; at < end; at += 1) if (test(nodes[at])) return at;
+        return -1;
+      };
+      const skip = inside((entry) => isButton(entry, 'Skip'));
+      if (skip < 0) continue;
+      if (groups.indexOf(group) >= 0) return;
+      groups.push(group);
+      const parts = [];
+      const options = [];
+      let option1 = -1;
+      let firsts = 0;
+      for (let at = group + 1; at < end; at += 1) {
+        const entry = nodes[at];
+        if (isOption1(entry)) {
+          firsts += 1;
+          if (option1 < 0) option1 = at;
+        }
+        if (entry.role === 'AXRadioButton' && /^\d /.test(entry.label)) options.push(entry.label);
+        if (CONTROLS.indexOf(entry.role) >= 0) {
+          at = subtreeEnd(nodes, at) - 1;
+        } else if (entry.role === 'AXStaticText') {
+          parts.push(String(textOf(entry)));
+        }
+      }
+      found.push({ question: flatten(parts.join(' ')), options, option1, skip, submit: inside((entry) => isButton(entry, 'Submit')), ambiguous: firsts > 1 });
+      return;
+    }
+  });
+  return found;
+}
+
+// The nodes to press, in order, to answer the dialog that asks `question`, the
+// whole flattened question, in the conversation titled `expected`. Any mismatch
+// throws and nothing is pressed.
+function chooseAnswer(nodes, option, question, expected, read) {
+  if (ANSWERS.indexOf(option) < 0) throw new Error('refused: only 1 or Skip may be answered');
+  if (!question || !expected) throw new Error('usage: answer <1|Skip> <question> <conversation title>');
+  const shown = dialogs(nodes, read);
+  if (shown.length === 0) throw new Error('not_found: permission dialog');
+  if (title(nodes) !== expected) throw new Error('other_conversation');
+  const asking = shown.filter((prompt) => prompt.question === question);
+  if (asking.length === 0) throw new Error('question_changed');
+  if (asking.length > 1 || asking[0].ambiguous) throw new Error('several_dialogs');
+  const prompt = asking[0];
+  if (option === 'Skip') return [{ index: prompt.skip, what: 'Skip' }];
+  if (nodes[prompt.option1].label.trim() !== OPTION_1) throw new Error('not_found: option 1');
+  if (prompt.submit < 0) throw new Error('not_found: Submit');
+  return [{ index: prompt.option1, what: 'option 1' }, { index: prompt.submit, what: 'Submit' }];
+}
+// desktop-decisions:end
 
 function get(element, name) {
   const value = Ref();
@@ -102,17 +210,6 @@ function staticText(node) {
   return text(get(node.element, 'AXValue')) || node.label;
 }
 
-function dialog(nodes) {
-  const first = nodes.findIndex((node) => node.role === 'AXRadioButton' && node.label.startsWith('1 '));
-  if (first < 0 || !find(nodes, 'AXButton', 'Skip')) return null;
-  let question = '';
-  for (let index = first - 1; index >= 0 && !question; index -= 1) {
-    if (nodes[index].role === 'AXStaticText') question = staticText(nodes[index]).trim();
-  }
-  const options = nodes.filter((node) => node.role === 'AXRadioButton' && /^\d /.test(node.label)).map((node) => node.label);
-  return { question, options };
-}
-
 // The reply is the group right after the last `Agent said` heading, at the
 // heading's own depth; the response actions that follow are a separate group.
 function reply(nodes) {
@@ -131,19 +228,6 @@ function reply(nodes) {
   return lines.join('\n');
 }
 
-// The conversation on screen, as the web area's title: "<title> - <project> -
-// Antigravity", or "Antigravity" before a new conversation has been sent.
-// The window holds an untitled web area beside the titled one.
-function title(nodes) {
-  const area = nodes.find((node) => node.role === 'AXWebArea' && node.label);
-  return area ? area.label : null;
-}
-
-// The runner matches the whole question, flattened as it stores it.
-function flatten(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION);
-}
-
 function requireTitle(nodes, expected) {
   if (expected !== undefined && title(nodes) !== expected) throw new Error('other_conversation');
 }
@@ -159,7 +243,7 @@ function snapshot(nodes) {
     title: title(nodes),
     running: Boolean(find(nodes, 'AXButton', 'Stop execution')),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
-    dialog: dialog(nodes),
+    dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options }))[0] || null,
     reply: reply(nodes),
   };
 }
@@ -278,24 +362,12 @@ const COMMANDS = {
     press(button, 'Send message');
     return { ok: true };
   },
-  // Option 1 is pressed only in the same tree read that shows the expected
-  // conversation, the approved question and option 1's exact label.
+  // An answer is pressed only in the same tree read that shows the expected
+  // conversation, the approved question and, for option 1, its exact label.
   answer(app, option, question, expectedTitle) {
     if (!ANSWERS.includes(option)) throw new Error('refused: only 1 or Skip may be answered');
     const nodes = tree(app);
-    const prompt = dialog(nodes);
-    if (!prompt) throw new Error('not_found: permission dialog');
-    requireTitle(nodes, expectedTitle);
-    if (option === 'Skip') {
-      press(find(nodes, 'AXButton', 'Skip'), 'Skip');
-      return { ok: true };
-    }
-    if (question === undefined || expectedTitle === undefined) throw new Error('usage: answer 1 <question> <conversation title>');
-    if (flatten(prompt.question) !== question) throw new Error('question_changed');
-    const first = nodes.findIndex((node) => node.role === 'AXRadioButton' && node.label.trim() === OPTION_1);
-    if (first < 0) throw new Error('not_found: option 1');
-    press(nodes[first], 'option 1');
-    press(nodes.slice(first).find((node) => node.role === 'AXButton' && node.label.startsWith('Submit')), 'Submit');
+    for (const target of chooseAnswer(nodes, option, question, expectedTitle, staticText)) press(nodes[target.index], target.what);
     return { ok: true };
   },
   // Puts the last reply, as the app's own Markdown, on the clipboard.

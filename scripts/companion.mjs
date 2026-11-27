@@ -583,10 +583,12 @@ export function approvedRules(directory, approvals = []) {
       if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
       if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
       if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
+      // An approval binds to the whole question, so one too long to show whole cannot be given from here.
+      if (request.question_truncated || !request.question_full) throw new Error(`Request ${index} of ${id} asks a question too long to show whole here, so it cannot be approved from here; answer it in the Antigravity app.`);
       if ((job.answered ?? []).includes(Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
       const title = envelope.evidence?.conversation_title;
       if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
-      return { rules: [], transport: 'desktop', id, index: Number(index), answered: job.answered ?? [], question: request.question_full ?? request.question, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+      return { rules: [], transport: 'desktop', id, index: Number(index), answered: job.answered ?? [], question: request.question_full, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
     }
     // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
@@ -800,13 +802,14 @@ async function commandPermissions(argv, env) {
     suggested_rule: request.suggested_rule,
     grantable: request.grantable === true && Boolean(request.suggested_rule),
     // agybird:desktop-start
-    // A desktop request is approved by answering the app's prompt once, never by a rule.
-    ...(job.request?.transport === 'desktop' ? { transport: 'desktop', question: request.question, scope: request.scope, options: request.options, approvable: Boolean(request.question) && job.kind === 'task' } : {}),
+    // A desktop request is approved by answering the app's prompt once, never by
+    // a rule, and only when the user can be shown the whole question.
+    ...(job.request?.transport === 'desktop' ? { transport: 'desktop', question: request.question, question_truncated: request.question_truncated === true, scope: request.scope, options: request.options, approvable: Boolean(request.question_full) && request.question_truncated !== true && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_title) && job.kind === 'task' } : {}),
     // agybird:desktop-end
   }));
   let describe = (request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`;
   // agybird:desktop-start
-  if (job.request?.transport === 'desktop') describe = (request) => `- ${request.approval}: the Antigravity app asks ${JSON.stringify(request.question)} -> approving answers "Yes, allow this time" once${request.scope ? `; a wider rule for '${request.scope}' can only be given in the app` : ''}`;
+  if (job.request?.transport === 'desktop') describe = (request) => `- ${request.approval}: the Antigravity app asks ${JSON.stringify(request.question)} -> ${request.question_truncated ? 'the question is shortened here, so answer it in the app' : request.approvable ? 'approving answers "Yes, allow this time" once' : 'answer it in the app'}${request.scope ? `; a wider rule for '${request.scope}' can only be given in the app` : ''}`;
   // agybird:desktop-end
   const text = requests.length ? requests.map(describe).join('\n') : `Job ${job.id} reported no permission request.`;
   output(options, { job: summary(job), requests }, text);

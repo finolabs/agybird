@@ -5,7 +5,8 @@ export const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model
 export const TESTED_VERSION = /^2\.35\./;
 const UNATTENDED_PRESETS = new Set(['Auto', 'Turbo']);
 const MAX_FIELD = 300;
-// The whole question an approval is matched on, kept apart from the shortened one shown.
+// The longest question shown whole, and so the longest that can be approved
+// from outside the app; the match itself is on the whole question, uncut.
 export const MAX_QUESTION = 4_000;
 
 export class Blocked extends Error {
@@ -61,17 +62,24 @@ function cut(value) {
   return flat.length > MAX_FIELD ? `${flat.slice(0, MAX_FIELD)}…` : flat;
 }
 
+// `question` is what the user is shown before an approval: the whole question,
+// unless it is longer than MAX_QUESTION, when `question_truncated` is set and
+// the companion refuses to approve it. `question_full` is what the app must
+// still show, compared whole.
 export function permissionRequest(dialog) {
   const wider = dialog.options.find((option) => /^2 /.test(option)) ?? '';
   const scope = /'([^']+)'/.exec(wider)?.[1] ?? null;
+  const question = flatten(dialog.question);
+  const truncated = question.length > MAX_QUESTION;
   return {
     tool: 'Antigravity app',
     target: cut(dialog.question),
-    target_truncated: cut(dialog.question) !== flatten(dialog.question),
+    target_truncated: cut(dialog.question) !== question,
     suggested_rule: null,
     grantable: false,
-    question: cut(dialog.question),
-    question_full: flatten(dialog.question).slice(0, MAX_QUESTION),
+    question: truncated ? `${question.slice(0, MAX_QUESTION)}…` : question,
+    question_truncated: truncated,
+    question_full: question,
     scope: scope === null ? null : cut(scope),
     options: dialog.options.map(cut),
     reason: 'The Antigravity app is waiting for an answer to a permission prompt.',

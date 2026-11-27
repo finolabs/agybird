@@ -2,10 +2,22 @@
 // AGYBIRD_DESKTOP_BRIDGE at a Node script that stands in for osascript.
 
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 export const AX_SCRIPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'desktop-ax.js');
+
+// The pure decisions of desktop-ax.js (its `desktop-decisions` region), the
+// same source osascript runs, evaluated alone in an empty context: no
+// accessibility object exists there, so the region cannot depend on one.
+export function loadAxDecisions(source = readFileSync(AX_SCRIPT_PATH, 'utf8')) {
+  const start = source.indexOf('// desktop-decisions:start');
+  const end = source.indexOf('// desktop-decisions:end');
+  if (start < 0 || end < start) throw new Error('desktop-ax.js has no desktop-decisions region');
+  return runInNewContext(`${source.slice(start, end)}\n;({ UNTITLED, OPTION_1, flatten, title, dialogs, chooseAnswer })`, {}, { filename: AX_SCRIPT_PATH });
+}
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ANSWERS = new Set(['1', 'Skip']);
 
@@ -18,7 +30,7 @@ function bridgeCommand(env) {
 export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, input } = {}) {
   const name = args[0];
   if (name === 'answer' && !ANSWERS.has(args[1])) return Promise.reject(new Error('Desktop bridge refused the answer: only 1 or Skip may be answered.'));
-  if (name === 'answer' && args[1] === '1' && (!args[2] || !args[3])) return Promise.reject(new Error('Desktop bridge refused the answer: option 1 needs the approved question and conversation title.'));
+  if (name === 'answer' && (!args[2] || !args[3])) return Promise.reject(new Error('Desktop bridge refused the answer: an answer needs the approved question and conversation title.'));
   const [command, prefix] = bridgeCommand(env);
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
