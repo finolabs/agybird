@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -69,46 +69,63 @@ function lockHeld(path, holder) {
   return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid);
 }
 
+// A takeover guard older than this was left by a run that died while holding it.
+const GUARD_STALE_MS = 30_000;
+
+function takeGuard(guard) {
+  try {
+    closeSync(openSync(guard, 'wx', 0o600));
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    try {
+      if (Date.now() - statSync(guard).mtimeMs > GUARD_STALE_MS) rmSync(guard, { force: true });
+    } catch {
+      // removed by its holder meanwhile
+    }
+    return false;
+  }
+}
+
 // One desktop run at a time on this machine: they share one app and one
-// clipboard. The lock is linked into place whole, never seen empty, and a stale
-// one is moved aside before it is replaced, so two runs taking over the same
-// stale lock cannot both win.
-function acquireLock(path, expiresAt) {
+// clipboard. The lock is linked into place whole, never seen empty. A free place
+// is taken by the link alone; a stale lock is removed only by the run holding
+// the takeover guard, after it reads the lock again under the guard. No run can
+// then remove a lock another run has just taken, so at most one run holds it.
+// `hooks.stale` runs once a run holds the guard over a stale lock (tests only).
+export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {} } = {}) {
   mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
-  const content = JSON.stringify({ pid: process.pid, expiresAt });
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, content, { mode: 0o600 });
+  const content = JSON.stringify({ pid, expiresAt });
+  const temporary = `${path}.${pid}.tmp`;
+  const guard = `${path}.takeover`;
+  const link = () => {
+    // A leftover, or a link planted at this name, is removed, never written through.
+    rmSync(temporary, { force: true });
+    writeFileSync(temporary, content, { mode: 0o600, flag: 'wx' });
     try {
       linkSync(temporary, path);
-      return path;
+      return true;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
+      return false;
     } finally {
       rmSync(temporary, { force: true });
     }
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (link()) return path;
     const holder = readLock(path);
     if (holder === null) continue;
-    if (lockHeld(path, holder)) break;
-    const aside = `${path}.${process.pid}.stale`;
+    if (lockHeld(path, holder) || !takeGuard(guard)) break;
     try {
-      renameSync(path, aside);
-    } catch (error) {
-      if (error.code === 'ENOENT') continue;
-      throw error;
+      hooks.stale?.();
+      const again = readLock(path);
+      if (again !== null && lockHeld(path, again)) break;
+      rmSync(path, { force: true });
+      if (link()) return path;
+    } finally {
+      rmSync(guard, { force: true });
     }
-    // Another run may have replaced the stale lock between the read and the move.
-    const moved = readLock(aside);
-    if (moved && lockHeld(aside, moved)) {
-      try {
-        linkSync(aside, path);
-      } catch {
-        // that run's lock is back, or a third run holds the place now
-      }
-      rmSync(aside, { force: true });
-      break;
-    }
-    rmSync(aside, { force: true });
   }
   throw new Blocked('locked', 'Another desktop run is using the Antigravity app; retry once it finishes.');
 }

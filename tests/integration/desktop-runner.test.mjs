@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
+
+import { acquireLock } from '../../scripts/desktop.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNER = join(ROOT, 'scripts', 'desktop.mjs');
@@ -295,6 +297,46 @@ test('a lock being written, or still within its time, is held; one past its time
   writeFileSync(join(expired.stateDir, 'desktop.lock'), JSON.stringify({ pid: process.pid, expiresAt: Date.now() - 1 }));
   assert.equal((await run(expired)).envelope.status, 'success');
   assert.equal(existsSync(join(expired.stateDir, 'desktop.lock')), false);
+});
+
+test('three runs taking over one stale lock leave exactly one live holder', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'agybird-dr-lock-')), 'desktop.lock');
+  const expiresAt = Date.now() + 60_000;
+  writeFileSync(path, JSON.stringify({ pid: 999999999, expiresAt }));
+  const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const [a, b, c] = [process.pid, process.ppid, sleeper.pid];
+  const holders = [];
+  const attempt = (pid, hooks) => {
+    try {
+      acquireLock(path, expiresAt, { pid, hooks });
+      holders.push(pid);
+    } catch (error) {
+      if (error.reason !== 'locked') throw error;
+    }
+  };
+  try {
+    // B has read the stale lock; A takes it over meanwhile, and C arrives once B has moved A's lock aside.
+    attempt(b, { stale: () => attempt(a), aside: () => attempt(c) });
+    attempt(c);
+  } finally {
+    sleeper.kill();
+  }
+  assert.equal(holders.length, 1, `runs that believe they hold the lock: ${holders.join(', ')}`);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).pid, holders[0]);
+});
+
+test('the lock is never written through a file planted at its temporary name', { skip: process.platform === 'win32' }, () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agybird-dr-lock-'));
+  const path = join(directory, 'desktop.lock');
+  const victim = join(directory, 'victim.txt');
+  writeFileSync(victim, 'keep me');
+  symlinkSync(victim, `${path}.${process.pid}.tmp`);
+  try {
+    acquireLock(path, Date.now() + 60_000);
+  } catch {
+    // refusing is fine; writing through the link is not
+  }
+  assert.equal(readFileSync(victim, 'utf8'), 'keep me');
 });
 
 test('off macOS the runner blocks before touching anything', { skip: process.platform === 'darwin' && 'macOS runs the real bridge' }, async () => {
