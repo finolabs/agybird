@@ -31,11 +31,9 @@ import { renderJobTable, renderOutcome } from './lib/render.mjs';
 import { resolveAgyBinary } from './agybird.mjs';
 import { collectScope } from './lib/scope.mjs';
 import { chooseModel, readQuota, TIERS } from './lib/quota.mjs';
-import { assertTransportSupported, checkTransport, resolveTransport } from './lib/transport.mjs';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
-export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
 // An edition built without hooks/ (the Codex and Anthropic directory editions)
@@ -128,7 +126,7 @@ function lastJsonLine(text) {
 // never the argument list, exactly as the skill does it.
 export function runRunner({ workspace, request, env = process.env, onSpawn }) {
   const args = [
-    request.transport === 'desktop' ? DESKTOP_RUNNER_PATH : RUNNER_PATH,
+    RUNNER_PATH,
     '--category', request.category,
     '--cwd', workspace,
     '--mode', request.mode,
@@ -213,7 +211,6 @@ function createJob({ directory, workspace, kind, title, request, model }) {
     workspace,
     status: 'queued',
     model: model ?? null,
-    ...(request.transport ? { transport: request.transport } : {}),
     createdAt: new Date().toISOString(),
     // The runner's own timeout, its kill grace and agy's shutdown window.
     timeoutMs: timeoutMs(request.timeout) + 45_000,
@@ -393,36 +390,6 @@ function writeConfig(cwd, env, patch) {
   return next;
 }
 
-function globalConfigPath(env) {
-  return join(jobsRoot(env), 'config.json');
-}
-
-function readGlobalConfig(env) {
-  const path = globalConfigPath(env);
-  try {
-    return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeGlobalConfig(env, patch) {
-  const path = globalConfigPath(env);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify({ ...readGlobalConfig(env), ...patch }, null, 2)}\n`, { mode: 0o600 });
-}
-
-function transportFor({ cwd, env = process.env, flag }) {
-  return resolveTransport({ flag, workspace: readConfig(cwd, env), global: readGlobalConfig(env) });
-}
-
-// The app runs its own model and reasoning settings; Agybird never changes them.
-function refuseDesktopOptions(options) {
-  for (const [flag, value] of [['--model', options.model], ['--effort', options.effort]]) {
-    if (value !== undefined) throw new Error(`${flag} is not supported on the desktop transport: the app uses the model chosen in it. Drop ${flag}, or pass --via cli.`);
-  }
-}
-
 function output(options, data, text) {
   process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
 }
@@ -502,7 +469,6 @@ const TASK_FLAGS = {
   '--timeout': 'value',
   '--approve': 'list',
   '--grant-scope': 'value',
-  '--via': 'value',
 };
 
 // The categories a job can resume in after an approval.
@@ -529,13 +495,6 @@ export function approvedRules(directory, approvals = []) {
     const envelope = job ? readStoredResult(directory, id) : null;
     const request = envelope?.permission_requests?.[Number(index)];
     if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
-    // In the app an approval answers the prompt that is waiting there, once.
-    if (job.request?.transport === 'desktop') {
-      if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
-      if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
-      if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
-      return { rules: [], transport: 'desktop', question: request.question, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
-    }
     // A review runs in a standalone conversation the workspace never resumes;
     // granting into it would record it as the task session.
     if (!['task', 'image'].includes(job.kind)) throw new Error(`Job ${id} is a ${job.kind}; only a task or image job can be approved and resumed.`);
@@ -567,19 +526,6 @@ async function commandTask(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   const approval = approvedRules(storeFor(cwd, env), options.approve);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
-  if (approving && options.via) throw new Error('An approval resumes the job on its own transport; drop --via.');
-  const transport = approval.transport ?? transportFor({ cwd, env, flag: options.via }).transport;
-  if (transport === 'desktop') {
-    if (approving && options.grantScope) throw new Error('--grant-scope does not apply to the desktop transport: an approval answers "Yes, allow this time" in the app, once.');
-    if (options.grantScope) throw new Error('--grant-scope applies only with --approve.');
-    refuseDesktopOptions(options);
-    const category = approval.category ?? options.category ?? 'code';
-    if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
-    const runnerArgs = [];
-    if (approval.question) runnerArgs.push('--resume-dialog', approval.question);
-    const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
-    return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
-  }
   const category = approval.category ?? options.category ?? 'code';
   const allowedCategories = ['code', 'general'];
   if (!allowedCategories.includes(category)) throw new Error('--category must be code or general');
@@ -655,7 +601,6 @@ const REVIEW_FLAGS = {
   '--model': 'value',
   '--effort': 'value',
   '--timeout': 'value',
-  '--via': 'value',
 };
 
 function reviewCommand(kind) {
@@ -668,12 +613,10 @@ function reviewCommand(kind) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const { transport } = transportFor({ cwd, env, flag: options.via });
-    if (transport === 'desktop') refuseDesktopOptions(options);
-    const { model, note } = transport === 'desktop' ? { model: undefined, note: null } : pickModel({ cwd, env, tier: 'standard', model: options.model });
+    let picked = null;
+    const { model, note } = picked ?? pickModel({ cwd, env, tier: 'standard', model: options.model });
     if (note) process.stderr.write(`agybird: ${note}\n`);
     const request = buildReviewRequest({ kind, scope, options: { ...options, model }, focus: positional.join(' ').trim() });
-    if (transport === 'desktop') request.transport = transport;
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
     const result = await launch({ cwd, kind, title, request, background: options.background, env, model });
     if (options.background) {
@@ -697,7 +640,6 @@ async function commandPermissions(argv, env) {
     output(options, { job: null, requests: [] }, 'No Agybird job here is waiting for a permission.');
     return;
   }
-  const desktop = job.request?.transport === 'desktop';
   const requests = (readStoredResult(directory, job.id)?.permission_requests ?? []).map((request, index) => ({
     index,
     approval: `${job.id}:${index}`,
@@ -706,12 +648,8 @@ async function commandPermissions(argv, env) {
     target_truncated: request.target_truncated,
     suggested_rule: request.suggested_rule,
     grantable: request.grantable === true && Boolean(request.suggested_rule),
-    // A desktop request is approved by answering the app's prompt once, never by a rule.
-    ...(desktop ? { transport: 'desktop', question: request.question, scope: request.scope, options: request.options, approvable: Boolean(request.question) && job.kind === 'task' } : {}),
   }));
-  const describe = (request) => (desktop
-    ? `- ${request.approval}: the Antigravity app asks ${JSON.stringify(request.question)} -> approving answers "Yes, allow this time" once${request.scope ? `; a wider rule for '${request.scope}' can only be given in the app` : ''}`
-    : `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`);
+  let describe = (request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`;
   const text = requests.length ? requests.map(describe).join('\n') : `Job ${job.id} reported no permission request.`;
   output(options, { job: summary(job), requests }, text);
 }
@@ -737,21 +675,18 @@ async function commandUsage(argv, env) {
 }
 
 async function commandSetup(argv, env) {
-  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag', '--transport': 'value', '--here': 'flag' });
+  const { options } = parseFlags(argv, {
+    ...COMMON,
+    '--enable-review-gate': 'flag',
+    '--disable-review-gate': 'flag',
+  });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
-  if (options.here && !options.transport) throw new Error('--here applies only with --transport.');
   const cwd = options.cwd ?? process.cwd();
-  if (options.transport) {
-    assertTransportSupported(checkTransport(options.transport, '--transport'));
-    if (options.here) writeConfig(cwd, env, { transport: options.transport });
-    else writeGlobalConfig(env, { transport: options.transport });
-  }
   const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
   const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
-  ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
   try {
     const binary = resolveAgyBinary(env);
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
@@ -773,7 +708,6 @@ async function commandSetup(argv, env) {
     `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
     `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
     gateAvailable ? `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}` : 'Review gate: not included in this edition',
-    `Transport: ${report.transport} (${report.transportSource})`,
     ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
   ].join('\n');

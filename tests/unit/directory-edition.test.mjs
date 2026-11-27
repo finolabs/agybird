@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { sameContent, staleFiles, stripImageRegions } from '../../scripts/build-directory-edition.mjs';
+import { sameContent, staleFiles, stripDesktopRegions, stripImageRegions } from '../../scripts/build-directory-edition.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const edition = join(root, 'directory', 'agybird');
@@ -54,6 +54,24 @@ test('image regions must be balanced', () => {
   assert.throws(() => stripImageRegions('// agybird:image-start\nx\n'), /left open/);
   assert.throws(() => stripImageRegions('x\n// agybird:image-end\n'), /without a start/);
   assert.equal(stripImageRegions('a\n  // agybird:image-start\nb\n  // agybird:image-end\nc'), 'a\nc');
+});
+
+test('the directory edition carries no desktop transport', async () => {
+  for (const path of files(edition)) {
+    if (path.endsWith('.svg')) continue;
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /desktop|--via|transport/i, `${path} still mentions the desktop transport`);
+  }
+  for (const name of ['desktop.mjs', 'lib/desktop-ax.js', 'lib/desktop-bridge.mjs', 'lib/desktop-state.mjs', 'lib/transport.mjs']) {
+    assert.equal(files(edition).some((path) => path.endsWith(`scripts/${name}`)), false, name);
+  }
+  const companion = await import(pathToFileURL(join(edition, 'scripts', 'companion.mjs')).href);
+  assert.throws(() => companion.parseFlags(['--via', 'desktop'], {}), /Unknown option: --via/);
+});
+
+test('desktop regions are stripped in code and Markdown, leaving other regions', () => {
+  const source = 'a\n// agybird:desktop-start\nb\n// agybird:desktop-end\nc\n<!-- agybird:desktop-start -->\nd\n<!-- agybird:desktop-end -->\n// agybird:image-start\ne\n// agybird:image-end';
+  assert.equal(stripDesktopRegions(source), 'a\nc\n// agybird:image-start\ne\n// agybird:image-end');
+  assert.throws(() => stripDesktopRegions('<!-- agybird:desktop-start -->\nx'), /desktop region left open/);
 });
 
 test('line endings do not make an unchanged file read as stale', () => {
