@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -99,7 +99,7 @@ test('an approved desktop request presses "allow this time" once in the waiting 
   assert.equal(second.envelope.status, 'success', JSON.stringify(second.envelope.warnings));
   assert.equal(second.envelope.response, 'listed');
   const later = context.calls().slice(before);
-  assert.deepEqual(later.filter((call) => call.startsWith('answer')), ['answer 1']);
+  assert.deepEqual(later.filter((call) => call.startsWith('answer')), [`answer 1 ${DIALOG.question} Fake Task - ws - Antigravity`]);
   assert.ok(!later.some((call) => /^(new-conversation|send|paste-input)/.test(call)));
 });
 
@@ -135,6 +135,36 @@ test('cancelling a desktop job presses Stop execution in the app', { skip: proce
   }
   const cancelled = json(await context.companion(['cancel', started.job.id, '--json']));
   assert.equal(cancelled.stopped, true);
-  assert.ok(context.calls().includes('stop'));
+  assert.ok(context.calls().some((call) => call.startsWith('stop')));
   assert.equal(context.fake().clipboard, 'user clipboard');
+});
+
+test('approving a CLI job stays on the CLI when desktop is chosen meanwhile', async () => {
+  const context = workspace();
+  const blocked = await context.companion(['task', '--json', 'CASE_FORGED_AUTH']);
+  const job = JSON.parse(blocked.stdout).job;
+  context.choose('desktop');
+  const approved = await context.companion(['task', '--json', '--approve', `${job.id}:0`]);
+  assert.equal(approved.code, 0, approved.stderr);
+  const next = JSON.parse(approved.stdout).job;
+  assert.equal(next.transport, undefined);
+  const store = readdirSync(context.env.AGYBIRD_JOBS_DIR).map((name) => join(context.env.AGYBIRD_JOBS_DIR, name)).find((path) => !path.endsWith('.json'));
+  const record = JSON.parse(readFileSync(join(store, `${next.id}.json`), 'utf8'));
+  assert.ok(record.request.runnerArgs.includes('--grant'));
+  assert.ok(record.request.runnerArgs.includes('--conversation'));
+  assert.equal(context.fake().calls, undefined, 'the app was never touched');
+});
+
+test('cancel leaves a desktop run time to stop the app and put the clipboard back', { skip: process.platform === 'win32' }, async () => {
+  const context = workspace({ stuck: true, delays: { stop: 4_000 } });
+  const started = json(await context.companion(['task', '--via', 'desktop', '--background', '--json', 'Run forever']));
+  for (let waited = 0; !context.calls().includes('send'); waited += 100) {
+    assert.ok(waited < 15_000, 'the job never sent its prompt');
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  const cancelled = json(await context.companion(['cancel', started.job.id, '--json']));
+  assert.equal(cancelled.stopped, true);
+  assert.equal(context.fake().stopped, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(context.fake().frontmost, 'com.example.host');
 });

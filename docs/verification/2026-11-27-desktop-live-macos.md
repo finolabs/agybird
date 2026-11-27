@@ -27,6 +27,13 @@
 | Review of a 138 KB working-tree diff | `companion.mjs review --via desktop --timeout 8m` | prompt pasted and sent whole; the app worked 8 minutes; at the deadline the runner pressed Stop and returned `error` with the timeout | 8 m |
 | Review of one commit with a seeded bug (`=` for `===`) | `companion.mjs review --via desktop --scope branch --base HEAD~1` | `success`, verdict `needs-attention`, one `high` finding at the right file and line | 39 s |
 
+After the review fixes (approval transport, read mode at the prompt, conversation title, Copy check, cancel):
+
+| Run | Through | Result | Time |
+| --- | --- | --- | --- |
+| Read task | `companion.mjs task --via desktop` | `success`, response `READY`, `evidence.conversation_title` named the run's conversation, reply taken through Copy | 19 s |
+| Background task, cancelled while running | `companion.mjs task --background`, then `cancel` | `cancelled`, the app stopped, lock gone, front app back; `cancel` returned in 2 s | 2 s |
+
 In every run the clipboard and the app in front before the run were restored, and `~/.agybird/desktop.lock` was gone afterwards.
 
 ## Findings fixed during the check
@@ -38,9 +45,11 @@ In every run the clipboard and the app in front before the run were restored, an
 5. The accessibility text of a reply is rendered Markdown split into words, without code fences. The reply is taken from the app's Copy button instead.
 6. The composer's `AXValue` stops after a few thousand characters, so a review's prompt never read back whole. The read-back joins the composer's line nodes and compares every non-whitespace character in order (links are separate nodes).
 7. A reply with a code block in another language before its JSON block paired the wrong fences. Fences are now read line by line.
+8. The window holds two `AXWebArea`s and only one carries the conversation title; reading the first made every run look like another conversation. The title comes from the titled one, and a poll with no title is skipped.
+9. Cancel waited the whole kill grace: the worker's synchronous wait in `killTree` kept it from reaping the exited runner, so the group looked alive. A desktop runner now gets SIGTERM alone while the worker keeps reaping, and the group is killed only after 12 s.
 
 ## Not checked live
 
-- A permission prompt and its approval: it needs the `Request Review` preset, which the runner never sets. The simulated app covers `needs_permission`, approval of option 1 and the refusal when the question changed.
+- A permission prompt and its approval: it needs the `Request Review` preset, which the runner never sets. The simulated app covers `needs_permission`, approval of option 1 in the conversation that asked, the refusals when the question, the conversation or option 1's label changed, and read mode declining a prompt after a change.
 - The preflight refusals `not_macos`, `app_missing`, `not_trusted`, `unsupported_version`, `labels_missing` and `ambiguous_project`, covered by the simulated app.
 - The commands installed as a plugin in Claude Code or Codex, and hosts other than Claude.

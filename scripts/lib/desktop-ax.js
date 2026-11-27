@@ -14,7 +14,9 @@ ObjC.bindFunction('AXIsProcessTrusted', ['bool', []]);
 const BUNDLE_ID = 'com.google.antigravity';
 const MAX_NODES = 20000;
 const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
-const ANSWERS = { 1: '1 ', Skip: 'Skip' };
+const ANSWERS = ['1', 'Skip'];
+const OPTION_1 = '1 Yes, allow this time';
+const MAX_FIELD = 300;
 
 function get(element, name) {
   const value = Ref();
@@ -129,6 +131,24 @@ function reply(nodes) {
   return lines.join('\n');
 }
 
+// The conversation on screen, as the web area's title: "<title> - <project> -
+// Antigravity", or "Antigravity" before a new conversation has been sent.
+// The window holds an untitled web area beside the titled one.
+function title(nodes) {
+  const area = nodes.find((node) => node.role === 'AXWebArea' && node.label);
+  return area ? area.label : null;
+}
+
+// The runner keeps the question flattened and cut as it stores it.
+function cut(value) {
+  const flat = String(value || '').replace(/\s+/g, ' ').trim();
+  return flat.length > MAX_FIELD ? `${flat.slice(0, MAX_FIELD)}…` : flat;
+}
+
+function requireTitle(nodes, expected) {
+  if (expected !== undefined && title(nodes) !== expected) throw new Error('other_conversation');
+}
+
 function snapshot(nodes) {
   const labels = {};
   for (const label of REQUIRED_LABELS) labels[label] = nodes.some((node) => node.label.startsWith(label));
@@ -137,6 +157,7 @@ function snapshot(nodes) {
     preset: current(nodes, 'Agent permissions preset selector'),
     model: current(nodes, 'Select model'),
     project: current(nodes, 'Select project'),
+    title: title(nodes),
     running: Boolean(find(nodes, 'AXButton', 'Stop execution')),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
     dialog: dialog(nodes),
@@ -256,21 +277,30 @@ const COMMANDS = {
     press(button, 'Send message');
     return { ok: true };
   },
-  answer(app, option) {
-    if (!Object.prototype.hasOwnProperty.call(ANSWERS, option)) throw new Error('refused: only 1 or Skip may be answered');
+  // Option 1 is pressed only in the same tree read that shows the expected
+  // conversation, the approved question and option 1's exact label.
+  answer(app, option, question, expectedTitle) {
+    if (!ANSWERS.includes(option)) throw new Error('refused: only 1 or Skip may be answered');
     const nodes = tree(app);
-    if (!dialog(nodes)) throw new Error('not_found: permission dialog');
+    const prompt = dialog(nodes);
+    if (!prompt) throw new Error('not_found: permission dialog');
+    requireTitle(nodes, expectedTitle);
     if (option === 'Skip') {
       press(find(nodes, 'AXButton', 'Skip'), 'Skip');
-    } else {
-      press(find(nodes, 'AXRadioButton', ANSWERS[option]), 'option 1');
-      press(find(tree(app), 'AXButton', 'Submit'), 'Submit');
+      return { ok: true };
     }
+    if (question === undefined || expectedTitle === undefined) throw new Error('usage: answer 1 <question> <conversation title>');
+    if (cut(prompt.question) !== question) throw new Error('question_changed');
+    const first = nodes.findIndex((node) => node.role === 'AXRadioButton' && node.label.trim() === OPTION_1);
+    if (first < 0) throw new Error('not_found: option 1');
+    press(nodes[first], 'option 1');
+    press(nodes.slice(first).find((node) => node.role === 'AXButton' && node.label.startsWith('Submit')), 'Submit');
     return { ok: true };
   },
   // Puts the last reply, as the app's own Markdown, on the clipboard.
-  'copy-reply'(app) {
+  'copy-reply'(app, expectedTitle) {
     const nodes = tree(app);
+    requireTitle(nodes, expectedTitle);
     let group = -1;
     nodes.forEach((node, index) => {
       if (node.role === 'AXGroup' && node.label === 'Response actions') group = index;
@@ -281,12 +311,18 @@ const COMMANDS = {
     for (let index = group + 1; index < nodes.length && nodes[index].depth > depth && !button; index += 1) {
       if (nodes[index].role === 'AXButton' && nodes[index].label === 'Copy') button = nodes[index];
     }
+    // The copy lands asynchronously; an unchanged pasteboard means it did not.
+    const board = $.NSPasteboard.generalPasteboard;
+    const before = board.changeCount;
     press(button, 'Copy');
-    delay(0.2);
+    for (let tries = 0; tries < 20 && board.changeCount === before; tries += 1) delay(0.1);
+    if (board.changeCount === before) throw new Error('copy_unchanged');
     return { ok: true };
   },
-  stop(app) {
-    press(find(tree(app), 'AXButton', 'Stop execution'), 'Stop execution');
+  stop(app, expectedTitle) {
+    const nodes = tree(app);
+    requireTitle(nodes, expectedTitle);
+    press(find(nodes, 'AXButton', 'Stop execution'), 'Stop execution');
     return { ok: true };
   },
 };

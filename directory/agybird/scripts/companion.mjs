@@ -226,10 +226,11 @@ async function executeJob(directory, job, env) {
   // knows the pid is still its own. Cancel just marks the record and waits.
   let runner = null;
   let runnerExited = false;
+  let stopRunner = (pid) => killTree(pid);
   let lastBeat = 0;
   const stopIfCancelled = () => {
     try {
-      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') killTree(runner.pid);
+      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') stopRunner(runner.pid);
     } catch {
       // the next check retries
     }

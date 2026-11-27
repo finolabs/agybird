@@ -68,7 +68,7 @@ test('a read task runs in a new conversation of the workspace project and return
   assert.equal(code, 0);
   assert.equal(envelope.status, 'success');
   assert.equal(envelope.response, 'READY');
-  assert.deepEqual(envelope.evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [] });
+  assert.deepEqual(envelope.evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [], conversation_title: 'Fake Task - ws - Antigravity' });
   const calls = context.fake().calls;
   assert.deepEqual(calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', 'ws']);
   const order = names(context);
@@ -219,4 +219,69 @@ test('with --json-schema the last fenced JSON block of the reply is the structur
 
   const missing = setup({ reply: 'No block here.' });
   assert.equal((await run(missing, ['--json-schema', schema])).envelope.status, 'error');
+});
+
+const DIALOG = { question: 'Allow list directory contents?', options: ['1 Yes, allow this time', "2 Yes, and always allow 'ls' in this conversation", "3 Yes, and always allow 'ls'", '4 No (tell the agent what to do instead)'] };
+const TITLE = 'Fake Task - ws - Antigravity';
+
+test('read mode declines a permission prompt when the run already changed the working tree', async () => {
+  const context = setup();
+  writeFileSync(context.env.AGYBIRD_FAKE_DESKTOP_STATE, JSON.stringify({ dialog: DIALOG, onSend: { path: join(context.cwd, 'new.txt'), content: 'x' } }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.deepEqual(envelope.evidence.changed_files, ['new.txt']);
+  assert.deepEqual(envelope.permission_requests, []);
+  const answers = context.fake().calls.filter((call) => call[0] === 'answer');
+  assert.deepEqual(answers.map((call) => call[1]), ['Skip']);
+  assertCleanedUp(context);
+});
+
+test('write mode reports what changed before a permission prompt', async () => {
+  const context = setup();
+  writeFileSync(context.env.AGYBIRD_FAKE_DESKTOP_STATE, JSON.stringify({ dialog: DIALOG, onSend: { path: join(context.cwd, 'README.md'), content: 'edited\n' } }));
+  const { envelope } = await run(context, ['--mode', 'write']);
+  assert.equal(envelope.status, 'needs_permission');
+  assert.deepEqual(envelope.evidence.changed_files, ['README.md']);
+  assert.equal(envelope.evidence.conversation_title, TITLE);
+});
+
+test('a Copy that leaves the clipboard unchanged falls back to the on-screen reply, never the user clipboard', async () => {
+  const context = setup({ copyNoop: true, reply: 'on screen' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  assert.equal(envelope.response, 'on screen');
+  assert.ok(envelope.warnings.some((warning) => /could not be copied/.test(warning)));
+  assertCleanedUp(context);
+});
+
+test('the run stops reading, and presses nothing, once the app shows another conversation', async () => {
+  const context = setup({ runningPolls: 5, switchAfter: 1 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /another conversation/.test(warning)));
+  assert.ok(!names(context).includes('stop'));
+  assert.ok(!names(context).includes('copy-reply'));
+  assertCleanedUp(context);
+});
+
+test('a successful run names the conversation it read', async () => {
+  const context = setup({ runningPolls: 1 });
+  assert.equal((await run(context)).envelope.evidence.conversation_title, TITLE);
+});
+
+test('a resumed run waits for the new turn instead of returning the reply already on screen', async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, replyBeforeDialog: 'checking the folder', lag: 1, runningPolls: 2, reply: 'final answer' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(envelope.response, 'final answer');
+});
+
+test('a resumed run answers nothing when the app shows another conversation or another option 1', async () => {
+  const other = setup({ sent: true, project: 'ws', dialog: DIALOG, title: 'Other Chat - ws - Antigravity' });
+  assert.equal((await run(other, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE])).envelope.status, 'error');
+  assert.ok(!names(other).includes('answer'));
+  const reordered = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
+  const { envelope } = await run(reordered, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  assert.equal(envelope.status, 'error');
+  assert.equal(reordered.fake().answered, undefined);
 });

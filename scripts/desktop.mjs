@@ -21,6 +21,12 @@ const DEFAULT_POLL_MS = 2_500;
 
 class Cancelled extends Error {}
 
+class OtherConversation extends Error {
+  constructor(title) {
+    super(`The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`);
+  }
+}
+
 function processIsRunning(pid) {
   try {
     process.kill(pid, 0);
@@ -84,15 +90,27 @@ function workTree(cwd) {
   return { head, hashes: Object.fromEntries(scope.files.map((file) => [file, fileHash(join(scope.root, file))])) };
 }
 
-// `--resume-dialog <question>` belongs to this runner only: after the user's
-// yes, it answers the prompt the app is waiting on instead of sending a task.
+// `--resume-dialog <question> --resume-title <conversation title>` belong to this
+// runner only: after the user's yes, it answers the prompt the app is waiting on
+// in that conversation instead of sending a task.
 function takeResume(argv) {
-  const index = argv.indexOf('--resume-dialog');
-  if (index < 0) return { argv, question: null };
-  const question = argv[index + 1];
-  if (question === undefined || question.startsWith('--')) throw new Error('--resume-dialog requires the question being answered');
-  return { argv: [...argv.slice(0, index), ...argv.slice(index + 2)], question };
+  let rest = argv;
+  const take = (flag) => {
+    const index = rest.indexOf(flag);
+    if (index < 0) return null;
+    const value = rest[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+    rest = [...rest.slice(0, index), ...rest.slice(index + 2)];
+    return value;
+  };
+  const question = take('--resume-dialog');
+  const title = take('--resume-title');
+  if ((question === null) !== (title === null)) throw new Error('--resume-dialog and --resume-title go together');
+  return { argv: rest, question, title };
 }
+
+// A new conversation's web area reads "Antigravity" until the app titles it.
+const UNTITLED = 'Antigravity';
 
 // Links in the composer are separate nodes, so whitespace around them differs;
 // every other character must read back in order.
@@ -125,6 +143,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let pasted = false;
   let sent = false;
   let finished = false;
+  // The title of the run's own conversation, once the app has given it one.
+  let conversation = null;
+  const expected = () => conversation ?? UNTITLED;
 
   const restore = async () => {
     if (!saved) return;
@@ -177,17 +198,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const project = projectName(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
     lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'));
     const before = workTree(options.cwd);
+    // The reply already on screen when the turn starts; a resumed conversation has one.
+    let baselineReply = null;
     if (!before) warnings.push('The workspace is not a git repository, so changes the run made could not be checked.');
 
     if (resume.question !== null) {
       const waiting = await bridge(['snapshot']);
+      if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
       if (!waiting.dialog || permissionRequest(waiting.dialog).question !== resume.question) {
         throw new Error(`The Antigravity app no longer asks ${JSON.stringify(resume.question)}; answer it in the app, or start the task again.`);
       }
+      conversation = resume.title;
+      evidence.conversation_title = conversation;
       evidence.preset = waiting.preset;
       warnings.push(...presetWarnings(waiting.preset));
+      baselineReply = waiting.reply;
       sent = true;
-      await bridge(['answer', '1']);
+      await bridge(['answer', '1', resume.question, conversation]);
     } else {
       saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
@@ -223,17 +250,54 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     const deadline = Date.now() + timeoutToMilliseconds(options.timeout);
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : DEFAULT_POLL_MS;
+    // Every read is of the run's own conversation: the first title the app gives
+    // it after send is kept, and any other title on screen ends the run unread.
+    // Returns false when no title could be read this time, so the poll is skipped.
+    const follow = (state) => {
+      if (state.title === null) return false;
+      if (conversation === null) {
+        if (state.title === UNTITLED) return true;
+        if (!String(state.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(state.title);
+        conversation = state.title;
+        evidence.conversation_title = conversation;
+        return true;
+      }
+      if (state.title !== conversation) throw new OtherConversation(state.title);
+      return true;
+    };
+    const changesSince = () => {
+      const now = before && workTree(options.cwd);
+      if (!before) return false;
+      if (!now) {
+        warnings.push('The working tree could not be read again, so changes the run made were not checked.');
+        return options.mode === 'read';
+      }
+      evidence.changed_files = changedFiles(before, now);
+      if (before.head !== now.head) warnings.push('HEAD moved during the run.');
+      return evidence.changed_files.length > 0 || before.head !== now.head;
+    };
     let state;
+    let sawRunning = false;
     for (;;) {
       await sleep(pollMs);
       state = await bridge(['snapshot']);
+      if (!follow(state)) {
+        if (Date.now() >= deadline) throw new Error(`The run timed out after ${options.timeout}; the app showed no conversation title, so nothing was pressed.`);
+        continue;
+      }
       if (state.dialog) {
+        if (changesSince() && options.mode === 'read') {
+          await call(['answer', 'Skip', '', expected()]).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
+          throw new Error('The run changed the working tree in read mode before it asked for a permission; Agybird declined the prompt.');
+        }
         await cleanup();
         return emit(envelope({ status: 'needs_permission', category: options.category, requests: [permissionRequest(state.dialog)], warnings: [...warnings, 'The run is waiting in the Antigravity app for an answer to a permission prompt.'], evidence }));
       }
-      if (!state.running && state.reply !== null) break;
+      if (state.running) sawRunning = true;
+      // A turn has ended once it was seen running, or once a new reply replaced the one on screen.
+      if (!state.running && state.reply !== null && (sawRunning || state.reply !== baselineReply)) break;
       if (Date.now() >= deadline) {
-        await call(['stop']).catch(() => warnings.push('Stop execution could not be pressed.'));
+        await call(['stop', expected()]).catch(() => warnings.push('Stop execution could not be pressed.'));
         throw new Error(`The run timed out after ${options.timeout} and was stopped in the app.`);
       }
     }
@@ -243,7 +307,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let response = state.reply;
     const clipboard = (await bridge(['clipboard-get'])).text;
     try {
-      await bridge(['copy-reply']);
+      await bridge(['copy-reply', expected()]);
       response = (await bridge(['clipboard-get'])).text ?? state.reply;
     } catch (error) {
       if (error instanceof Cancelled) throw error;
@@ -262,21 +326,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         warnings.push(error.message);
       }
     }
-    const after = before && workTree(options.cwd);
-    if (before && after) {
-      evidence.changed_files = changedFiles(before, after);
-      if (before.head !== after.head) warnings.push('HEAD moved during the run.');
-      if (options.mode === 'read' && (evidence.changed_files.length > 0 || before.head !== after.head)) {
-        status = 'error';
-        warnings.push('The run changed the working tree in read mode.');
-      }
+    if (changesSince() && options.mode === 'read') {
+      status = 'error';
+      warnings.push('The run changed the working tree in read mode.');
     }
     await cleanup();
     emit(envelope({ status, category: options.category, response, structured, warnings, evidence }));
   } catch (caught) {
     let error = caught;
     if (cancelled) {
-      if (sent) await call(['stop']).catch(() => warnings.push('Stop execution could not be pressed.'));
+      if (sent) await call(['stop', expected()]).catch(() => warnings.push('Stop execution could not be pressed.'));
       error = new Error(sent ? 'The run was cancelled and stopped in the app.' : 'The run was cancelled before the prompt was sent.');
     }
     await cleanup();

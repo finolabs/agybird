@@ -18,6 +18,7 @@ function bridgeCommand(env) {
 export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, input } = {}) {
   const name = args[0];
   if (name === 'answer' && !ANSWERS.has(args[1])) return Promise.reject(new Error('Desktop bridge refused the answer: only 1 or Skip may be answered.'));
+  if (name === 'answer' && args[1] === '1' && (!args[2] || !args[3])) return Promise.reject(new Error('Desktop bridge refused the answer: option 1 needs the approved question and conversation title.'));
   const [command, prefix] = bridgeCommand(env);
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });

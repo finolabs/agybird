@@ -35,19 +35,22 @@ test('a non-zero exit, bad JSON, an error field or a hang becomes an error', asy
   await assert.rejects(callBridge(['probe'], { ...fake({ hang: true }), timeoutMs: 300 }), /probe.*timed out/);
 });
 
+const DIALOG_QUESTION = 'Allow list directory contents?';
+
 test('the wrapper refuses every dialog answer but option 1 and Skip, without calling the bridge', async () => {
-  const { env, state } = fake({ dialog: { question: 'Allow list directory contents?', options: ['1 Yes, allow this time'] } });
+  const { env, state } = fake({ sent: true, dialog: { question: DIALOG_QUESTION, options: ['1 Yes, allow this time'] } });
   for (const option of ['2', '3', '4', 'Submit', '']) {
     await assert.rejects(callBridge(['answer', option], { env }), /only 1 or Skip/);
   }
   assert.equal(state().calls, undefined, 'the bridge was never started');
-  assert.deepEqual(await callBridge(['answer', '1'], { env }), { ok: true });
+  await assert.rejects(callBridge(['answer', '1'], { env }), /question and conversation/);
+  assert.deepEqual(await callBridge(['answer', '1', DIALOG_QUESTION, 'Fake Task - workspace - Antigravity'], { env }), { ok: true });
 });
 
 test('the AX script sends no keystrokes and answers only option 1 or Skip', () => {
   const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
   assert.doesNotMatch(source, /keystroke\(|key code|keyCode|CGEvent/i);
-  assert.match(source, /const ANSWERS = \{ 1: '1 ', Skip: 'Skip' \};/);
+  assert.match(source, /const OPTION_1 = '1 Yes, allow this time';/);
   assert.doesNotMatch(source, /AXRadioButton', '[234] /);
   assert.doesNotMatch(source, /press\(find\([^)]*'AXPopUpButton'/, 'no selector, the permissions preset included, is ever changed');
 });

@@ -39,6 +39,7 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 // agybird:desktop-start
 export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
+const DESKTOP_STOP_GRACE_MS = 12_000;
 // agybird:desktop-end
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
@@ -238,10 +239,28 @@ async function executeJob(directory, job, env) {
   // knows the pid is still its own. Cancel just marks the record and waits.
   let runner = null;
   let runnerExited = false;
+  let stopRunner = (pid) => killTree(pid);
+  // agybird:desktop-start
+  // The desktop runner presses Stop in the app and puts the clipboard and the front
+  // app back before it exits, a few accessibility calls of about a second each. It
+  // gets SIGTERM alone and time to do that while this loop keeps reaping; only a
+  // runner still alive after the grace has its whole group killed.
+  let termAt = null;
+  if (request.transport === 'desktop') {
+    stopRunner = (pid) => {
+      if (termAt === null) {
+        termAt = Date.now();
+        process.kill(pid, 'SIGTERM');
+      } else if (Date.now() - termAt >= DESKTOP_STOP_GRACE_MS) {
+        killTree(pid);
+      }
+    };
+  }
+  // agybird:desktop-end
   let lastBeat = 0;
   const stopIfCancelled = () => {
     try {
-      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') killTree(runner.pid);
+      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') stopRunner(runner.pid);
     } catch {
       // the next check retries
     }
@@ -557,7 +576,9 @@ export function approvedRules(directory, approvals = []) {
       if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
       if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
       if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
-      return { rules: [], transport: 'desktop', question: request.question, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+      const title = envelope.evidence?.conversation_title;
+      if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
+      return { rules: [], transport: 'desktop', question: request.question, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
     }
     // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
@@ -596,7 +617,8 @@ async function commandTask(argv, env) {
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
   // agybird:desktop-start
   if (approving && options.via) throw new Error('An approval resumes the job on its own transport; drop --via.');
-  const transport = approval.transport ?? transportFor({ cwd, env, flag: options.via }).transport;
+  // An approval resumes the job on the transport it ran on, whatever is chosen now.
+  const transport = approving ? (approval.transport ?? 'cli') : transportFor({ cwd, env, flag: options.via }).transport;
   if (transport === 'desktop') {
     if (approving && options.grantScope) throw new Error('--grant-scope does not apply to the desktop transport: an approval answers "Yes, allow this time" in the app, once.');
     if (options.grantScope) throw new Error('--grant-scope applies only with --approve.');
@@ -604,7 +626,7 @@ async function commandTask(argv, env) {
     const category = approval.category ?? options.category ?? 'code';
     if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
     const runnerArgs = [];
-    if (approval.question) runnerArgs.push('--resume-dialog', approval.question);
+    if (approval.question) runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title);
     const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
     return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
   }
