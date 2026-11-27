@@ -84,6 +84,16 @@ function workTree(cwd) {
   return { head, hashes: Object.fromEntries(scope.files.map((file) => [file, fileHash(join(scope.root, file))])) };
 }
 
+// `--resume-dialog <question>` belongs to this runner only: after the user's
+// yes, it answers the prompt the app is waiting on instead of sending a task.
+function takeResume(argv) {
+  const index = argv.indexOf('--resume-dialog');
+  if (index < 0) return { argv, question: null };
+  const question = argv[index + 1];
+  if (question === undefined || question.startsWith('--')) throw new Error('--resume-dialog requires the question being answered');
+  return { argv: [...argv.slice(0, index), ...argv.slice(index + 2)], question };
+}
+
 const normalized = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
@@ -142,7 +152,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   process.once('SIGINT', onTerm);
 
   try {
-    options = validateRequest(parseArgs(argv));
+    const resume = takeResume(argv);
+    options = validateRequest(parseArgs(resume.argv));
     const refused = refusedOption(options);
     if (refused) throw new Error(`The desktop transport does not support ${refused}; use the CLI transport (--via cli) for it.`);
     const schema = options.jsonSchema ? JSON.parse(readFileSync(options.jsonSchema, 'utf8')) : null;
@@ -157,35 +168,46 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const before = workTree(options.cwd);
     if (!before) warnings.push('The workspace is not a git repository, so changes the run made could not be checked.');
 
-    saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
-    // Frontmost before the conversation opens: a composer created while the app
-    // is in the background re-mounts when it comes forward and drops the paste.
-    await bridge(['front']);
-    await bridge(['new-conversation', project]);
-    const opened = await bridge(['snapshot']);
-    checkLabels(opened);
-    if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
-    evidence.preset = opened.preset;
-    warnings.push(...presetWarnings(opened.preset));
+    if (resume.question !== null) {
+      const waiting = await bridge(['snapshot']);
+      if (!waiting.dialog || permissionRequest(waiting.dialog).question !== resume.question) {
+        throw new Error(`The Antigravity app no longer asks ${JSON.stringify(resume.question)}; answer it in the app, or start the task again.`);
+      }
+      evidence.preset = waiting.preset;
+      warnings.push(...presetWarnings(waiting.preset));
+      sent = true;
+      await bridge(['answer', '1']);
+    } else {
+      saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
+      // Frontmost before the conversation opens: a composer created while the app
+      // is in the background re-mounts when it comes forward and drops the paste.
+      await bridge(['front']);
+      await bridge(['new-conversation', project]);
+      const opened = await bridge(['snapshot']);
+      checkLabels(opened);
+      if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
+      evidence.preset = opened.preset;
+      warnings.push(...presetWarnings(opened.preset));
 
-    pasted = true;
-    await bridge(['clipboard-set'], { input: prompt });
-    const input = await bridge(['paste-input']);
-    if (normalized(input.value) !== normalized(prompt)) {
-      await bridge(['clear-input']).catch(() => {});
-      throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
+      pasted = true;
+      await bridge(['clipboard-set'], { input: prompt });
+      const input = await bridge(['paste-input']);
+      if (normalized(input.value) !== normalized(prompt)) {
+        await bridge(['clear-input']).catch(() => {});
+        throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
+      }
+      // Marked first: a cancel that lands while Send is pressed must still stop the run.
+      sent = true;
+      try {
+        await bridge(['send']);
+      } catch (error) {
+        if (error instanceof Cancelled) throw error;
+        sent = false;
+        await call(['clear-input']).catch(() => {});
+        throw error;
+      }
+      await restore();
     }
-    // Marked first: a cancel that lands while Send is pressed must still stop the run.
-    sent = true;
-    try {
-      await bridge(['send']);
-    } catch (error) {
-      if (error instanceof Cancelled) throw error;
-      sent = false;
-      await call(['clear-input']).catch(() => {});
-      throw error;
-    }
-    await restore();
 
     const deadline = Date.now() + timeoutToMilliseconds(options.timeout);
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : DEFAULT_POLL_MS;

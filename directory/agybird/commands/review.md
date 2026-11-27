@@ -1,6 +1,6 @@
 ---
 description: Run a read-only Antigravity code review of local git changes
-argument-hint: '[--base <ref>] [--scope auto|working-tree|branch] [--background] [--model <slug>] [focus ...]'
+argument-hint: '[--base <ref>] [--scope auto|working-tree|branch] [--background] [--model <slug>] [--via cli|desktop] [focus ...]'
 disable-model-invocation: true
 ---
 

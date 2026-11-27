@@ -1,6 +1,6 @@
 ---
 description: Run an Antigravity review that challenges the design and assumptions of local changes
-argument-hint: '[--base <ref>] [--scope auto|working-tree|branch] [--background] [--model <slug>] [focus ...]'
+argument-hint: '[--base <ref>] [--scope auto|working-tree|branch] [--background] [--model <slug>] [--via cli|desktop] [focus ...]'
 disable-model-invocation: true
 ---
 

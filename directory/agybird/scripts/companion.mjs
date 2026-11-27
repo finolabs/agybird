@@ -35,6 +35,7 @@ import { assertTransportSupported, checkTransport, resolveTransport } from './li
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
+export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
 // An edition built without hooks/ (the Codex and Anthropic directory editions)
@@ -127,7 +128,7 @@ function lastJsonLine(text) {
 // never the argument list, exactly as the skill does it.
 export function runRunner({ workspace, request, env = process.env, onSpawn }) {
   const args = [
-    RUNNER_PATH,
+    request.transport === 'desktop' ? DESKTOP_RUNNER_PATH : RUNNER_PATH,
     '--category', request.category,
     '--cwd', workspace,
     '--mode', request.mode,
@@ -212,6 +213,7 @@ function createJob({ directory, workspace, kind, title, request, model }) {
     workspace,
     status: 'queued',
     model: model ?? null,
+    ...(request.transport ? { transport: request.transport } : {}),
     createdAt: new Date().toISOString(),
     // The runner's own timeout, its kill grace and agy's shutdown window.
     timeoutMs: timeoutMs(request.timeout) + 45_000,
@@ -414,6 +416,13 @@ function transportFor({ cwd, env = process.env, flag }) {
   return resolveTransport({ flag, workspace: readConfig(cwd, env), global: readGlobalConfig(env) });
 }
 
+// The app runs its own model and reasoning settings; Agybird never changes them.
+function refuseDesktopOptions(options) {
+  for (const [flag, value] of [['--model', options.model], ['--effort', options.effort]]) {
+    if (value !== undefined) throw new Error(`${flag} is not supported on the desktop transport: the app uses the model chosen in it. Drop ${flag}, or pass --via cli.`);
+  }
+}
+
 function output(options, data, text) {
   process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
 }
@@ -493,6 +502,7 @@ const TASK_FLAGS = {
   '--timeout': 'value',
   '--approve': 'list',
   '--grant-scope': 'value',
+  '--via': 'value',
 };
 
 // The categories a job can resume in after an approval.
@@ -519,6 +529,13 @@ export function approvedRules(directory, approvals = []) {
     const envelope = job ? readStoredResult(directory, id) : null;
     const request = envelope?.permission_requests?.[Number(index)];
     if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
+    // In the app an approval answers the prompt that is waiting there, once.
+    if (job.request?.transport === 'desktop') {
+      if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
+      if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
+      if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
+      return { rules: [], transport: 'desktop', question: request.question, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+    }
     // A review runs in a standalone conversation the workspace never resumes;
     // granting into it would record it as the task session.
     if (!['task', 'image'].includes(job.kind)) throw new Error(`Job ${id} is a ${job.kind}; only a task or image job can be approved and resumed.`);
@@ -550,6 +567,19 @@ async function commandTask(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   const approval = approvedRules(storeFor(cwd, env), options.approve);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
+  if (approving && options.via) throw new Error('An approval resumes the job on its own transport; drop --via.');
+  const transport = approval.transport ?? transportFor({ cwd, env, flag: options.via }).transport;
+  if (transport === 'desktop') {
+    if (approving && options.grantScope) throw new Error('--grant-scope does not apply to the desktop transport: an approval answers "Yes, allow this time" in the app, once.');
+    if (options.grantScope) throw new Error('--grant-scope applies only with --approve.');
+    refuseDesktopOptions(options);
+    const category = approval.category ?? options.category ?? 'code';
+    if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+    const runnerArgs = [];
+    if (approval.question) runnerArgs.push('--resume-dialog', approval.question);
+    const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
+    return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
+  }
   const category = approval.category ?? options.category ?? 'code';
   const allowedCategories = ['code', 'general'];
   if (!allowedCategories.includes(category)) throw new Error('--category must be code or general');
@@ -565,7 +595,10 @@ async function commandTask(argv, env) {
   for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
-  const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
+  finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model }));
+}
+
+function finishTask(options, result) {
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
     return;
@@ -622,6 +655,7 @@ const REVIEW_FLAGS = {
   '--model': 'value',
   '--effort': 'value',
   '--timeout': 'value',
+  '--via': 'value',
 };
 
 function reviewCommand(kind) {
@@ -634,9 +668,12 @@ function reviewCommand(kind) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+    const { transport } = transportFor({ cwd, env, flag: options.via });
+    if (transport === 'desktop') refuseDesktopOptions(options);
+    const { model, note } = transport === 'desktop' ? { model: undefined, note: null } : pickModel({ cwd, env, tier: 'standard', model: options.model });
     if (note) process.stderr.write(`agybird: ${note}\n`);
     const request = buildReviewRequest({ kind, scope, options: { ...options, model }, focus: positional.join(' ').trim() });
+    if (transport === 'desktop') request.transport = transport;
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
     const result = await launch({ cwd, kind, title, request, background: options.background, env, model });
     if (options.background) {
@@ -660,6 +697,7 @@ async function commandPermissions(argv, env) {
     output(options, { job: null, requests: [] }, 'No Agybird job here is waiting for a permission.');
     return;
   }
+  const desktop = job.request?.transport === 'desktop';
   const requests = (readStoredResult(directory, job.id)?.permission_requests ?? []).map((request, index) => ({
     index,
     approval: `${job.id}:${index}`,
@@ -668,10 +706,13 @@ async function commandPermissions(argv, env) {
     target_truncated: request.target_truncated,
     suggested_rule: request.suggested_rule,
     grantable: request.grantable === true && Boolean(request.suggested_rule),
+    // A desktop request is approved by answering the app's prompt once, never by a rule.
+    ...(desktop ? { transport: 'desktop', question: request.question, scope: request.scope, options: request.options, approvable: Boolean(request.question) && job.kind === 'task' } : {}),
   }));
-  const text = requests.length
-    ? requests.map((request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`).join('\n')
-    : `Job ${job.id} reported no permission request.`;
+  const describe = (request) => (desktop
+    ? `- ${request.approval}: the Antigravity app asks ${JSON.stringify(request.question)} -> approving answers "Yes, allow this time" once${request.scope ? `; a wider rule for '${request.scope}' can only be given in the app` : ''}`
+    : `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`);
+  const text = requests.length ? requests.map(describe).join('\n') : `Job ${job.id} reported no permission request.`;
   output(options, { job: summary(job), requests }, text);
 }
 
