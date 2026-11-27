@@ -629,6 +629,49 @@ test('an approval presses nothing in a conversation that has the asking title bu
   assert.equal(unmarked.fake().calls, undefined);
 });
 
+test('with a second conversation window holding the same dialog, an approval presses nothing and stays approvable', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, secondPaneIn: ['answer'] });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack]);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /several_conversations/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().answered, undefined);
+  assert.equal(envelope.evidence.answered, undefined);
+  assert.equal(existsSync(ack), false, 'a refusal before any press leaves the request approvable');
+  assert.ok(!names(context).includes('stop'));
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('with a second conversation window, Stop is not pressed and the lock stays kept for the app', async () => {
+  const context = setup({ stuck: true, failSnapshotAfterSend: true, secondPaneIn: ['stop'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(names(context).includes('stop'));
+  assert.notEqual(context.fake().stopped, true);
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+});
+
+test('with a second conversation window, Copy is not pressed and the on-screen reply is returned', async () => {
+  const context = setup({ reply: 'on screen', secondPaneIn: ['copy-reply'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  assert.equal(envelope.response, 'on screen');
+  assert.ok(envelope.warnings.some((warning) => /could not be copied.*several_conversations/.test(warning)), envelope.warnings.join(' | '));
+  assertCleanedUp(context);
+});
+
+test('a second conversation window seen while polling ends the run unread', async () => {
+  const context = setup({ stuck: true, secondPaneIn: ['snapshot'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /snapshot failed: several_conversations/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(envelope.response, null);
+  // Stop's own read shows the run's conversation alone, so it is stopped there.
+  assert.equal(context.fake().stopped, true);
+  assertCleanedUp(context);
+});
+
 test('an answer that already has a record is never pressed again', async () => {
   const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG });
   const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');

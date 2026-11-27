@@ -457,7 +457,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // nothing, so its record is withdrawn; a timeout, a crash, a cancel or
         // a failed press may have pressed it, so the app may be running and the
         // answer stays spent, said to be uncertain.
-        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|not_own|question_changed|several_dialogs|not_trusted)/.test(error.message)) {
+        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|not_own|question_changed|several_dialogs|several_conversations|outside_conversation|not_trusted)/.test(error.message)) {
           withdraw(resume);
         } else {
           sent = true;
@@ -507,7 +507,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         pressed = await bridge(['send', UNTITLED, project, marker], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         // Refused before the press; a timeout or a crash may have pressed it.
-        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
+        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|several_conversations|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read

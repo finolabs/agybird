@@ -32,7 +32,9 @@
 // sendReturnsNoTitle (Send returns no title though the app titles it at once),
 // failSnapshotAfterSend (every snapshot after send fails), stopFails (Stop
 // execution cannot be pressed), answerThenCrash (the answer is pressed, then
-// the bridge exits with an error), onSend ({ path, content }: a file the "agent" writes when the
+// the bridge exits with an error), secondPaneIn (the commands during which,
+// once sent, a second conversation window shows the same dialog, reply, Copy
+// and Stop), onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -142,9 +144,36 @@ function listed() {
   return [...(state.conversations ?? ['Other Chat']), ...rival, ...(titled ? [own] : [])];
 }
 
+// A conversation's controls once sent: the reply with its response actions
+// (Copy) and Stop execution.
+function controls() {
+  if (!state.sent) return [];
+  return [
+    { depth: 2, role: 'AXHeading', label: 'Agent said' },
+    { depth: 2, role: 'AXGroup', label: '' },
+    { depth: 3, role: 'AXStaticText', label: '', value: String(state.reply ?? '') },
+    { depth: 2, role: 'AXGroup', label: 'Response actions' },
+    { depth: 3, role: 'AXButton', label: 'Copy' },
+    { depth: 2, role: 'AXButton', label: 'Stop execution' },
+  ];
+}
+
+function dialogNodes(withDialogs) {
+  if (!withDialogs) return [];
+  return [state.dialog, state.extraDialog].filter(Boolean).flatMap((dialog) => [
+    { depth: 2, role: 'AXGroup', label: '' },
+    ...(dialog.fragments ?? [dialog.question]).map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value })),
+    ...dialog.options.map((label) => ({ depth: 3, role: 'AXRadioButton', label })),
+    { depth: 3, role: 'AXButton', label: 'Skip' },
+    { depth: 3, role: 'AXButton', label: 'Submit' },
+  ]);
+}
+
 // The accessibility nodes of the window: the sidebar, its titled web area with
-// the user's message, one text node per line, and, while one waits, each
-// dialog as the app renders it.
+// the user's message, one text node per line, the conversation's controls and,
+// while one waits, each dialog as the app renders it. During the commands
+// `secondPaneIn` names, once sent, a second conversation window shows the
+// same dialog and controls.
 function screenNodes(withDialogs) {
   const text = conversationText();
   const nodes = [
@@ -155,15 +184,17 @@ function screenNodes(withDialogs) {
     ...listed().map((value) => ({ depth: 2, role: 'AXStaticText', label: '', value })),
     { depth: 1, role: 'AXWebArea', label: title() },
     ...(text ? [{ depth: 2, role: 'AXGroup', label: '' }, ...text.split('\n').map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value }))] : []),
+    ...controls(),
+    ...dialogNodes(withDialogs),
   ];
-  if (!withDialogs) return nodes;
-  for (const dialog of [state.dialog, state.extraDialog].filter(Boolean)) {
+  if (state.sent && state.secondPaneIn?.includes(command)) {
     nodes.push(
+      { depth: 0, role: 'AXWindow', label: 'Antigravity' },
+      { depth: 1, role: 'AXWebArea', label: `Second Chat - ${state.project} - Antigravity` },
       { depth: 2, role: 'AXGroup', label: '' },
-      ...(dialog.fragments ?? [dialog.question]).map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value })),
-      ...dialog.options.map((label) => ({ depth: 3, role: 'AXRadioButton', label })),
-      { depth: 3, role: 'AXButton', label: 'Skip' },
-      { depth: 3, role: 'AXButton', label: 'Submit' },
+      { depth: 3, role: 'AXStaticText', label: '', value: 'Another task of the user.' },
+      ...controls(),
+      ...dialogNodes(withDialogs),
     );
   }
   return nodes;
@@ -186,6 +217,10 @@ function answer() {
       let own;
       try {
         if (args[0] !== undefined) own = decisions.ownConversation(screenNodes(false), args[0]);
+        // As desktop-ax.js reads them: only inside the one titled conversation.
+        decisions.running(screenNodes(true));
+        decisions.reply(screenNodes(true));
+        decisions.dialogs(screenNodes(true));
       } catch (error) {
         return { error: error.message };
       }
@@ -280,7 +315,7 @@ function answer() {
     case 'copy-reply':
       if (!state.sent) return { error: 'not_found: Response actions' };
       try {
-        decisions.requireOwn(screenNodes(false), args[0], args[1]);
+        decisions.chooseCopy(screenNodes(false), args[0], args[1]);
       } catch (error) {
         return { error: error.message };
       }
@@ -289,7 +324,7 @@ function answer() {
       return { ok: true, text: state.reply };
     case 'stop':
       try {
-        decisions.requireOwn(screenNodes(false), args[0], args[1]);
+        decisions.chooseStop(screenNodes(false), args[0], args[1]);
       } catch (error) {
         return { error: error.message };
       }

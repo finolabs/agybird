@@ -52,12 +52,41 @@ function parentOf(nodes, index) {
 const isOption1 = (node) => node.role === 'AXRadioButton' && /^1 /.test(node.label);
 const isButton = (node, prefix) => node.role === 'AXButton' && node.label.startsWith(prefix);
 
+// The conversation on screen: the one titled web area in the tree, as the
+// range [start, end) of its subtree, or null while none is titled. The window
+// holds an untitled web area beside the titled one. A second titled web area
+// (another conversation window or pane) throws: the tree then cannot say whose
+// a control is, so nothing is read or pressed.
+function conversationArea(nodes) {
+  let area = null;
+  for (let index = 0; index < nodes.length; index += 1) {
+    if (nodes[index].role !== 'AXWebArea' || !nodes[index].label) continue;
+    if (area) throw new Error('several_conversations: more than one titled conversation in the app');
+    area = { start: index, end: subtreeEnd(nodes, index) };
+  }
+  return area;
+}
+
 // The conversation on screen, as the web area's title: "<title> - <project> -
 // Antigravity", or "Antigravity" before a new conversation has been sent.
-// The window holds an untitled web area beside the titled one.
 function title(nodes) {
-  const area = nodes.find((node) => node.role === 'AXWebArea' && node.label);
-  return area ? area.label : null;
+  const area = conversationArea(nodes);
+  return area ? nodes[area.start].label : null;
+}
+
+// The indexes of the nodes that pass `test`, all inside the conversation on
+// screen. One outside it throws, as the run cannot tell whose it is; with no
+// titled conversation there is none.
+function withinConversation(nodes, test, what) {
+  const area = conversationArea(nodes);
+  const found = [];
+  if (!area) return found;
+  nodes.forEach((node, index) => {
+    if (!test(node)) return;
+    if (index <= area.start || index >= area.end) throw new Error(`outside_conversation: ${what}`);
+    found.push(index);
+  });
+  return found;
 }
 
 // The last line of every prompt a run sends, naming that run: `nonce` is
@@ -78,11 +107,11 @@ function marker(nonce) {
 function ownConversation(nodes, nonce, read) {
   const textOf = read || readNode;
   const wanted = marker(nonce);
-  const area = nodes.findIndex((node) => node.role === 'AXWebArea' && node.label);
-  if (area < 0) return false;
-  const end = subtreeEnd(nodes, area);
+  const area = conversationArea(nodes);
+  if (!area) return false;
+  const end = area.end;
   const texts = [];
-  for (let at = area + 1; at < end; at += 1) {
+  for (let at = area.start + 1; at < end; at += 1) {
     const node = nodes[at];
     if (node.role === 'AXHeading' && node.label === 'Agent said') {
       // The reply is the group right after the heading, at its depth.
@@ -129,14 +158,15 @@ function namedConversation(nodes, expected, project, nonce, read) {
 // that group, in order, outside the options, buttons and inputs: rendered
 // Markdown splits a question into word and code-span nodes. Its options, Skip
 // and Submit are found inside the same group only. A group holding two option
-// 1 radios is marked ambiguous.
+// 1 radios is marked ambiguous. Only dialogs inside the conversation on screen
+// count, and an option 1 outside it throws (withinConversation).
 function dialogs(nodes, read) {
   const textOf = read || readNode;
   const found = [];
   const groups = [];
-  nodes.forEach((node, index) => {
-    if (!isOption1(node)) return;
-    for (let group = parentOf(nodes, index); group >= 0; group = parentOf(nodes, group)) {
+  const area = conversationArea(nodes);
+  withinConversation(nodes, isOption1, 'permission dialog').forEach((index) => {
+    for (let group = parentOf(nodes, index); group > area.start; group = parentOf(nodes, group)) {
       const end = subtreeEnd(nodes, group);
       const inside = (test) => {
         for (let at = group + 1; at < end; at += 1) if (test(nodes[at])) return at;
@@ -188,6 +218,51 @@ function chooseAnswer(nodes, option, question, expected, nonce, read) {
   if (nodes[prompt.option1].label.trim() !== OPTION_1) throw new Error('not_found: option 1');
   if (prompt.submit < 0) throw new Error('not_found: Submit');
   return [{ index: prompt.option1, what: 'option 1' }, { index: prompt.submit, what: 'Submit' }];
+}
+
+const isStop = (node) => isButton(node, 'Stop execution');
+
+// Whether the conversation on screen shows Stop execution, so a run is going.
+function running(nodes) {
+  return withinConversation(nodes, isStop, 'Stop execution').length > 0;
+}
+
+// The Stop execution button to press in the run's own conversation.
+function chooseStop(nodes, expected, nonce, read) {
+  requireOwn(nodes, expected, nonce, read);
+  const found = withinConversation(nodes, isStop, 'Stop execution');
+  if (found.length === 0) throw new Error('not_found: Stop execution');
+  return found[0];
+}
+
+// The Copy button of the last reply's response actions in the run's own
+// conversation.
+function chooseCopy(nodes, expected, nonce, read) {
+  requireOwn(nodes, expected, nonce, read);
+  const groups = withinConversation(nodes, (node) => node.role === 'AXGroup' && node.label === 'Response actions', 'Response actions');
+  if (groups.length === 0) throw new Error('not_found: Response actions');
+  const group = groups[groups.length - 1];
+  const end = subtreeEnd(nodes, group);
+  for (let index = group + 1; index < end; index += 1) if (nodes[index].role === 'AXButton' && nodes[index].label === 'Copy') return index;
+  throw new Error('not_found: Copy');
+}
+
+// The last reply in the conversation on screen: the group right after the last
+// `Agent said` heading, at the heading's own depth; the response actions that
+// follow are a separate group.
+function reply(nodes, read) {
+  const textOf = read || readNode;
+  const headings = withinConversation(nodes, (node) => node.role === 'AXHeading' && node.label === 'Agent said', 'Agent said');
+  if (headings.length === 0) return null;
+  const heading = headings[headings.length - 1];
+  const depth = nodes[heading].depth;
+  const start = nodes.findIndex((node, index) => index > heading && node.depth <= depth);
+  if (start < 0 || nodes[start].depth < depth || nodes[start].role !== 'AXGroup') return null;
+  const lines = [];
+  for (let index = start + 1; index < nodes.length && nodes[index].depth > depth; index += 1) {
+    if (nodes[index].role === 'AXStaticText') lines.push(textOf(nodes[index]));
+  }
+  return lines.join('\n');
 }
 // desktop-decisions:end
 
@@ -275,24 +350,6 @@ function staticText(node) {
   return text(get(node.element, 'AXValue')) || node.label;
 }
 
-// The reply is the group right after the last `Agent said` heading, at the
-// heading's own depth; the response actions that follow are a separate group.
-function reply(nodes) {
-  let heading = -1;
-  nodes.forEach((node, index) => {
-    if (node.role === 'AXHeading' && node.label === 'Agent said') heading = index;
-  });
-  if (heading < 0) return null;
-  const depth = nodes[heading].depth;
-  const start = nodes.findIndex((node, index) => index > heading && node.depth <= depth);
-  if (start < 0 || nodes[start].depth < depth || nodes[start].role !== 'AXGroup') return null;
-  const lines = [];
-  for (let index = start + 1; index < nodes.length && nodes[index].depth > depth; index += 1) {
-    if (nodes[index].role === 'AXStaticText') lines.push(staticText(nodes[index]));
-  }
-  return lines.join('\n');
-}
-
 function requireTitle(nodes, expected) {
   if (!expected) throw new Error('usage: the expected conversation title is required');
   if (title(nodes) !== expected) throw new Error('other_conversation');
@@ -315,6 +372,8 @@ function showing(app, expected) {
 // How long Send waits for the app to title the new conversation.
 const TITLE_WAIT_MS = 30000;
 
+// `running`, `dialog` and `reply` come from the conversation on screen only;
+// a second titled conversation, or one of them outside it, fails the read.
 function snapshot(nodes) {
   const labels = {};
   for (const label of REQUIRED_LABELS) labels[label] = nodes.some((node) => node.label.startsWith(label));
@@ -324,10 +383,10 @@ function snapshot(nodes) {
     model: current(nodes, 'Select model'),
     project: current(nodes, 'Select project'),
     title: title(nodes),
-    running: Boolean(find(nodes, 'AXButton', 'Stop execution')),
+    running: running(nodes),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
     dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options }))[0] || null,
-    reply: reply(nodes),
+    reply: reply(nodes, staticText),
   };
 }
 
@@ -492,13 +551,19 @@ const COMMANDS = {
     press(button, 'Send message');
     const until = Date.now() + TITLE_WAIT_MS;
     let seen = null;
-    while (Date.now() < until) {
-      delay(0.25);
-      const now = tree(app);
-      const named = namedConversation(now, expectedTitle, project, nonce, staticText);
-      if (named && named.title) return { ok: true, title: named.title };
-      if (named && named.refused) return { ok: true, title: null, refused: named.refused };
-      if (title(now) !== null && title(now) !== expectedTitle) seen = title(now);
+    // An error from here on (a second titled conversation, say) comes after the
+    // press, so it is never reported as a refusal before it.
+    try {
+      while (Date.now() < until) {
+        delay(0.25);
+        const now = tree(app);
+        const named = namedConversation(now, expectedTitle, project, nonce, staticText);
+        if (named && named.title) return { ok: true, title: named.title };
+        if (named && named.refused) return { ok: true, title: null, refused: named.refused };
+        if (title(now) !== null && title(now) !== expectedTitle) seen = title(now);
+      }
+    } catch (error) {
+      throw new Error(`after_send: ${error.message}`);
     }
     return seen ? { ok: true, title: null, refused: seen } : { ok: true, title: null };
   },
@@ -516,17 +581,8 @@ const COMMANDS = {
   // The app writes it there unmarked; that window is as short as this call.
   'copy-reply'(app, expectedTitle, nonce) {
     const nodes = tree(app);
-    requireOwn(nodes, expectedTitle, nonce, staticText);
-    let group = -1;
-    nodes.forEach((node, index) => {
-      if (node.role === 'AXGroup' && node.label === 'Response actions') group = index;
-    });
-    if (group < 0) throw new Error('not_found: Response actions');
-    const depth = nodes[group].depth;
-    let button = null;
-    for (let index = group + 1; index < nodes.length && nodes[index].depth > depth && !button; index += 1) {
-      if (nodes[index].role === 'AXButton' && nodes[index].label === 'Copy') button = nodes[index];
-    }
+    // Only the Copy of the run's own conversation, found inside it (chooseCopy).
+    const button = nodes[chooseCopy(nodes, expectedTitle, nonce, staticText)];
     // The copy lands asynchronously; an unchanged pasteboard means it did not.
     const board = $.NSPasteboard.generalPasteboard;
     const before = board.changeCount;
@@ -538,8 +594,8 @@ const COMMANDS = {
   },
   stop(app, expectedTitle, nonce) {
     const nodes = tree(app);
-    requireOwn(nodes, expectedTitle, nonce, staticText);
-    press(find(nodes, 'AXButton', 'Stop execution'), 'Stop execution');
+    // Only the Stop of the run's own conversation, found inside it (chooseStop).
+    press(nodes[chooseStop(nodes, expectedTitle, nonce, staticText)], 'Stop execution');
     return { ok: true };
   },
 };

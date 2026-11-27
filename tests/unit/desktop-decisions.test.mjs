@@ -8,7 +8,7 @@ import test from 'node:test';
 import { AX_SCRIPT_PATH, loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
 import { permissionRequest } from '../../scripts/lib/desktop-state.mjs';
 
-const { chooseAnswer, dialogs, namedConversation, requireOwn, title } = loadAxDecisions();
+const { chooseAnswer, chooseCopy, chooseStop, dialogs, namedConversation, reply, requireOwn, running, title } = loadAxDecisions();
 const TITLE = 'Fake Task - ws - Antigravity';
 const OPTIONS = ['1 Yes, allow this time', "2 Yes, and always allow 'curl' in this conversation", "3 Yes, and always allow 'curl'", '4 No (tell the agent what to do instead)'];
 
@@ -172,6 +172,84 @@ test('a press is refused when the conversation on screen lacks the run\'s own me
   assert.throws(() => requireOwn(own, TITLE, 'not hex'), /usage/);
   assert.doesNotThrow(() => requireOwn(own, TITLE, NONCE));
   assert.throws(() => requireOwn(own, 'Other Chat - ws - Antigravity', NONCE), /other_conversation/);
+});
+
+// A conversation pane as the app renders it: the user's message, the agent's
+// reply with its response actions, the Stop button while it runs and, when
+// asked, a permission dialog.
+function pane(userText, { dialog = null, stop = true } = {}) {
+  return [
+    ...message(userText),
+    node(2, 'AXGroup', 'Response actions'),
+    node(3, 'AXButton', 'Copy'),
+    ...(stop ? [node(2, 'AXButton', 'Stop execution')] : []),
+    ...(dialog ? dialogNodes([dialog]) : []),
+  ];
+}
+// Two conversations in one tree: A, the run's own (title and marker), and B.
+const twoPanes = (paneA, paneB) => [
+  node(0, 'AXWindow', 'Antigravity'),
+  node(1, 'AXWebArea', ''),
+  node(1, 'AXWebArea', TITLE),
+  ...paneA,
+  node(0, 'AXWindow', 'Antigravity'),
+  node(1, 'AXWebArea', 'Second Chat - ws - Antigravity'),
+  ...paneB,
+];
+
+test('with two conversation panes, an answer matching only the other pane\'s dialog is refused', () => {
+  const nodes = twoPanes(pane(`Explain README.md.\n${MARK}`, { stop: false }), pane('Another task.', { dialog: 'Allow running ls?', stop: false }));
+  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE, NONCE), /several_conversations/);
+  assert.throws(() => chooseAnswer(nodes, 'Skip', 'Allow running ls?', TITLE, NONCE), /several_conversations/);
+  assert.throws(() => dialogs(nodes), /several_conversations/);
+  assert.throws(() => title(nodes), /several_conversations/);
+});
+
+test('with two conversation panes, Stop, Copy and the reply are never taken from either', () => {
+  const nodes = twoPanes(message(`Explain README.md.\n${MARK}`), pane('Another task.'));
+  assert.throws(() => chooseStop(nodes, TITLE, NONCE), /several_conversations/);
+  assert.throws(() => chooseCopy(nodes, TITLE, NONCE), /several_conversations/);
+  assert.throws(() => running(nodes), /several_conversations/);
+  assert.throws(() => reply(nodes), /several_conversations/);
+});
+
+test('a dialog, Stop, Copy or reply outside the verified conversation is refused, not pressed', () => {
+  // One titled conversation, the run's own, and the controls in the untitled web area beside it.
+  const outside = [
+    node(0, 'AXWindow', 'Antigravity'),
+    node(1, 'AXWebArea', ''),
+    ...pane('Another task.', { dialog: 'Allow running ls?' }),
+    node(1, 'AXWebArea', TITLE),
+    ...message(`Explain README.md.\n${MARK}`),
+  ];
+  assert.throws(() => chooseAnswer(outside, '1', 'Allow running ls?', TITLE, NONCE), /outside_conversation/);
+  assert.throws(() => chooseAnswer(outside, 'Skip', 'Allow running ls?', TITLE, NONCE), /outside_conversation/);
+  assert.throws(() => chooseStop(outside, TITLE, NONCE), /outside_conversation/);
+  assert.throws(() => chooseCopy(outside, TITLE, NONCE), /outside_conversation/);
+  assert.throws(() => running(outside), /outside_conversation/);
+  // Inside the conversation but missing: not found, nothing pressed.
+  const bareOwn = bare(TITLE, message(`Explain README.md.\n${MARK}`));
+  assert.throws(() => chooseStop(bareOwn, TITLE, NONCE), /not_found: Stop execution/);
+  assert.throws(() => chooseCopy(bareOwn, TITLE, NONCE), /not_found: Response actions/);
+  assert.equal(running(bareOwn), false);
+});
+
+test('a single conversation pane still yields its dialog, Stop, Copy and reply, all inside it', () => {
+  const nodes = bare(TITLE, pane(`Explain README.md.\n${MARK}`, { dialog: 'Allow running ls?' }));
+  const start = nodes.findIndex((entry) => entry.role === 'AXWebArea' && entry.label === TITLE);
+  assert.deepEqual(plain(chooseAnswer(nodes, '1', 'Allow running ls?', TITLE, NONCE)).map((target) => target.what), ['option 1', 'Submit']);
+  pressedWithin(nodes, plain(chooseAnswer(nodes, 'Skip', 'Allow running ls?', TITLE, NONCE)), start + 1, nodes.length);
+  const stop = chooseStop(nodes, TITLE, NONCE);
+  assert.equal(nodes[stop].label, 'Stop execution');
+  const copy = chooseCopy(nodes, TITLE, NONCE);
+  assert.equal(nodes[copy].label, 'Copy');
+  assert.ok(stop > start && copy > start);
+  assert.equal(running(nodes), true);
+  assert.equal(reply(nodes), 'Done.');
+  assert.equal(title(nodes), TITLE);
+  // Stop and Copy check the conversation as an answer does.
+  assert.throws(() => chooseStop(nodes, 'Other Chat - ws - Antigravity', NONCE), /other_conversation/);
+  assert.throws(() => chooseCopy(bare(TITLE, pane('Something else.')), TITLE, NONCE), /not_own/);
 });
 
 test('the decisions region calls no accessibility API', () => {
