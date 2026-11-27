@@ -229,7 +229,9 @@ function workTree(cwd) {
 
 // `--resume-dialog <question> --resume-title <conversation title>` belong to this
 // runner only: after the user's yes, it answers the prompt the app is waiting on
-// in that conversation instead of sending a task.
+// in that conversation instead of sending a task. `--resume-ack <file>` is
+// created the moment the answer was (or may have been) pressed, before the turn
+// is awaited, so the approval is spent even if the run is then killed.
 function takeResume(argv) {
   let rest = argv;
   const take = (flag) => {
@@ -243,9 +245,11 @@ function takeResume(argv) {
   const question = take('--resume-dialog');
   const title = take('--resume-title');
   const answer = take('--resume-answer') ?? '1';
+  const ack = take('--resume-ack');
   if ((question === null) !== (title === null)) throw new Error('--resume-dialog and --resume-title go together');
+  if (ack !== null && question === null) throw new Error('--resume-ack goes with --resume-dialog');
   if (!['1', 'Skip'].includes(answer)) throw new Error('--resume-answer is 1 or Skip');
-  return { argv: rest, question, title, answer };
+  return { argv: rest, question, title, answer, ack };
 }
 
 // A new conversation's web area reads "Antigravity" until the app titles it.
@@ -305,6 +309,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const expected = () => conversation ?? UNTITLED;
   const markApp = () => {
     if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation);
+  };
+  // Created once, never written through an existing file or link.
+  const acknowledge = (resume) => {
+    if (!resume.ack) return;
+    try {
+      writeFileSync(resume.ack, `${resume.answer}\n`, { mode: 0o600, flag: 'wx' });
+    } catch (error) {
+      if (error.code !== 'EEXIST') warnings.push('The answer could not be recorded as given at once; do not approve this request again.');
+    }
   };
 
   // Puts back what clipboard-get saved: its text and its own markers. Anything
@@ -416,13 +429,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           sent = true;
           evidence.answered = resume.answer;
           evidence.answer_uncertain = true;
-          warnings.push(`The answer may have been pressed in the Antigravity app before the run lost track of it (${error.message}); it counts as given, and the run was stopped there if it could be.`);
+          acknowledge(resume);
+          warnings.push(`The answer may have been pressed in the Antigravity app before the run lost track of it (${error.message || 'cancelled'}); it counts as given, and the run was stopped there if it could be.`);
         }
         throw error;
       }
       sent = true;
-      // Tells the companion the answer was pressed, so only now is it spent.
+      // Tells the companion the answer was pressed, so only now is it spent:
+      // at once through the ack file, and in the envelope.
       evidence.answered = resume.answer;
+      acknowledge(resume);
     } else {
       saved = { clipboard: await bridge(['clipboard-get']), frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app

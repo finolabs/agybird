@@ -257,6 +257,27 @@ test('an approval whose run is blocked before it presses the answer can be retri
   assert.match(again.stderr, /already answered/);
 });
 
+test('an approval interrupted after its answer was pressed is spent, so it cannot answer again', { skip: process.platform === 'win32' }, async () => {
+  const context = workspace({ dialog: DIALOG, reply: 'listed' });
+  const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const approval = `${first.job.id}:0`;
+  // The resumed turn runs until it is stopped.
+  context.set({ stuck: true });
+  const child = spawn(process.execPath, [COMPANION, 'task', '--approve', approval, '--json'], { cwd: context.cwd, env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  child.stdin.end();
+  const exited = new Promise((done) => child.on('close', (code) => done(code)));
+  for (let waited = 0; context.fake().answered !== '1'; waited += 50) {
+    assert.ok(waited < 15_000, 'the approval never pressed its answer');
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  child.kill('SIGTERM');
+  assert.equal(await exited, 143);
+  const again = await context.companion(['task', '--approve', approval, '--json']);
+  assert.notEqual(again.code, 0);
+  assert.match(again.stderr, /already answered/);
+  assert.equal(context.calls().filter((call) => call.startsWith('answer')).length, 1);
+});
+
 test('a desktop request is approved once, and can be declined instead', async () => {
   const context = workspace({ dialog: DIALOG, reply: 'listed' });
   const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));

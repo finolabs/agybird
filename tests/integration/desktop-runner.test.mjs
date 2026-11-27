@@ -522,6 +522,22 @@ test('an answer whose bridge call fails after the press is handled as pressed: S
   assert.equal(JSON.parse(readFileSync(lockFile(unstoppable), 'utf8')).app, true);
 });
 
+test('a resumed run records its pressed answer at once, before it waits for the turn', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  child.stdin.end('Go on.');
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  for (let waited = 0; !existsSync(ack); waited += 20) {
+    assert.ok(waited < 15_000, 'the answer was never recorded');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  // Killed outright, the run prints nothing more; the record stays.
+  child.kill('SIGKILL');
+  await exited;
+  assert.equal(readFileSync(ack, 'utf8').trim(), '1');
+});
+
 test('an answer refused before any press is not spent and stops nothing', async () => {
   const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
   const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);

@@ -151,22 +151,35 @@ export function runnerCommand(workspace, request) {
 // agybird:desktop-start
 // Ctrl+C or a host's timeout on a foreground desktop task: the runner alone gets
 // SIGTERM and the same grace as a cancel, to press Stop in the app and put the
-// clipboard and the front app back; only then is its group killed.
+// clipboard and the front app back; only then is its group killed. This process
+// does not exit on the runner's exit: it goes on to record the run's result and
+// the approval it spent, then ends with the signal's exit code.
 function forwardToDesktopRunner(child, signal) {
   const code = signal === 'SIGINT' ? 130 : 143;
-  const timer = setTimeout(() => {
-    killTree(child.pid);
-    process.exit(code);
-  }, DESKTOP_STOP_GRACE_MS);
-  child.once('exit', () => {
+  process.exitCode = code;
+  process.once('exit', () => { process.exitCode = code; });
+  const timer = setTimeout(() => killTree(child.pid), DESKTOP_STOP_GRACE_MS);
+  child.once('close', () => {
     clearTimeout(timer);
-    process.exit(code);
+    // Should the accounting stall, the process still ends.
+    setTimeout(() => process.exit(code), 10_000).unref();
   });
   try {
     process.kill(child.pid, 'SIGTERM');
   } catch {
-    // already gone; its exit ends this process
+    // already gone; its close lets the accounting finish
   }
+}
+
+// The file the desktop runner creates the moment it pressed (or may have
+// pressed) the answer to request `index` of job `id`, before it waits for the
+// turn, so the approval is spent even if this process or the runner is killed.
+function answerMark(directory, id, index) {
+  return join(directory, `${id}.answered-${index}`);
+}
+
+function desktopAnswered(directory, job, index) {
+  return (job.answered ?? []).includes(index) || existsSync(answerMark(directory, job.id, index));
 }
 
 // agybird:desktop-end
@@ -623,7 +636,7 @@ export function approvedRules(directory, approvals = []) {
       if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
       // An approval binds to the whole question, so one too long to show whole cannot be given from here.
       if (request.question_truncated || !request.question_full) throw new Error(`Request ${index} of ${id} asks a question too long to show whole here, so it cannot be approved from here; answer it in the Antigravity app.`);
-      if ((job.answered ?? []).includes(Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
+      if (desktopAnswered(directory, job, Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
       const title = envelope.evidence?.conversation_title;
       if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
       return { rules: [], transport: 'desktop', id, index: Number(index), question: request.question_full, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
@@ -682,8 +695,9 @@ async function commandTask(argv, env) {
     const category = approval.category ?? options.category ?? 'code';
     if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
     const runnerArgs = [];
+    const store = storeFor(cwd, env);
     if (approval.question) {
-      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title);
+      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title, '--resume-ack', answerMark(store, approval.id, approval.index));
       if (options.decline) runnerArgs.push('--resume-answer', 'Skip');
     }
     const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
@@ -692,10 +706,10 @@ async function commandTask(argv, env) {
     // request. The request is claimed under the job lock, so two approvals
     // cannot both answer it, and it is spent only once the runner reports that
     // it pressed the answer: a run blocked before that can be approved again.
-    const store = storeFor(cwd, env);
+    // The runner's answer mark spends it at once, whatever ends this process.
     withJobLock(store, approval.id, () => {
       const current = readJob(store, approval.id);
-      if ((current.answered ?? []).includes(approval.index)) throw new Error(`Request ${approval.index} of ${approval.id} was already answered; if the app asks again, approve the new request it reports.`);
+      if (desktopAnswered(store, current, approval.index)) throw new Error(`Request ${approval.index} of ${approval.id} was already answered; if the app asks again, approve the new request it reports.`);
       const claim = current.answering?.[approval.index];
       if (claim && claim !== process.pid && processAlive(claim)) throw new Error(`Request ${approval.index} of ${approval.id} is being answered by another approval; wait for it.`);
       writeJob(store, { ...current, answering: { ...current.answering, [approval.index]: process.pid } });
@@ -710,7 +724,7 @@ async function commandTask(argv, env) {
         const current = readJob(store, approval.id);
         const answering = { ...current.answering };
         delete answering[approval.index];
-        const pressed = Boolean(result?.envelope?.evidence?.answered);
+        const pressed = Boolean(result?.envelope?.evidence?.answered) || existsSync(answerMark(store, approval.id, approval.index));
         writeJob(store, { ...current, answering, ...(pressed ? { answered: [...new Set([...(current.answered ?? []), approval.index])] } : {}) });
       });
     }
