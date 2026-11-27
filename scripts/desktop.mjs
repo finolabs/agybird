@@ -224,8 +224,8 @@ const UNTITLED = 'Antigravity';
 const normalized = (text) => String(text ?? '').replace(/\s+/g, '');
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
-  // A signal only marks the run cancelled; the run itself stops at its next step,
-  // so cleanup never races a bridge call that is still in flight.
+  // A signal marks the run cancelled and interrupts the step in flight; the run
+  // then cleans up itself, so cleanup never races a bridge call still running.
   let cancelled = false;
   let wake = () => {};
   // A signal interrupts the step in flight (a long paste included), so cleanup

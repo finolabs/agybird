@@ -700,7 +700,9 @@ async function commandTask(argv, env) {
     });
     let result;
     try {
-      result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env });
+      // A decline with no text of its own is not titled as a grant.
+      const title = options.decline && text === GRANTED_PROMPT ? 'Declined the permission prompt in the Antigravity app' : text.slice(0, 80);
+      result = await launch({ cwd, kind: 'task', title, request, background: options.background, env });
     } finally {
       withJobLock(store, approval.id, () => {
         const current = readJob(store, approval.id);

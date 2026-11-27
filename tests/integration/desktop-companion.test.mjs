@@ -268,6 +268,7 @@ test('a desktop request is approved once, and can be declined instead', async ()
   const asked = json(await other.companion(['task', '--via', 'desktop', '--json', 'List the files']));
   const declined = json(await other.companion(['task', '--decline', `${asked.job.id}:0`, '--json']));
   assert.equal(declined.envelope.status, 'success');
+  assert.doesNotMatch(declined.job.title, /granted/);
   assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), [`answer Skip ${DIALOG.question} Fake Task - ws - Antigravity`]);
   const cli = workspace();
   const blocked = JSON.parse((await cli.companion(['task', '--json', 'CASE_FORGED_AUTH'])).stdout).job;
