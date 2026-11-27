@@ -27,29 +27,43 @@ function bridgeCommand(env) {
     : ['/usr/bin/osascript', ['-l', 'JavaScript', AX_SCRIPT_PATH]];
 }
 
-export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, input } = {}) {
+// `signal` interrupts the step: its process is killed and the call rejects, so a
+// cancelled run never waits out a long step (a paste) before it cleans up.
+export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, input, signal } = {}) {
   const name = args[0];
   if (name === 'answer' && !ANSWERS.has(args[1])) return Promise.reject(new Error('Desktop bridge refused the answer: only 1 or Skip may be answered.'));
   if (name === 'answer' && (!args[2] || !args[3])) return Promise.reject(new Error('Desktop bridge refused the answer: an answer needs the approved question and conversation title.'));
+  if (signal?.aborted) return Promise.reject(new Error(`Desktop bridge ${name} was interrupted.`));
   const [command, prefix] = bridgeCommand(env);
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
-    if (input !== undefined) child.stdin.end(input);
+    if (input !== undefined) child.stdin.on('error', () => {}).end(input);
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let interrupted = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
     }, timeoutMs);
+    const interrupt = () => {
+      interrupted = true;
+      child.kill('SIGKILL');
+    };
+    signal?.addEventListener('abort', interrupt, { once: true });
+    const settle = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', interrupt);
+    };
     child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
     child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
     child.on('error', (error) => {
-      clearTimeout(timer);
+      settle();
       reject(new Error(`Desktop bridge ${name} could not start: ${error.message}`));
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      settle();
+      if (interrupted) return reject(new Error(`Desktop bridge ${name} was interrupted.`));
       if (timedOut) return reject(new Error(`Desktop bridge ${name} timed out after ${timeoutMs}ms.`));
       if (code !== 0) return reject(new Error(`Desktop bridge ${name} exited with ${code}: ${stderr.trim().slice(0, 300)}`));
       let value;

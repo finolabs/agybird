@@ -145,6 +145,28 @@ export function runnerCommand(workspace, request) {
   return args;
 }
 
+// agybird:desktop-start
+// Ctrl+C or a host's timeout on a foreground desktop task: the runner alone gets
+// SIGTERM and the same grace as a cancel, to press Stop in the app and put the
+// clipboard and the front app back; only then is its group killed.
+function forwardToDesktopRunner(child, signal) {
+  const code = signal === 'SIGINT' ? 130 : 143;
+  const timer = setTimeout(() => {
+    killTree(child.pid);
+    process.exit(code);
+  }, DESKTOP_STOP_GRACE_MS);
+  child.once('exit', () => {
+    clearTimeout(timer);
+    process.exit(code);
+  });
+  try {
+    process.kill(child.pid, 'SIGTERM');
+  } catch {
+    // already gone; its exit ends this process
+  }
+}
+
+// agybird:desktop-end
 // Runs the runner once and returns its envelope. The prompt goes through stdin,
 // never the argument list, exactly as the skill does it.
 export function runRunner({ workspace, request, env = process.env, onSpawn }) {
@@ -164,6 +186,9 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     });
     // A separate group no longer hears Ctrl+C from the terminal, so pass it on.
     const forward = (signal) => {
+      // agybird:desktop-start
+      if (request.transport === 'desktop') return forwardToDesktopRunner(child, signal);
+      // agybird:desktop-end
       killTree(child.pid);
       process.exit(signal === 'SIGINT' ? 130 : 143);
     };
@@ -488,6 +513,16 @@ async function commandResult(argv, env) {
   output(options, { job: summary(job), envelope }, rendered);
 }
 
+// How long cancel waits for the worker to confirm that a job's runner stopped.
+export function cancelWaitMs(job) {
+  // agybird:desktop-start
+  // The worker sees the cancel at its next poll, gives a desktop runner its
+  // grace, then killTree waits its own 3 s: cancel waits that long and a little more.
+  if (job.request?.transport === 'desktop') return CANCEL_POLL_MS + DESKTOP_STOP_GRACE_MS + 3_000 + 2_000;
+  // agybird:desktop-end
+  return CANCEL_WAIT_MS;
+}
+
 async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
@@ -511,7 +546,7 @@ async function commandCancel(argv, env) {
   // The worker stops its own runner; a worker that no longer beats cannot.
   let stopped = false;
   if (heartbeatFresh(before)) {
-    const deadline = Date.now() + CANCEL_WAIT_MS;
+    const deadline = Date.now() + cancelWaitMs(before);
     while (Date.now() < deadline) {
       if (readJob(directory, job.id)?.stoppedAt) {
         stopped = true;

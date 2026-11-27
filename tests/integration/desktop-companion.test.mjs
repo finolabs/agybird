@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
+import { cancelWaitMs } from '../../scripts/companion.mjs';
 import { companionEnv, runCompanion } from './helpers.mjs';
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'fake-desktop-bridge.mjs');
+const COMPANION = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'companion.mjs');
 const DIALOG = { question: 'Allow list directory contents?', options: ['1 Yes, allow this time', "2 Yes, and always allow 'ls' in this conversation", "3 Yes, and always allow 'ls'", '4 No (tell the agent what to do instead)'] };
 
 function git(cwd, ...args) {
@@ -192,6 +194,47 @@ test('cancel leaves a desktop run time to stop the app and put the clipboard bac
   assert.equal(context.fake().stopped, true);
   assert.equal(context.fake().clipboard, 'user clipboard');
   assert.equal(context.fake().frontmost, 'com.example.host');
+});
+
+const waitForCall = async (context, prefix) => {
+  for (let waited = 0; !context.calls().some((call) => call.startsWith(prefix)); waited += 100) {
+    assert.ok(waited < 15_000, `the job never called ${prefix}`);
+    await new Promise((done) => setTimeout(done, 100));
+  }
+};
+
+test('cancel during a long paste clears the composer, restores the clipboard and releases the lock', { skip: process.platform === 'win32' }, async () => {
+  const context = workspace({ delays: { 'paste-input': 60_000 } });
+  const started = json(await context.companion(['task', '--via', 'desktop', '--background', '--json', 'A long review']));
+  await waitForCall(context, 'paste-input');
+  const cancelled = json(await context.companion(['cancel', started.job.id, '--json']));
+  assert.equal(cancelled.stopped, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(context.fake().frontmost, 'com.example.host');
+  assert.equal(context.fake().cleared, true);
+  assert.equal(existsSync(join(context.env.AGYBIRD_STATE_DIR, 'desktop.lock')), false);
+  assert.ok(!context.sent());
+});
+
+test('a signal to a foreground desktop task gives the runner its grace to stop the app and restore', { skip: process.platform === 'win32' }, async () => {
+  const context = workspace({ stuck: true, delays: { stop: 4_000 } });
+  const child = spawn(process.execPath, [COMPANION, 'task', '--via', 'desktop', '--json', 'Run forever'], { cwd: context.cwd, env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  child.stdin.end();
+  const exited = new Promise((done) => child.on('close', (code, signal) => done({ code, signal })));
+  await waitForCall(context, 'send');
+  child.kill('SIGTERM');
+  const { code } = await exited;
+  assert.equal(code, 143);
+  assert.equal(context.fake().stopped, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(context.fake().frontmost, 'com.example.host');
+  assert.equal(existsSync(join(context.env.AGYBIRD_STATE_DIR, 'desktop.lock')), false);
+});
+
+test('cancel waits long enough for a desktop runner to use its whole grace', () => {
+  // SIGTERM at the next worker poll (1 s), 12 s of grace, then killTree's own 3 s.
+  assert.ok(cancelWaitMs({ request: { transport: 'desktop' } }) > 16_000);
+  assert.equal(cancelWaitMs({ request: {} }), 15_000);
 });
 
 test('a desktop request is approved once, and can be declined instead', async () => {

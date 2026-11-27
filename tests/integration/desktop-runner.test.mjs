@@ -206,7 +206,64 @@ test('SIGTERM stops the run in the app and cleans up', { skip: process.platform 
   child.kill('SIGTERM');
   const { envelope } = await done;
   assert.equal(envelope.status, 'error');
-  assert.ok(names(context).includes('stop'));
+  assert.equal(context.fake().stopped, true);
+  assert.ok(envelope.warnings.some((warning) => /cancelled and stopped/.test(warning)));
+  assertCleanedUp(context);
+});
+
+const waitFor = async (context, command) => {
+  while (!names(context).includes(command)) await new Promise((resolve) => setTimeout(resolve, 20));
+};
+const lockFile = (context) => join(context.stateDir, 'desktop.lock');
+
+test('a SIGTERM before the conversation title is known says stopped only when Stop was pressed', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ stuck: true, sendReturnsNoTitle: true });
+  context.env.AGYBIRD_DESKTOP_POLL_MS = '5000';
+  const { child, done } = start(context);
+  await waitFor(context, 'send');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  assert.notEqual(context.fake().stopped, true, 'Stop was refused in the titled conversation');
+  assert.ok(!envelope.warnings.some((warning) => /stopped in the app/.test(warning)), envelope.warnings.join(' | '));
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)));
+  // The app may still run, so the lock stays until the run's deadline.
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+});
+
+test('a bridge failure after Send presses Stop in the run\'s conversation before the lock is released', async () => {
+  const context = setup({ stuck: true, failSnapshotAfterSend: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().stopped, true);
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE]);
+  assertCleanedUp(context);
+});
+
+test('when Stop cannot be pressed after a failure, the run says the app may still run and keeps the lock', async () => {
+  const context = setup({ stuck: true, failSnapshotAfterSend: true, stopFails: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)));
+  assert.equal(existsSync(lockFile(context)), true);
+  const next = setup();
+  next.env.AGYBIRD_STATE_DIR = context.stateDir;
+  assert.equal((await run(next)).envelope.evidence.blocked_reason, 'locked');
+});
+
+test('a cancel during the paste clears the composer and restores everything without waiting for the paste', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ delays: { 'paste-input': 20_000 } });
+  const { child, done } = start(context);
+  await waitFor(context, 'paste-input');
+  const started = Date.now();
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.ok(Date.now() - started < 10_000, 'the paste was interrupted');
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().cleared, true);
+  assert.ok(!names(context).includes('send'));
   assertCleanedUp(context);
 });
 
@@ -273,7 +330,11 @@ test('the run stops reading, and presses nothing, once the app shows another con
   assert.ok(envelope.warnings.some((warning) => /another conversation/.test(warning)));
   assert.ok(!names(context).includes('stop'));
   assert.ok(!names(context).includes('copy-reply'));
-  assertCleanedUp(context);
+  // The run's own conversation may still be going, so the lock stays and says so.
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)));
+  assert.equal(JSON.parse(readFileSync(join(context.stateDir, 'desktop.lock'), 'utf8')).app, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(context.fake().frontmost, 'com.example.host');
 });
 
 test('a switch to another conversation while the run\'s is still untitled ends as error, with nothing pressed', async () => {

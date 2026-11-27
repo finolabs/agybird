@@ -426,6 +426,11 @@ async function commandResult(argv, env) {
   output(options, { job: summary(job), envelope }, rendered);
 }
 
+// How long cancel waits for the worker to confirm that a job's runner stopped.
+export function cancelWaitMs(job) {
+  return CANCEL_WAIT_MS;
+}
+
 async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
@@ -449,7 +454,7 @@ async function commandCancel(argv, env) {
   // The worker stops its own runner; a worker that no longer beats cannot.
   let stopped = false;
   if (heartbeatFresh(before)) {
-    const deadline = Date.now() + CANCEL_WAIT_MS;
+    const deadline = Date.now() + cancelWaitMs(before);
     while (Date.now() < deadline) {
       if (readJob(directory, job.id)?.stoppedAt) {
         stopped = true;

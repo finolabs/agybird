@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +20,12 @@ const BUNDLE_ID = 'com.google.antigravity';
 const DEFAULT_POLL_MS = 2_500;
 
 class Cancelled extends Error {}
+
+class TimedOut extends Error {
+  constructor(timeout) {
+    super(`The run timed out after ${timeout}.`);
+  }
+}
 
 class OtherConversation extends Error {
   constructor(title, { late = false } = {}) {
@@ -71,6 +77,8 @@ function lockHeld(path, holder) {
     }
   }
   if (Number.isFinite(holder.expiresAt) && Date.now() > holder.expiresAt) return false;
+  // Kept by a run that ended while the app may still be running its task.
+  if (holder.app === true) return Number.isFinite(holder.expiresAt);
   return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid);
 }
 
@@ -133,6 +141,16 @@ export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {} } =
     }
   }
   throw new Blocked('locked', 'Another desktop run is using the Antigravity app; retry once it finishes.');
+}
+
+// After a run that could not press Stop, its lock stays, past the end of this
+// process, until the run's own deadline: the app may still run that task.
+function keepLockForApp(path, expiresAt) {
+  if (readLock(path)?.pid !== process.pid) return;
+  const temporary = `${path}.${process.pid}.tmp`;
+  rmSync(temporary, { force: true });
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, app: true }), { mode: 0o600, flag: 'wx' });
+  renameSync(temporary, path);
 }
 
 function releaseLock(path) {
@@ -210,10 +228,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // so cleanup never races a bridge call that is still in flight.
   let cancelled = false;
   let wake = () => {};
+  // A signal interrupts the step in flight (a long paste included), so cleanup
+  // runs at once instead of after it; cleanup's own calls are never interrupted.
+  const interrupt = new AbortController();
   const call = (args, options) => callBridge(args, { env, ...options });
   const bridge = async (args, options) => {
     if (cancelled) throw new Cancelled();
-    const value = await call(args, options);
+    let value;
+    try {
+      value = await call(args, { ...options, signal: interrupt.signal });
+    } catch (error) {
+      if (cancelled) throw new Cancelled();
+      throw error;
+    }
     if (cancelled) throw new Cancelled();
     return value;
   };
@@ -230,7 +257,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let lockPath = null;
   let saved = null;
   let pasted = false;
+  // Set once Send (or, resumed, the answer) may have been pressed, so the app may be running the task.
   let sent = false;
+  // A resumed run pressing its answer: a cancel then may have let the app go on.
+  let answering = false;
+  // Set once the turn ended or the app waits on a prompt: nothing runs any more.
+  let turnOver = false;
+  // Set when the app may still run the task but Stop could not be pressed.
+  let holdLock = false;
+  let runDeadline = null;
   let finished = false;
   // The title of the run's own conversation, as the Send call read it right
   // after pressing Send; null while it is the untitled new conversation.
@@ -257,7 +292,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   };
   const cleanup = async () => {
     await restore();
-    if (lockPath) releaseLock(lockPath);
+    if (lockPath) (holdLock ? keepLockForApp(lockPath, runDeadline) : releaseLock(lockPath));
     lockPath = null;
   };
   const emit = (value) => {
@@ -269,6 +304,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   };
   const onTerm = () => {
     cancelled = true;
+    interrupt.abort();
     wake();
   };
   process.once('SIGTERM', onTerm);
@@ -289,7 +325,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     evidence.app_version = probe.version;
     checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
     const project = projectName(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
-    lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'), Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS);
+    runDeadline = Date.now() + timeoutToMilliseconds(options.timeout);
+    lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'), runDeadline + LOCK_MARGIN_MS);
     const before = workTree(options.cwd);
     // The reply already on screen when the turn starts; a resumed conversation has one.
     let baselineReply = null;
@@ -306,8 +343,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       evidence.preset = waiting.preset;
       warnings.push(...presetWarnings(waiting.preset));
       baselineReply = waiting.reply;
-      sent = true;
+      // A refused answer pressed nothing and the app still waits, so only a
+      // pressed one (or one cut off by a cancel) counts as sent.
+      answering = true;
       await bridge(['answer', resume.answer, resume.question, conversation]);
+      sent = true;
     } else {
       saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
@@ -325,8 +365,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // A long prompt (a review's diff) takes seconds to read back line by line.
       // Paste, clear and Send act only while the app shows the untitled new conversation.
       const input = await bridge(['paste-input', UNTITLED], { timeoutMs: 120_000 });
+      // A mismatch, a failed Send or a cancel before Send leaves the composer to
+      // be cleared on the way out.
       if (normalized(input.value) !== normalized(prompt)) {
-        await clearInput();
         throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
       }
       // Marked first: a cancel that lands while Send is pressed must still stop the run.
@@ -335,9 +376,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       try {
         pressed = await bridge(['send', UNTITLED], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
-        if (error instanceof Cancelled) throw error;
-        sent = false;
-        await clearInput();
+        // Refused before the press; a timeout or a crash may have pressed it.
+        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read
@@ -379,25 +419,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       await sleep(pollMs);
       state = await bridge(['snapshot']);
       if (!follow(state)) {
-        if (Date.now() >= deadline) throw new Error(`The run timed out after ${options.timeout}; the app showed no conversation title, so nothing was pressed.`);
+        if (Date.now() >= deadline) throw new TimedOut(options.timeout);
         continue;
       }
       if (state.dialog) {
         if (changesSince() && options.mode === 'read') {
+          // Declining lets the agent go on, so the run is then stopped on the way out.
           await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected()]).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
           throw new Error('The run changed the working tree in read mode before it asked for a permission; Agybird declined the prompt.');
         }
+        turnOver = true;
         await cleanup();
         return emit(envelope({ status: 'needs_permission', category: options.category, requests: [permissionRequest(state.dialog)], warnings: [...warnings, 'The run is waiting in the Antigravity app for an answer to a permission prompt.'], evidence }));
       }
       if (state.running) sawRunning = true;
       // A turn has ended once it was seen running, or once a new reply replaced the one on screen.
       if (!state.running && state.reply !== null && (sawRunning || state.reply !== baselineReply)) break;
-      if (Date.now() >= deadline) {
-        await call(['stop', expected()]).catch(() => warnings.push('Stop execution could not be pressed.'));
-        throw new Error(`The run timed out after ${options.timeout} and was stopped in the app.`);
-      }
+      if (Date.now() >= deadline) throw new TimedOut(options.timeout);
     }
+    turnOver = true;
 
     // The accessibility text is rendered Markdown, split into words and without
     // code fences; the app's Copy button gives the reply as written.
@@ -439,9 +479,24 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     emit(envelope({ status, category: options.category, response, structured, warnings, evidence }));
   } catch (caught) {
     let error = caught;
+    // Whatever ended the run after Send (a cancel, a timeout, a failed read), the
+    // app may still run the task: Stop is pressed in the run's own conversation
+    // before the lock goes. Another conversation on screen is never pressed.
+    const running = (sent || (answering && cancelled)) && !turnOver;
+    let stopped = false;
+    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected()]).then(() => true, () => false);
+    if (running && !stopped) {
+      holdLock = Boolean(lockPath);
+      // Until the run's deadline, and a few minutes at least after a timeout.
+      runDeadline = Math.max(runDeadline ?? 0, Date.now() + LOCK_MARGIN_MS);
+      warnings.push(`The run may still be going in the Antigravity app: Stop could not be pressed in its conversation. Stop it there.${holdLock ? ` Other desktop runs are refused until ${new Date(runDeadline).toLocaleTimeString()}, or until you remove ${lockPath} once the app shows no run.` : ''}`);
+    }
+    if (pasted && !sent) await clearInput();
     if (cancelled) {
-      if (sent) await call(['stop', expected()]).catch(() => warnings.push('Stop execution could not be pressed.'));
-      error = new Error(sent ? 'The run was cancelled and stopped in the app.' : 'The run was cancelled before the prompt was sent.');
+      if (!sent && !answering) error = new Error('The run was cancelled before the prompt was sent.');
+      else error = new Error(stopped ? 'The run was cancelled and stopped in the app.' : 'The run was cancelled, but Stop could not be pressed in the app.');
+    } else if (caught instanceof TimedOut) {
+      error = new Error(`The run timed out after ${options.timeout}${stopped ? ' and was stopped in the app' : ''}.`);
     }
     await cleanup();
     if (error instanceof Blocked) evidence.blocked_reason = error.reason;

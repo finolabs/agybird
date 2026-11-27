@@ -16,7 +16,10 @@
 // conversation), untitledPolls (snapshots after send that still show the new
 // conversation untitled; Send then returns no title), switchWhileUntitled (the
 // app shows another conversation once those are over), titleBeforeSend (the
-// title shown before send instead of the untitled new conversation), onSend ({ path, content }: a file the "agent" writes when the
+// title shown before send instead of the untitled new conversation),
+// sendReturnsNoTitle (Send returns no title though the app titles it at once),
+// failSnapshotAfterSend (every snapshot after send fails), stopFails (Stop
+// execution cannot be pressed), onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -122,6 +125,7 @@ function answer() {
   if (!state.trusted) return { error: 'not_trusted' };
   switch (command) {
     case 'snapshot': {
+      if (state.sent && state.failSnapshotAfterSend) return { error: 'snapshot_failed' };
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
       // Read before the count drops, as the app shows it during this read.
       const shownTitle = title();
@@ -168,7 +172,7 @@ function answer() {
       begin();
       state.untitledLeft = state.untitledPolls ?? 0;
       if (state.onSend) writeFileSync(state.onSend.path, state.onSend.content);
-      return { ok: true, title: state.untitledLeft > 0 ? null : title() };
+      return { ok: true, title: state.untitledLeft > 0 || state.sendReturnsNoTitle ? null : title() };
     case 'answer': {
       const [option, question, expectedTitle] = args;
       try {
@@ -188,6 +192,7 @@ function answer() {
       return { ok: true };
     case 'stop':
       if (!shown(args[0])) return { error: 'other_conversation' };
+      if (state.stopFails) return { error: 'press_failed: Stop execution' };
       state.stuck = false;
       state.runningPolls = 0;
       state.stopped = true;
