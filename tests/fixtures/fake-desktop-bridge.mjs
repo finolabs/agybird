@@ -19,6 +19,9 @@
 // conversation untitled; Send then returns no title), switchWhileUntitled (the
 // app shows another conversation once those are over), titleBeforeSend (the
 // title shown before send instead of the untitled new conversation),
+// conversations (the names the sidebar lists before send; default
+// ['Other Chat']), switchDuringNaming (the name of a listed conversation the
+// user opens while the app is still naming the run's, during Send's wait),
 // sendReturnsNoTitle (Send returns no title though the app titles it at once),
 // failSnapshotAfterSend (every snapshot after send fails), stopFails (Stop
 // execution cannot be pressed), onSend ({ path, content }: a file the "agent" writes when the
@@ -89,7 +92,8 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
 
 function title() {
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
-  if (state.untitledLeft > 0) return 'Antigravity';
+  if (state.switched) return `${state.switchDuringNaming} - ${state.project} - Antigravity`;
+  if (state.untitledLeft > 0 || state.namingLeft > 0) return 'Antigravity';
   if (state.switchWhileUntitled) return `Other Chat - ${state.project} - Antigravity`;
   if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return `Other Chat - ${state.project} - Antigravity`;
   return state.title ?? `Fake Task - ${state.project} - Antigravity`;
@@ -105,10 +109,25 @@ function shown(expected) {
   return expected === undefined || expected === title();
 }
 
-// The accessibility nodes of the window: its titled web area and, while one
-// waits, each dialog as the app renders it.
+// The conversations the sidebar lists: the existing ones and, once the app has
+// titled it, the run's own.
+function listed() {
+  const own = (state.title ?? `Fake Task - ${state.project} - Antigravity`).split(' - ')[0];
+  const titled = state.sent && !(state.untitledLeft > 0) && !(state.namingLeft > 0);
+  return [...(state.conversations ?? ['Other Chat']), ...(titled ? [own] : [])];
+}
+
+// The accessibility nodes of the window: the sidebar, its titled web area and,
+// while one waits, each dialog as the app renders it.
 function screenNodes(withDialogs) {
-  const nodes = [{ depth: 0, role: 'AXWindow', label: 'Antigravity' }, { depth: 1, role: 'AXWebArea', label: '' }, { depth: 1, role: 'AXWebArea', label: title() }];
+  const nodes = [
+    { depth: 0, role: 'AXWindow', label: 'Antigravity' },
+    { depth: 1, role: 'AXWebArea', label: '' },
+    { depth: 2, role: 'AXButton', label: state.project },
+    { depth: 2, role: 'AXLink', label: 'New Conversation in Project' },
+    ...listed().map((value) => ({ depth: 2, role: 'AXStaticText', label: '', value })),
+    { depth: 1, role: 'AXWebArea', label: title() },
+  ];
   if (!withDialogs) return nodes;
   for (const dialog of [state.dialog, state.extraDialog].filter(Boolean)) {
     nodes.push(
@@ -174,12 +193,29 @@ function answer() {
       if (!shown(args[0])) return { error: 'other_conversation' };
       state.cleared = true;
       return { ok: true };
-    case 'send':
-      if (!shown(args[0])) return { error: 'other_conversation' };
+    case 'send': {
+      const [expectedTitle, project] = args;
+      if (!project) return { error: 'usage: send <expected title> <project>' };
+      if (!shown(expectedTitle)) return { error: 'other_conversation' };
+      const before = decisions.readable(screenNodes(false));
       begin();
       state.untitledLeft = state.untitledPolls ?? 0;
+      // The user opens another conversation while the app is still naming the run's.
+      state.namingLeft = state.switchDuringNaming ? 1 : 0;
       if (state.onSend) writeFileSync(state.onSend.path, state.onSend.content);
-      return { ok: true, title: state.untitledLeft > 0 || state.sendReturnsNoTitle ? null : title() };
+      if (state.sendReturnsNoTitle) return { ok: true, title: null };
+      // The naming interval, read a few times as desktop-ax.js send reads it.
+      for (let read = 0; read < 5; read += 1) {
+        const named = decisions.namedConversation(before, screenNodes(false), expectedTitle, project);
+        if (named?.title) return { ok: true, title: named.title };
+        if (named?.refused) return { ok: true, title: null, refused: named.refused };
+        if (state.namingLeft > 0) {
+          state.namingLeft -= 1;
+          state.switched = true;
+        }
+      }
+      return { ok: true, title: null };
+    }
     case 'answer': {
       const [option, question, expectedTitle] = args;
       try {

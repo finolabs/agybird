@@ -360,12 +360,23 @@ test('a switch to another conversation while the run\'s is still untitled ends a
   assert.equal(context.fake().stopped, undefined);
 });
 
+test('a conversation the user opens while the app names the run\'s is never adopted', async () => {
+  const context = setup({ switchDuringNaming: 'Other Chat', runningPolls: 3, reply: 'the other conversation\'s reply' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.response, null);
+  assert.equal(envelope.evidence.conversation_title, undefined);
+  assert.ok(envelope.warnings.some((warning) => /could not tie/.test(warning)), envelope.warnings.join(' | '));
+  for (const command of ['copy-reply', 'answer', 'stop']) assert.ok(!names(context).includes(command), command);
+  assert.equal(context.fake().stopped, undefined);
+});
+
 test('the conversation title is taken from the Send call, so a late title is never adopted', async () => {
   const late = setup({ untitledPolls: 2, runningPolls: 3 });
   const { envelope } = await run(late);
   assert.equal(envelope.status, 'error');
   assert.ok(!names(late).includes('copy-reply'));
-  assert.deepEqual(late.fake().calls.find((call) => call[0] === 'send'), ['send', 'Antigravity']);
+  assert.deepEqual(late.fake().calls.find((call) => call[0] === 'send'), ['send', 'Antigravity', 'ws']);
 });
 
 test('paste and send are refused once the app no longer shows the new conversation', async () => {

@@ -28,10 +28,11 @@ class TimedOut extends Error {
 }
 
 class OtherConversation extends Error {
-  constructor(title, { late = false } = {}) {
-    super(late
-      ? `The Antigravity app showed a titled conversation (${JSON.stringify(title)}) only after Send had returned without one, so the run cannot tell it from another conversation; it stopped reading and pressed nothing. Check the run's conversation in the app.`
-      : `The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`);
+  constructor(title, { late = false, unbound = false } = {}) {
+    let message = `The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`;
+    if (late) message = `The Antigravity app showed a titled conversation (${JSON.stringify(title)}) only after Send had returned without one, so the run cannot tell it from another conversation; it stopped reading and pressed nothing. Check the run's conversation in the app.`;
+    if (unbound) message = `After Send the Antigravity app showed a conversation (${JSON.stringify(title)}) the run could not tie to the one it sent: its name was listed before Send, or it is in another project, or it never appeared in the list. The run read nothing there and pressed nothing. Check the run's conversation in the app.`;
+    super(message);
   }
 }
 
@@ -391,15 +392,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       sent = true;
       let pressed;
       try {
-        pressed = await bridge(['send', UNTITLED], { timeoutMs: SEND_TIMEOUT_MS });
+        pressed = await bridge(['send', UNTITLED, project], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         // Refused before the press; a timeout or a crash may have pressed it.
         if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read
-      // once the app titled it, right after pressing Send; it is never taken
+      // once the app titled it, right after pressing Send, and only when its
+      // name was not listed before Send and is listed now; it is never taken
       // from a later read, which could show a conversation the user opened.
+      if (pressed.refused) throw new OtherConversation(pressed.refused, { unbound: true });
       if (pressed.title) {
         if (!String(pressed.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(pressed.title);
         conversation = pressed.title;

@@ -8,7 +8,7 @@ import test from 'node:test';
 import { AX_SCRIPT_PATH, loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
 import { permissionRequest } from '../../scripts/lib/desktop-state.mjs';
 
-const { chooseAnswer, dialogs, title } = loadAxDecisions();
+const { chooseAnswer, dialogs, namedConversation, readable, title } = loadAxDecisions();
 const TITLE = 'Fake Task - ws - Antigravity';
 const OPTIONS = ['1 Yes, allow this time', "2 Yes, and always allow 'curl' in this conversation", "3 Yes, and always allow 'curl'", '4 No (tell the agent what to do instead)'];
 
@@ -106,6 +106,29 @@ test('only option 1 or Skip is ever chosen, and only with the question and title
   assert.throws(() => chooseAnswer(nodes, '1', undefined, TITLE), /usage/);
   assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', undefined), /usage/);
   assert.throws(() => chooseAnswer(screen(TITLE), '1', 'Allow running ls?', TITLE), /not_found: permission dialog/);
+});
+
+// The window as Send reads it: the sidebar of project ws listing `names`, and
+// the conversation's web area titled `windowTitle`.
+const sidebar = (windowTitle, names) => [
+  node(0, 'AXWindow', 'Antigravity'),
+  node(1, 'AXWebArea', ''),
+  node(2, 'AXButton', 'ws'),
+  node(2, 'AXLink', 'New Conversation in Project'),
+  ...names.map((name) => node(2, 'AXStaticText', '', name)),
+  node(1, 'AXWebArea', windowTitle),
+];
+
+test('after Send only a newly listed conversation is adopted; one listed before Send is refused', () => {
+  const before = plain(readable(sidebar('Antigravity', ['Other Chat'])));
+  assert.equal(namedConversation(before, sidebar('Antigravity', ['Other Chat']), 'Antigravity', 'ws'), null, 'not titled yet');
+  assert.deepEqual(plain(namedConversation(before, sidebar('Other Chat - ws - Antigravity', ['Other Chat']), 'Antigravity', 'ws')), { refused: 'Other Chat - ws - Antigravity' });
+  assert.equal(namedConversation(before, sidebar(TITLE, ['Other Chat']), 'Antigravity', 'ws'), null, 'titled but not listed yet');
+  assert.deepEqual(plain(namedConversation(before, sidebar(TITLE, ['Other Chat', 'Fake Task']), 'Antigravity', 'ws')), { title: TITLE });
+  assert.deepEqual(plain(namedConversation(before, sidebar('Fake Task - other - Antigravity', ['Other Chat', 'Fake Task']), 'Antigravity', 'ws')), { refused: 'Fake Task - other - Antigravity' });
+  // A run's conversation named like one listed before Send cannot be told apart, so it is refused too.
+  const namesake = plain(readable(sidebar('Antigravity', ['Fake Task'])));
+  assert.deepEqual(plain(namedConversation(namesake, sidebar(TITLE, ['Fake Task', 'Fake Task']), 'Antigravity', 'ws')), { refused: TITLE });
 });
 
 test('the decisions region calls no accessibility API', () => {

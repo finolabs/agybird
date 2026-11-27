@@ -60,6 +60,30 @@ function title(nodes) {
   return area ? area.label : null;
 }
 
+// What a person can read on screen outside the conversation's title: every
+// label, and every static text's value, flattened.
+function readable(nodes, read) {
+  const textOf = read || readNode;
+  return nodes.filter((node) => node.role !== 'AXWebArea').map((node) => flatten(node.role === 'AXStaticText' ? textOf(node) : node.label)).filter(Boolean);
+}
+
+// After Send, the titled conversation on screen is the run's own only when its
+// name (the title before " - <project> - Antigravity") was nowhere on screen
+// before Send, so it is not a conversation that existed then, and is on screen
+// now, as the sidebar entry the app adds for it. `before` is readable() of the
+// tree read just before Send was pressed. Returns { title } to adopt,
+// { refused } for a title that cannot be proven the run's, or null while the
+// app has not titled the conversation or listed it yet.
+function namedConversation(before, nodes, expected, project, read) {
+  const shown = title(nodes);
+  if (shown === null || shown === expected) return null;
+  const suffix = ` - ${project} - ${UNTITLED}`;
+  if (!project || shown.length <= suffix.length || shown.slice(-suffix.length) !== suffix) return { refused: shown };
+  const name = flatten(shown.slice(0, -suffix.length));
+  if (before.indexOf(name) >= 0) return { refused: shown };
+  return readable(nodes, read).indexOf(name) >= 0 ? { title: shown } : null;
+}
+
 // Every permission dialog on screen. A dialog is the smallest group that holds
 // an option 1 radio and a Skip button. Its question is every static text inside
 // that group, in order, outside the options, buttons and inputs: rendered
@@ -406,23 +430,33 @@ const COMMANDS = {
     return { ok: true };
   },
   // Presses Send only while the expected (untitled new) conversation shows, then
-  // returns the title the app gives it, read in this same call: that title is
-  // the run's conversation from then on. No title within the wait returns null.
-  send(app, expectedTitle) {
+  // returns the title the app gives it, read in this same call, once
+  // namedConversation() ties it to the conversation that was sent: that title
+  // is the run's conversation from then on. A title it cannot tie returns as
+  // `refused`; no title within the wait returns null.
+  send(app, expectedTitle, project) {
+    if (!project) throw new Error('usage: send <expected title> <project>');
     // The button appears only once the input holds text, which can lag the paste.
     let button = null;
+    let nodes = null;
     for (let tries = 0; tries < 10 && !button; tries += 1) {
       if (tries > 0) delay(0.2);
-      button = find(showing(app, expectedTitle), 'AXButton', 'Send message');
+      nodes = showing(app, expectedTitle);
+      button = find(nodes, 'AXButton', 'Send message');
     }
+    const before = readable(nodes, staticText);
     press(button, 'Send message');
     const until = Date.now() + TITLE_WAIT_MS;
+    let seen = null;
     while (Date.now() < until) {
       delay(0.25);
-      const now = title(tree(app));
-      if (now && now !== expectedTitle) return { ok: true, title: now };
+      const now = tree(app);
+      const named = namedConversation(before, now, expectedTitle, project, staticText);
+      if (named && named.title) return { ok: true, title: named.title };
+      if (named && named.refused) return { ok: true, title: null, refused: named.refused };
+      if (title(now) !== null && title(now) !== expectedTitle) seen = title(now);
     }
-    return { ok: true, title: null };
+    return seen ? { ok: true, title: null, refused: seen } : { ok: true, title: null };
   },
   // An answer is pressed only in the same tree read that shows the expected
   // conversation, the approved question and, for option 1, its exact label.
