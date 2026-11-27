@@ -31,6 +31,7 @@ import { renderJobTable, renderOutcome } from './lib/render.mjs';
 import { resolveAgyBinary } from './agybird.mjs';
 import { collectScope } from './lib/scope.mjs';
 import { chooseModel, readQuota, TIERS } from './lib/quota.mjs';
+import { assertTransportSupported, checkTransport, resolveTransport } from './lib/transport.mjs';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
@@ -390,6 +391,29 @@ function writeConfig(cwd, env, patch) {
   return next;
 }
 
+function globalConfigPath(env) {
+  return join(jobsRoot(env), 'config.json');
+}
+
+function readGlobalConfig(env) {
+  const path = globalConfigPath(env);
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGlobalConfig(env, patch) {
+  const path = globalConfigPath(env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${JSON.stringify({ ...readGlobalConfig(env), ...patch }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function transportFor({ cwd, env = process.env, flag }) {
+  return resolveTransport({ flag, workspace: readConfig(cwd, env), global: readGlobalConfig(env) });
+}
+
 function output(options, data, text) {
   process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
 }
@@ -672,14 +696,21 @@ async function commandUsage(argv, env) {
 }
 
 async function commandSetup(argv, env) {
-  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
+  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag', '--transport': 'value', '--here': 'flag' });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
+  if (options.here && !options.transport) throw new Error('--here applies only with --transport.');
   const cwd = options.cwd ?? process.cwd();
+  if (options.transport) {
+    assertTransportSupported(checkTransport(options.transport, '--transport'));
+    if (options.here) writeConfig(cwd, env, { transport: options.transport });
+    else writeGlobalConfig(env, { transport: options.transport });
+  }
   const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
   const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
+  ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
   try {
     const binary = resolveAgyBinary(env);
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
@@ -701,6 +732,7 @@ async function commandSetup(argv, env) {
     `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
     `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
     gateAvailable ? `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}` : 'Review gate: not included in this edition',
+    `Transport: ${report.transport} (${report.transportSource})`,
     ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
   ].join('\n');

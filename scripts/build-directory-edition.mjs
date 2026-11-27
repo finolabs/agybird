@@ -24,6 +24,7 @@ const CODE_FILES = [
   'scripts/lib/quota.mjs',
   'scripts/lib/render.mjs',
   'scripts/lib/scope.mjs',
+  'scripts/lib/transport.mjs',
 ];
 const COPIED_FILES = [
   'prompts/review.md',

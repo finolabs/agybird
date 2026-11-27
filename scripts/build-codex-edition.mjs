@@ -24,6 +24,7 @@ const FILES = [
   'scripts/lib/quota.mjs',
   'scripts/lib/render.mjs',
   'scripts/lib/scope.mjs',
+  'scripts/lib/transport.mjs',
   'prompts/review.md',
   'prompts/adversarial-review.md',
   'schemas/review-output.schema.json',
