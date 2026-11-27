@@ -229,8 +229,26 @@ function reply(nodes) {
 }
 
 function requireTitle(nodes, expected) {
-  if (expected !== undefined && title(nodes) !== expected) throw new Error('other_conversation');
+  if (!expected) throw new Error('usage: the expected conversation title is required');
+  if (title(nodes) !== expected) throw new Error('other_conversation');
 }
+
+// The tree, once a read shows the expected conversation; a read with no title
+// at all (the web areas re-rendering) is retried a few times.
+function showing(app, expected) {
+  for (let tries = 0; tries < 5; tries += 1) {
+    if (tries > 0) delay(0.2);
+    const nodes = tree(app);
+    if (title(nodes) !== null) {
+      requireTitle(nodes, expected);
+      return nodes;
+    }
+  }
+  throw new Error('other_conversation');
+}
+
+// How long Send waits for the app to title the new conversation.
+const TITLE_WAIT_MS = 30000;
 
 function snapshot(nodes) {
   const labels = {};
@@ -265,8 +283,8 @@ function isFrontmost() {
   return Boolean(front) && text(front.bundleIdentifier) === BUNDLE_ID;
 }
 
-function focusInput(app) {
-  const input = find(tree(app), 'AXTextArea', 'Message input');
+function focusInput(app, expected) {
+  const input = find(showing(app, expected), 'AXTextArea', 'Message input');
   if (!input) throw new Error('not_found: Message input');
   if (!isFrontmost()) throw new Error('not_frontmost');
   $.AXUIElementSetAttributeValue(input.element, $('AXFocused'), $.NSNumber.numberWithBool(true));
@@ -333,8 +351,8 @@ const COMMANDS = {
     const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
     return { ok: Boolean(front) && text(front.bundleIdentifier) === bundleId };
   },
-  'paste-input'(app) {
-    const input = focusInput(app);
+  'paste-input'(app, expectedTitle) {
+    const input = focusInput(app, expectedTitle);
     menu(app, 'Edit', 'Paste');
     // The paste lands asynchronously: read until the text is non-blank and steady.
     let value = '';
@@ -346,21 +364,30 @@ const COMMANDS = {
     }
     return { ok: true, value };
   },
-  'clear-input'(app) {
-    focusInput(app);
+  'clear-input'(app, expectedTitle) {
+    focusInput(app, expectedTitle);
     menu(app, 'Edit', 'Select All');
     menu(app, 'Edit', 'Delete');
     return { ok: true };
   },
-  send(app) {
+  // Presses Send only while the expected (untitled new) conversation shows, then
+  // returns the title the app gives it, read in this same call: that title is
+  // the run's conversation from then on. No title within the wait returns null.
+  send(app, expectedTitle) {
     // The button appears only once the input holds text, which can lag the paste.
     let button = null;
     for (let tries = 0; tries < 10 && !button; tries += 1) {
       if (tries > 0) delay(0.2);
-      button = find(tree(app), 'AXButton', 'Send message');
+      button = find(showing(app, expectedTitle), 'AXButton', 'Send message');
     }
     press(button, 'Send message');
-    return { ok: true };
+    const until = Date.now() + TITLE_WAIT_MS;
+    while (Date.now() < until) {
+      delay(0.25);
+      const now = title(tree(app));
+      if (now && now !== expectedTitle) return { ok: true, title: now };
+    }
+    return { ok: true, title: null };
   },
   // An answer is pressed only in the same tree read that shows the expected
   // conversation, the approved question and, for option 1, its exact label.

@@ -15,7 +15,7 @@ Explain how the parser handles empty input.
 AGYBIRD_PROMPT_7F3A
 ```
 
-Every run starts a new conversation; there is no resume. The runner keeps the title the app gives that conversation and reads, copies and presses only while the app shows it; if you open another conversation in the app during a run, the run ends `error` without touching it. The runner refuses `--category image`, `--swarm`, `--grant`, `--model`, `--effort`, `--agent`, `--sandbox` and `--conversation`, naming the flag: the app uses the model and settings chosen in it. Image work, usage and the review gate always use the CLI. `--json-schema` asks for one fenced JSON block at the end of the reply; the runner checks its top-level `required` keys and returns it as `structured_output`.
+Every run starts a new conversation; there is no resume. The runner pastes and presses Send only while the app shows the new, untitled conversation, and the same step that presses Send waits up to 30 seconds for the app to title it; that title identifies the run's conversation, and the runner reads, copies and presses only while the app shows it. A title that appears only later is never adopted. If you open another conversation in the app during a run, even before it is titled, the run ends `error` without touching it. The runner refuses `--category image`, `--swarm`, `--grant`, `--model`, `--effort`, `--agent`, `--sandbox` and `--conversation`, naming the flag: the app uses the model and settings chosen in it. Image work, usage and the review gate always use the CLI. `--json-schema` asks for one fenced JSON block at the end of the reply; the runner checks its top-level `required` keys and returns it as `structured_output`.
 
 ## Before a run
 

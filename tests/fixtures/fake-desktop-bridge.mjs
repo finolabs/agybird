@@ -13,7 +13,10 @@
 // { question, options } dialog shown below the first),
 // copyNoop (Copy leaves the clipboard as it was), title (the conversation title
 // once sent), switchAfter (snapshots after which the app shows another
-// conversation), onSend ({ path, content }: a file the "agent" writes when the
+// conversation), untitledPolls (snapshots after send that still show the new
+// conversation untitled; Send then returns no title), switchWhileUntitled (the
+// app shows another conversation once those are over), titleBeforeSend (the
+// title shown before send instead of the untitled new conversation), onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -71,7 +74,9 @@ else if (command === 'clipboard-set' && args[0] !== '--empty') {
 }
 
 function title() {
-  if (!state.sent) return 'Antigravity';
+  if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
+  if (state.untitledLeft > 0) return 'Antigravity';
+  if (state.switchWhileUntitled) return `Other Chat - ${state.project} - Antigravity`;
   if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return `Other Chat - ${state.project} - Antigravity`;
   return state.title ?? `Fake Task - ${state.project} - Antigravity`;
 }
@@ -118,6 +123,9 @@ function answer() {
   switch (command) {
     case 'snapshot': {
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
+      // Read before the count drops, as the app shows it during this read.
+      const shownTitle = title();
+      if (state.untitledLeft > 0) state.untitledLeft -= 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
       const found = state.sent && !lagging && waiting() ? decisions.dialogs(screenNodes(true))[0] : null;
@@ -132,7 +140,7 @@ function answer() {
         preset: running ? null : state.preset,
         model: state.model,
         project: state.project,
-        title: title(),
+        title: shownTitle,
         running: running || Boolean(dialog),
         sendable: !running && !dialog,
         dialog,
@@ -149,13 +157,18 @@ function answer() {
       state.frontmost = args[0];
       return { ok: true };
     case 'paste-input':
+      if (!shown(args[0])) return { error: 'other_conversation' };
       return { ok: true, value: state.paste ?? state.clipboard };
     case 'clear-input':
+      if (!shown(args[0])) return { error: 'other_conversation' };
+      state.cleared = true;
       return { ok: true };
     case 'send':
+      if (!shown(args[0])) return { error: 'other_conversation' };
       begin();
+      state.untitledLeft = state.untitledPolls ?? 0;
       if (state.onSend) writeFileSync(state.onSend.path, state.onSend.content);
-      return { ok: true };
+      return { ok: true, title: state.untitledLeft > 0 ? null : title() };
     case 'answer': {
       const [option, question, expectedTitle] = args;
       try {

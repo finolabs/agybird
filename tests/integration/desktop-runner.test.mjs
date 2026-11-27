@@ -276,6 +276,32 @@ test('the run stops reading, and presses nothing, once the app shows another con
   assertCleanedUp(context);
 });
 
+test('a switch to another conversation while the run\'s is still untitled ends as error, with nothing pressed', async () => {
+  const context = setup({ untitledPolls: 2, switchWhileUntitled: true, runningPolls: 3 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.response, null);
+  assert.equal(envelope.evidence.conversation_title, undefined);
+  for (const command of ['copy-reply', 'answer', 'stop']) assert.ok(!names(context).includes(command), command);
+  assert.equal(context.fake().stopped, undefined);
+});
+
+test('the conversation title is taken from the Send call, so a late title is never adopted', async () => {
+  const late = setup({ untitledPolls: 2, runningPolls: 3 });
+  const { envelope } = await run(late);
+  assert.equal(envelope.status, 'error');
+  assert.ok(!names(late).includes('copy-reply'));
+  assert.deepEqual(late.fake().calls.find((call) => call[0] === 'send'), ['send', 'Antigravity']);
+});
+
+test('paste and send are refused once the app no longer shows the new conversation', async () => {
+  const context = setup({ titleBeforeSend: 'Other Chat - ws - Antigravity' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(!names(context).includes('send'));
+  assert.equal(context.fake().sent, undefined);
+});
+
 test('a successful run names the conversation it read', async () => {
   const context = setup({ runningPolls: 1 });
   assert.equal((await run(context)).envelope.evidence.conversation_title, TITLE);

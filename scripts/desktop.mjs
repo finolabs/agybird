@@ -22,10 +22,15 @@ const DEFAULT_POLL_MS = 2_500;
 class Cancelled extends Error {}
 
 class OtherConversation extends Error {
-  constructor(title) {
-    super(`The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`);
+  constructor(title, { late = false } = {}) {
+    super(late
+      ? `The Antigravity app showed a titled conversation (${JSON.stringify(title)}) only after Send had returned without one, so the run cannot tell it from another conversation; it stopped reading and pressed nothing. Check the run's conversation in the app.`
+      : `The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`);
   }
 }
+
+// Send waits in the app for the new conversation's title, which identifies it.
+const SEND_TIMEOUT_MS = 45_000;
 
 function processIsRunning(pid) {
   try {
@@ -227,7 +232,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let pasted = false;
   let sent = false;
   let finished = false;
-  // The title of the run's own conversation, once the app has given it one.
+  // The title of the run's own conversation, as the Send call read it right
+  // after pressing Send; null while it is the untitled new conversation.
   let conversation = null;
   const expected = () => conversation ?? UNTITLED;
 
@@ -244,7 +250,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const clearInput = async () => {
     try {
       await call(['front']);
-      await call(['clear-input']);
+      await call(['clear-input', UNTITLED]);
     } catch {
       warnings.push('The prompt may still be in the Antigravity app input; clear it there before sending anything.');
     }
@@ -317,39 +323,43 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       pasted = true;
       await bridge(['clipboard-set'], { input: prompt });
       // A long prompt (a review's diff) takes seconds to read back line by line.
-    const input = await bridge(['paste-input'], { timeoutMs: 120_000 });
+      // Paste, clear and Send act only while the app shows the untitled new conversation.
+      const input = await bridge(['paste-input', UNTITLED], { timeoutMs: 120_000 });
       if (normalized(input.value) !== normalized(prompt)) {
         await clearInput();
         throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
       }
       // Marked first: a cancel that lands while Send is pressed must still stop the run.
       sent = true;
+      let pressed;
       try {
-        await bridge(['send']);
+        pressed = await bridge(['send', UNTITLED], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         if (error instanceof Cancelled) throw error;
         sent = false;
         await clearInput();
         throw error;
       }
+      // The identity of the run's conversation is the title the Send call read
+      // once the app titled it, right after pressing Send; it is never taken
+      // from a later read, which could show a conversation the user opened.
+      if (pressed.title) {
+        if (!String(pressed.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(pressed.title);
+        conversation = pressed.title;
+        evidence.conversation_title = conversation;
+      }
       await restore();
     }
 
     const deadline = Date.now() + timeoutToMilliseconds(options.timeout);
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : DEFAULT_POLL_MS;
-    // Every read is of the run's own conversation: the first title the app gives
-    // it after send is kept, and any other title on screen ends the run unread.
-    // Returns false when no title could be read this time, so the poll is skipped.
+    // Every read is of the run's own conversation, as bound at Send (or untitled
+    // if the app had not titled it by then); any other title on screen ends the
+    // run unread. Returns false when no title could be read this time, so the
+    // poll is skipped.
     const follow = (state) => {
       if (state.title === null) return false;
-      if (conversation === null) {
-        if (state.title === UNTITLED) return true;
-        if (!String(state.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(state.title);
-        conversation = state.title;
-        evidence.conversation_title = conversation;
-        return true;
-      }
-      if (state.title !== conversation) throw new OtherConversation(state.title);
+      if (state.title !== expected()) throw new OtherConversation(state.title, { late: conversation === null });
       return true;
     };
     const changesSince = () => {

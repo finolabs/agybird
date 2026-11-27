@@ -31,7 +31,8 @@ function workspace(state = {}) {
   const companion = (args, input = '') => runCompanion(args, { env, cwd, input });
   // Chosen globally, as setup --transport would on macOS, so the tests run everywhere.
   const choose = (transport) => writeFileSync(join(env.AGYBIRD_JOBS_DIR, 'config.json'), JSON.stringify({ transport }));
-  return { cwd, env, fake, set, choose, companion, calls: () => (fake().calls ?? []).map((call) => call.join(' ')) };
+  const calls = () => (fake().calls ?? []).map((call) => call.join(' '));
+  return { cwd, env, fake, set, choose, companion, calls, sent: () => calls().some((call) => call.startsWith('send')) };
 }
 
 function json(result) {
@@ -153,7 +154,7 @@ test('image work stays on the CLI when desktop is chosen', async () => {
 test('cancelling a desktop job presses Stop execution in the app', { skip: process.platform === 'win32' }, async () => {
   const context = workspace({ stuck: true });
   const started = json(await context.companion(['task', '--via', 'desktop', '--background', '--json', 'Run forever']));
-  for (let waited = 0; !context.calls().includes('send'); waited += 100) {
+  for (let waited = 0; !context.sent(); waited += 100) {
     assert.ok(waited < 15_000, 'the job never sent its prompt');
     await new Promise((done) => setTimeout(done, 100));
   }
@@ -182,7 +183,7 @@ test('approving a CLI job stays on the CLI when desktop is chosen meanwhile', as
 test('cancel leaves a desktop run time to stop the app and put the clipboard back', { skip: process.platform === 'win32' }, async () => {
   const context = workspace({ stuck: true, delays: { stop: 4_000 } });
   const started = json(await context.companion(['task', '--via', 'desktop', '--background', '--json', 'Run forever']));
-  for (let waited = 0; !context.calls().includes('send'); waited += 100) {
+  for (let waited = 0; !context.sent(); waited += 100) {
     assert.ok(waited < 15_000, 'the job never sent its prompt');
     await new Promise((done) => setTimeout(done, 100));
   }
