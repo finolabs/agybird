@@ -102,7 +102,8 @@ test('an approved desktop request presses "allow this time" once in the waiting 
   assert.equal(second.envelope.status, 'success', JSON.stringify(second.envelope.warnings));
   assert.equal(second.envelope.response, 'listed');
   const later = context.calls().slice(before);
-  assert.deepEqual(later.filter((call) => call.startsWith('answer')), [`answer 1 ${DIALOG.question} Fake Task - ws - Antigravity`]);
+  // In the conversation that asked, bound by the asking run's own marker.
+  assert.deepEqual(later.filter((call) => call.startsWith('answer')), [`answer 1 ${DIALOG.question} Fake Task - ws - Antigravity ${first.envelope.evidence.conversation_marker}`]);
   assert.ok(!later.some((call) => /^(new-conversation|send|paste-input)/.test(call)));
 });
 
@@ -140,9 +141,19 @@ test('a question too long to show whole, or a job with no conversation title, is
   const store = readdirSync(untitled.env.AGYBIRD_JOBS_DIR).map((name) => join(untitled.env.AGYBIRD_JOBS_DIR, name)).find((path) => !path.endsWith('.json'));
   const resultFile = join(store, `${asked.job.id}.result.json`);
   const stored = JSON.parse(readFileSync(resultFile, 'utf8'));
+  assert.equal(json(await untitled.companion(['permissions', asked.job.id, '--json'])).requests[0].approvable, true);
+  // Without the asking run's marker the conversation cannot be bound either.
+  const { conversation_marker: marker, ...unmarked } = stored.evidence;
+  assert.match(marker, /^[0-9a-f]{16}$/);
+  writeFileSync(resultFile, JSON.stringify({ ...stored, evidence: unmarked }));
+  assert.equal(json(await untitled.companion(['permissions', asked.job.id, '--json'])).requests[0].approvable, false);
+  const refusedUnmarked = await untitled.companion(['task', '--approve', `${asked.job.id}:0`, '--json']);
+  assert.notEqual(refusedUnmarked.code, 0);
+  assert.match(refusedUnmarked.stderr, /did not record which app conversation/);
   delete stored.evidence.conversation_title;
   writeFileSync(resultFile, JSON.stringify(stored));
   assert.equal(json(await untitled.companion(['permissions', asked.job.id, '--json'])).requests[0].approvable, false);
+  assert.ok(!untitled.calls().some((call) => call.startsWith('answer')));
 });
 
 test('image work stays on the CLI when desktop is chosen', async () => {
@@ -326,7 +337,7 @@ test('a desktop request is approved once, and can be declined instead', async ()
   const declined = json(await other.companion(['task', '--decline', `${asked.job.id}:0`, '--json']));
   assert.equal(declined.envelope.status, 'success');
   assert.doesNotMatch(declined.job.title, /granted/);
-  assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), [`answer Skip ${DIALOG.question} Fake Task - ws - Antigravity`]);
+  assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), [`answer Skip ${DIALOG.question} Fake Task - ws - Antigravity ${asked.envelope.evidence.conversation_marker}`]);
   const cli = workspace();
   const blocked = JSON.parse((await cli.companion(['task', '--json', 'CASE_FORGED_AUTH'])).stdout).job;
   const refused = await cli.companion(['task', '--decline', `${blocked.id}:0`]);

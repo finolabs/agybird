@@ -38,13 +38,15 @@ test('a non-zero exit, bad JSON, an error field or a hang becomes an error', asy
 const DIALOG_QUESTION = 'Allow list directory contents?';
 
 test('the wrapper refuses every dialog answer but option 1 and Skip, without calling the bridge', async () => {
-  const { env, state } = fake({ sent: true, dialog: { question: DIALOG_QUESTION, options: ['1 Yes, allow this time'] } });
+  const nonce = '0123456789abcdef';
+  const { env, state } = fake({ sent: true, message: `Go on.\n[agybird-run ${nonce}]`, dialog: { question: DIALOG_QUESTION, options: ['1 Yes, allow this time'] } });
   for (const option of ['2', '3', '4', 'Submit', '']) {
     await assert.rejects(callBridge(['answer', option], { env }), /only 1 or Skip/);
   }
+  await assert.rejects(callBridge(['answer', '1'], { env }), /question, the conversation title and the run marker/);
+  await assert.rejects(callBridge(['answer', '1', DIALOG_QUESTION, 'Fake Task - workspace - Antigravity'], { env }), /run marker/);
   assert.equal(state().calls, undefined, 'the bridge was never started');
-  await assert.rejects(callBridge(['answer', '1'], { env }), /question and conversation/);
-  assert.deepEqual(await callBridge(['answer', '1', DIALOG_QUESTION, 'Fake Task - workspace - Antigravity'], { env }), { ok: true });
+  assert.deepEqual(await callBridge(['answer', '1', DIALOG_QUESTION, 'Fake Task - workspace - Antigravity', nonce], { env }), { ok: true });
 });
 
 test('the AX script writes the prompt current-host-only and marked transient and concealed', () => {

@@ -60,28 +60,68 @@ function title(nodes) {
   return area ? area.label : null;
 }
 
-// What a person can read on screen outside the conversation's title: every
-// label, and every static text's value, flattened.
-function readable(nodes, read) {
-  const textOf = read || readNode;
-  return nodes.filter((node) => node.role !== 'AXWebArea').map((node) => flatten(node.role === 'AXStaticText' ? textOf(node) : node.label)).filter(Boolean);
+// The last line of every prompt a run sends, naming that run: `nonce` is
+// random hex the runner draws for it. A missing or malformed nonce throws, so
+// no check is ever skipped for want of one.
+function marker(nonce) {
+  if (!/^[0-9a-f]{16,64}$/.test(String(nonce || ''))) throw new Error('usage: the run marker is 16 to 64 lowercase hex digits');
+  return `[agybird-run ${nonce}]`;
 }
 
-// After Send, the titled conversation on screen is the run's own only when its
-// name (the title before " - <project> - Antigravity") was nowhere on screen
-// before Send, so it is not a conversation that existed then, and is on screen
-// now, as the sidebar entry the app adds for it. `before` is readable() of the
-// tree read just before Send was pressed. Returns { title } to adopt,
-// { refused } for a title that cannot be proven the run's, or null while the
-// app has not titled the conversation or listed it yet.
-function namedConversation(before, nodes, expected, project, read) {
+// Whether the conversation on screen shows the run's own message: the text of
+// the titled web area (the conversation the title names), outside the agent's
+// replies, holds the run's marker. Only the run's prompt carries that marker,
+// so another conversation, a namesake included, does not; an agent repeating
+// it in a reply does not count. The marker is the message's last line, so the
+// texts are read from the end, and the first one holding it, alone or joined
+// to the text after it (a line split in two), ends the search.
+function ownConversation(nodes, nonce, read) {
+  const textOf = read || readNode;
+  const wanted = marker(nonce);
+  const area = nodes.findIndex((node) => node.role === 'AXWebArea' && node.label);
+  if (area < 0) return false;
+  const end = subtreeEnd(nodes, area);
+  const texts = [];
+  for (let at = area + 1; at < end; at += 1) {
+    const node = nodes[at];
+    if (node.role === 'AXHeading' && node.label === 'Agent said') {
+      // The reply is the group right after the heading, at its depth.
+      let next = subtreeEnd(nodes, at);
+      if (next < end && nodes[next].depth === node.depth && nodes[next].role === 'AXGroup') next = subtreeEnd(nodes, next);
+      at = next - 1;
+    } else if (node.role === 'AXStaticText') {
+      texts.push(node);
+    }
+  }
+  let after = '';
+  for (let index = texts.length - 1; index >= 0; index -= 1) {
+    const here = flatten(textOf(texts[index]));
+    if (here.indexOf(wanted) >= 0 || flatten(`${here} ${after}`).indexOf(wanted) >= 0) return true;
+    after = here;
+  }
+  return false;
+}
+
+// Throws unless the conversation on screen is the run's: titled `expected`
+// and showing the run's own message, in this one read.
+function requireOwn(nodes, expected, nonce, read) {
+  if (!expected) throw new Error('usage: the expected conversation title is required');
+  marker(nonce);
+  if (title(nodes) !== expected) throw new Error('other_conversation');
+  if (!ownConversation(nodes, nonce, read)) throw new Error("not_own: the run's own message is not on screen");
+}
+
+// After Send, the titled conversation on screen is the run's own only when it
+// shows the run's own message, marker included, in the same read as the
+// title. Returns { title } to adopt, { refused } for a conversation of another
+// project, or null while the app has not titled the run's conversation, or
+// shows one without its message (the user's, say), so Send keeps waiting.
+function namedConversation(nodes, expected, project, nonce, read) {
   const shown = title(nodes);
   if (shown === null || shown === expected) return null;
   const suffix = ` - ${project} - ${UNTITLED}`;
   if (!project || shown.length <= suffix.length || shown.slice(-suffix.length) !== suffix) return { refused: shown };
-  const name = flatten(shown.slice(0, -suffix.length));
-  if (before.indexOf(name) >= 0) return { refused: shown };
-  return readable(nodes, read).indexOf(name) >= 0 ? { title: shown } : null;
+  return ownConversation(nodes, nonce, read) ? { title: shown } : null;
 }
 
 // Every permission dialog on screen. A dialog is the smallest group that holds
@@ -131,14 +171,15 @@ function dialogs(nodes, read) {
 }
 
 // The nodes to press, in order, to answer the dialog that asks `question`, the
-// whole flattened question, in the conversation titled `expected`. Any mismatch
-// throws and nothing is pressed.
-function chooseAnswer(nodes, option, question, expected, read) {
+// whole flattened question, in the conversation titled `expected` that shows
+// the run's own message (`nonce`). Any mismatch throws and nothing is pressed.
+function chooseAnswer(nodes, option, question, expected, nonce, read) {
   if (ANSWERS.indexOf(option) < 0) throw new Error('refused: only 1 or Skip may be answered');
-  if (!question || !expected) throw new Error('usage: answer <1|Skip> <question> <conversation title>');
+  if (!question || !expected) throw new Error('usage: answer <1|Skip> <question> <conversation title> <run marker>');
+  marker(nonce);
   const shown = dialogs(nodes, read);
   if (shown.length === 0) throw new Error('not_found: permission dialog');
-  if (title(nodes) !== expected) throw new Error('other_conversation');
+  requireOwn(nodes, expected, nonce, read);
   const asking = shown.filter((prompt) => prompt.question === question);
   if (asking.length === 0) throw new Error('question_changed');
   if (asking.length > 1 || asking[0].ambiguous) throw new Error('several_dialogs');
@@ -382,8 +423,12 @@ const COMMANDS = {
       frontmost: front ? text(front.bundleIdentifier) : null,
     };
   },
-  snapshot(app) {
-    return snapshot(tree(app));
+  // With the run's nonce, `own` says whether this same read shows the run's own message.
+  snapshot(app, nonce) {
+    const nodes = tree(app);
+    const shot = snapshot(nodes);
+    if (nonce !== undefined) shot.own = ownConversation(nodes, nonce, staticText);
+    return shot;
   },
   'new-conversation'(app, project) {
     if (!project) throw new Error('usage: new-conversation <project>');
@@ -431,27 +476,26 @@ const COMMANDS = {
   },
   // Presses Send only while the expected (untitled new) conversation shows, then
   // returns the title the app gives it, read in this same call, once
-  // namedConversation() ties it to the conversation that was sent: that title
-  // is the run's conversation from then on. A title it cannot tie returns as
-  // `refused`; no title within the wait returns null.
-  send(app, expectedTitle, project) {
-    if (!project) throw new Error('usage: send <expected title> <project>');
+  // namedConversation() finds the run's own message, marker included, under
+  // it in the same read: that title is the run's conversation from then on. A
+  // conversation of another project returns as `refused`; so does any other
+  // title seen when the wait ends with none adopted; no title returns null.
+  send(app, expectedTitle, project, nonce) {
+    if (!project) throw new Error('usage: send <expected title> <project> <run marker>');
+    marker(nonce);
     // The button appears only once the input holds text, which can lag the paste.
     let button = null;
-    let nodes = null;
     for (let tries = 0; tries < 10 && !button; tries += 1) {
       if (tries > 0) delay(0.2);
-      nodes = showing(app, expectedTitle);
-      button = find(nodes, 'AXButton', 'Send message');
+      button = find(showing(app, expectedTitle), 'AXButton', 'Send message');
     }
-    const before = readable(nodes, staticText);
     press(button, 'Send message');
     const until = Date.now() + TITLE_WAIT_MS;
     let seen = null;
     while (Date.now() < until) {
       delay(0.25);
       const now = tree(app);
-      const named = namedConversation(before, now, expectedTitle, project, staticText);
+      const named = namedConversation(now, expectedTitle, project, nonce, staticText);
       if (named && named.title) return { ok: true, title: named.title };
       if (named && named.refused) return { ok: true, title: null, refused: named.refused };
       if (title(now) !== null && title(now) !== expectedTitle) seen = title(now);
@@ -459,19 +503,20 @@ const COMMANDS = {
     return seen ? { ok: true, title: null, refused: seen } : { ok: true, title: null };
   },
   // An answer is pressed only in the same tree read that shows the expected
-  // conversation, the approved question and, for option 1, its exact label.
-  answer(app, option, question, expectedTitle) {
+  // conversation with the run's own message, the approved question and, for
+  // option 1, its exact label.
+  answer(app, option, question, expectedTitle, nonce) {
     if (!ANSWERS.includes(option)) throw new Error('refused: only 1 or Skip may be answered');
     const nodes = tree(app);
-    for (const target of chooseAnswer(nodes, option, question, expectedTitle, staticText)) press(nodes[target.index], target.what);
+    for (const target of chooseAnswer(nodes, option, question, expectedTitle, nonce, staticText)) press(nodes[target.index], target.what);
     return { ok: true };
   },
   // Puts the last reply, as the app's own Markdown, on the clipboard and reads
   // it back in the same call, so the runner can restore the clipboard at once.
   // The app writes it there unmarked; that window is as short as this call.
-  'copy-reply'(app, expectedTitle) {
+  'copy-reply'(app, expectedTitle, nonce) {
     const nodes = tree(app);
-    requireTitle(nodes, expectedTitle);
+    requireOwn(nodes, expectedTitle, nonce, staticText);
     let group = -1;
     nodes.forEach((node, index) => {
       if (node.role === 'AXGroup' && node.label === 'Response actions') group = index;
@@ -491,9 +536,9 @@ const COMMANDS = {
     const value = board.stringForType($.NSPasteboardTypeString);
     return { ok: true, text: value && !value.isNil() ? value.js : null };
   },
-  stop(app, expectedTitle) {
+  stop(app, expectedTitle, nonce) {
     const nodes = tree(app);
-    requireTitle(nodes, expectedTitle);
+    requireOwn(nodes, expectedTitle, nonce, staticText);
     press(find(nodes, 'AXButton', 'Stop execution'), 'Stop execution');
     return { ok: true };
   },

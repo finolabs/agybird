@@ -639,8 +639,9 @@ export function approvedRules(directory, approvals = []) {
       if (request.question_truncated || !request.question_full) throw new Error(`Request ${index} of ${id} asks a question too long to show whole here, so it cannot be approved from here; answer it in the Antigravity app.`);
       if (desktopAnswered(directory, job, Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
       const title = envelope.evidence?.conversation_title;
-      if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
-      return { rules: [], transport: 'desktop', id, index: Number(index), question: request.question_full, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+      const marker = envelope.evidence?.conversation_marker;
+      if (!title || !marker) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
+      return { rules: [], transport: 'desktop', id, index: Number(index), question: request.question_full, title, marker, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
     }
     // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
@@ -698,7 +699,7 @@ async function commandTask(argv, env) {
     const runnerArgs = [];
     const store = storeFor(cwd, env);
     if (approval.question) {
-      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title, '--resume-ack', answerMark(store, approval.id, approval.index));
+      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title, '--resume-marker', approval.marker, '--resume-ack', answerMark(store, approval.id, approval.index));
       if (options.decline) runnerArgs.push('--resume-answer', 'Skip');
     }
     const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
@@ -883,7 +884,7 @@ async function commandPermissions(argv, env) {
     // agybird:desktop-start
     // A desktop request is approved by answering the app's prompt once, never by
     // a rule, and only when the user can be shown the whole question.
-    ...(job.request?.transport === 'desktop' ? { transport: 'desktop', question: request.question, question_truncated: request.question_truncated === true, scope: request.scope, options: request.options, approvable: Boolean(request.question_full) && request.question_truncated !== true && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_title) && job.kind === 'task' } : {}),
+    ...(job.request?.transport === 'desktop' ? { transport: 'desktop', question: request.question, question_truncated: request.question_truncated === true, scope: request.scope, options: request.options, approvable: Boolean(request.question_full) && request.question_truncated !== true && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_title) && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_marker) && job.kind === 'task' } : {}),
     // agybird:desktop-end
   }));
   let describe = (request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`;

