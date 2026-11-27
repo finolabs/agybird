@@ -230,8 +230,9 @@ function workTree(cwd) {
 // `--resume-dialog <question> --resume-title <conversation title>` belong to this
 // runner only: after the user's yes, it answers the prompt the app is waiting on
 // in that conversation instead of sending a task. `--resume-ack <file>` is
-// created the moment the answer was (or may have been) pressed, before the turn
-// is awaited, so the approval is spent even if the run is then killed.
+// created before the answer's step starts, so the approval is spent however the
+// run ends from then on, a kill during the step included; only a refusal the
+// bridge reports before any press removes it again.
 function takeResume(argv) {
   let rest = argv;
   const take = (flag) => {
@@ -310,14 +311,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const markApp = () => {
     if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation);
   };
-  // Created once, never written through an existing file or link.
+  // The answer's record, created before its step starts and never written
+  // through an existing file or link. One that cannot be created, or that
+  // exists already, stops the run before anything is pressed.
   const acknowledge = (resume) => {
     if (!resume.ack) return;
     try {
       writeFileSync(resume.ack, `${resume.answer}\n`, { mode: 0o600, flag: 'wx' });
     } catch (error) {
-      if (error.code !== 'EEXIST') warnings.push('The answer could not be recorded as given at once; do not approve this request again.');
+      if (error.code === 'EEXIST') throw new Error('This request was already answered (its answer is on record); nothing was pressed. If the app asks again, approve the new request it reports.');
+      throw new Error(`The answer could not be recorded before it was pressed (${error.code ?? error.message}), so nothing was pressed.`);
     }
+  };
+  // Only an answer step refused before any press gives the record back, so
+  // the request can be approved again.
+  const withdraw = (resume) => {
+    if (resume.ack) rmSync(resume.ack, { force: true });
   };
 
   // Puts back what clipboard-get saved: its text and its own markers. Anything
@@ -419,26 +428,29 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       markApp();
       // A cancel before the call starts presses nothing; one during it may have.
       if (cancelled) throw new Cancelled();
+      // The record goes first: the step may press and this run be killed
+      // before it returns, and the approval must be spent then too. Nothing
+      // awaits between the record and the step's start.
+      acknowledge(resume);
       try {
         await bridge(['answer', resume.answer, resume.question, conversation]);
       } catch (error) {
-        // As with Send: refused before any press, nothing was answered; a
-        // timeout, a crash or a cancel may have pressed it, so the app may be
-        // running and the answer is spent, said to be uncertain.
-        if (error instanceof Cancelled || !/ failed: (?:refused|usage|not_found|other_conversation|question_changed|several_dialogs|press_failed|not_trusted)/.test(error.message)) {
+        // As with Send: a refusal the bridge reports before any press answered
+        // nothing, so its record is withdrawn; a timeout, a crash, a cancel or
+        // a failed press may have pressed it, so the app may be running and the
+        // answer stays spent, said to be uncertain.
+        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|question_changed|several_dialogs|not_trusted)/.test(error.message)) {
+          withdraw(resume);
+        } else {
           sent = true;
           evidence.answered = resume.answer;
           evidence.answer_uncertain = true;
-          acknowledge(resume);
           warnings.push(`The answer may have been pressed in the Antigravity app before the run lost track of it (${error.message || 'cancelled'}); it counts as given, and the run was stopped there if it could be.`);
         }
         throw error;
       }
       sent = true;
-      // Tells the companion the answer was pressed, so only now is it spent:
-      // at once through the ack file, and in the envelope.
       evidence.answered = resume.answer;
-      acknowledge(resume);
     } else {
       saved = { clipboard: await bridge(['clipboard-get']), frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app

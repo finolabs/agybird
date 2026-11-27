@@ -278,6 +278,40 @@ test('an approval interrupted after its answer was pressed is spent, so it canno
   assert.equal(context.calls().filter((call) => call.startsWith('answer')).length, 1);
 });
 
+// The pid of the runner the approval of `approval` started, from the job store.
+function approvalRunner(context) {
+  const store = readdirSync(context.env.AGYBIRD_JOBS_DIR).map((name) => join(context.env.AGYBIRD_JOBS_DIR, name)).find((path) => !path.endsWith('.json'));
+  for (const name of readdirSync(store).filter((entry) => /^job-[^.]+\.json$/.test(entry))) {
+    const record = JSON.parse(readFileSync(join(store, name), 'utf8'));
+    if (record.runnerPid && record.request?.runnerArgs?.includes('--resume-ack')) return record.runnerPid;
+  }
+  return null;
+}
+
+test('an approval whose runner is killed while its answer step is in flight stays spent', { skip: process.platform === 'win32' }, async () => {
+  const context = workspace({ dialog: DIALOG, reply: 'listed' });
+  const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const approval = `${first.job.id}:0`;
+  // The answer step takes a while, and its press lands after the runner is gone.
+  context.set({ stuck: true, delays: { answer: 1_500 } });
+  const child = spawn(process.execPath, [COMPANION, 'task', '--approve', approval, '--json'], { cwd: context.cwd, env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  child.stdin.end();
+  const exited = new Promise((done) => child.on('close', (code) => done(code)));
+  await waitForCall(context, 'answer');
+  const runner = approvalRunner(context);
+  assert.ok(runner, 'the approval started a runner');
+  process.kill(runner, 'SIGKILL');
+  await exited;
+  for (let waited = 0; context.fake().answered !== '1'; waited += 50) {
+    assert.ok(waited < 15_000, 'the answer step never pressed');
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  const again = await context.companion(['task', '--approve', approval, '--json']);
+  assert.notEqual(again.code, 0);
+  assert.match(again.stderr, /already answered/);
+  assert.equal(context.calls().filter((call) => call.startsWith('answer')).length, 1);
+});
+
 test('a desktop request is approved once, and can be declined instead', async () => {
   const context = workspace({ dialog: DIALOG, reply: 'listed' });
   const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));

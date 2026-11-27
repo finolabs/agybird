@@ -538,11 +538,42 @@ test('a resumed run records its pressed answer at once, before it waits for the 
   assert.equal(readFileSync(ack, 'utf8').trim(), '1');
 });
 
+test('the answer is recorded as spent before its step starts, so a kill during it leaves it spent', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, delays: { answer: 3_000 } });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const child = spawn(process.execPath, [RUNNER, '--category', 'code', '--cwd', context.cwd, '--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack], { env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
+  child.stdin.end('Go on.');
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  let recorded;
+  try {
+    await waitFor(context, 'answer');
+    assert.equal(context.fake().answered, undefined, 'the answer step is still in flight');
+    recorded = existsSync(ack);
+  } finally {
+    child.kill('SIGKILL');
+    await exited;
+  }
+  assert.equal(recorded, true, 'recorded before the answer step');
+  assert.equal(existsSync(ack), true);
+});
+
+test('an answer that already has a record is never pressed again', async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  writeFileSync(ack, '1\n');
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack]);
+  assert.equal(envelope.status, 'error');
+  assert.ok(!names(context).includes('answer'));
+  assert.equal(readFileSync(ack, 'utf8'), '1\n');
+});
+
 test('an answer refused before any press is not spent and stops nothing', async () => {
   const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
-  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-ack', ack]);
   assert.equal(envelope.status, 'error');
   assert.equal(envelope.evidence.answered, undefined);
+  assert.equal(existsSync(ack), false, 'the record of an answer refused before any press is withdrawn');
   assert.ok(!names(context).includes('stop'));
   assert.equal(existsSync(lockFile(context)), false);
 });

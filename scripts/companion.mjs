@@ -171,9 +171,10 @@ function forwardToDesktopRunner(child, signal) {
   }
 }
 
-// The file the desktop runner creates the moment it pressed (or may have
-// pressed) the answer to request `index` of job `id`, before it waits for the
-// turn, so the approval is spent even if this process or the runner is killed.
+// The file the desktop runner creates before it starts to press the answer to
+// request `index` of job `id`, so the approval is spent even if this process or
+// the runner is killed during the press; the runner removes it only when the
+// app refused the answer before any press.
 function answerMark(directory, id, index) {
   return join(directory, `${id}.answered-${index}`);
 }
@@ -704,9 +705,10 @@ async function commandTask(argv, env) {
     if (!approval.question) return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
     // An answer is given once; a later prompt with the same words is a new
     // request. The request is claimed under the job lock, so two approvals
-    // cannot both answer it, and it is spent only once the runner reports that
-    // it pressed the answer: a run blocked before that can be approved again.
-    // The runner's answer mark spends it at once, whatever ends this process.
+    // cannot both answer it. The runner's answer mark, created before it
+    // starts to press, spends it whatever ends either process; a run blocked
+    // before that, or whose answer the app refused before any press, leaves no
+    // mark, so the request can be approved again.
     withJobLock(store, approval.id, () => {
       const current = readJob(store, approval.id);
       if (desktopAnswered(store, current, approval.index)) throw new Error(`Request ${approval.index} of ${approval.id} was already answered; if the app asks again, approve the new request it reports.`);
