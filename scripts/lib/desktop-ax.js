@@ -42,8 +42,24 @@ function walk(element, nodes, depth = 0) {
   if (nodes.length >= MAX_NODES) return nodes;
   const node = { role: text(get(element, 'AXRole')), label: text(get(element, 'AXDescription')) || text(get(element, 'AXTitle')), depth, element };
   nodes.push(node);
+  // The composer holds one node per line of a pasted prompt; only paste-input reads them.
+  if (node.role === 'AXTextArea' && node.label === 'Message input') return nodes;
   for (const child of children(element)) walk(child, nodes, depth + 1);
   return nodes;
+}
+
+// AXValue of the composer is cut after a few thousand characters, so its text
+// is read from the line nodes inside it.
+function inputText(input) {
+  const lines = [];
+  const visit = (element) => {
+    for (const child of children(element)) {
+      if (text(get(child, 'AXRole')) === 'AXStaticText') lines.push(text(get(child, 'AXValue')));
+      visit(child);
+    }
+  };
+  visit(input.element);
+  return lines.length ? lines.join('\n') : text(get(input.element, 'AXValue'));
 }
 
 function runningApp() {
@@ -214,11 +230,11 @@ const COMMANDS = {
   'paste-input'(app) {
     const input = focusInput(app);
     menu(app, 'Edit', 'Paste');
-    // The paste lands asynchronously: read until the value is non-blank and steady.
+    // The paste lands asynchronously: read until the text is non-blank and steady.
     let value = '';
     for (let tries = 0; tries < 30; tries += 1) {
-      delay(0.1);
-      const next = text(get(input.element, 'AXValue'));
+      delay(0.2);
+      const next = inputText(input);
       if (next.trim() && next === value) break;
       value = next;
     }

@@ -94,7 +94,9 @@ function takeResume(argv) {
   return { argv: [...argv.slice(0, index), ...argv.slice(index + 2)], question };
 }
 
-const normalized = (text) => String(text ?? '').replace(/\s+/g, ' ').trim();
+// Links in the composer are separate nodes, so whitespace around them differs;
+// every other character must read back in order.
+const normalized = (text) => String(text ?? '').replace(/\s+/g, '');
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
   // A signal only marks the run cancelled; the run itself stops at its next step,
@@ -132,6 +134,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       await (clipboard === null ? call(['clipboard-set', '--empty']) : call(['clipboard-set'], { input: clipboard })).catch(() => warnings.push('The clipboard could not be restored.'));
     }
     if (frontmost && frontmost !== BUNDLE_ID) await call(['restore', frontmost]).catch(() => warnings.push(`${frontmost} could not be brought back to the front.`));
+  };
+  // Clearing needs the app in front, which the user may have changed meanwhile.
+  const clearInput = async () => {
+    try {
+      await call(['front']);
+      await call(['clear-input']);
+    } catch {
+      warnings.push('The prompt may still be in the Antigravity app input; clear it there before sending anything.');
+    }
   };
   const cleanup = async () => {
     await restore();
@@ -191,9 +202,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
       pasted = true;
       await bridge(['clipboard-set'], { input: prompt });
-      const input = await bridge(['paste-input']);
+      // A long prompt (a review's diff) takes seconds to read back line by line.
+    const input = await bridge(['paste-input'], { timeoutMs: 120_000 });
       if (normalized(input.value) !== normalized(prompt)) {
-        await bridge(['clear-input']).catch(() => {});
+        await clearInput();
         throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
       }
       // Marked first: a cancel that lands while Send is pressed must still stop the run.
@@ -203,7 +215,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       } catch (error) {
         if (error instanceof Cancelled) throw error;
         sent = false;
-        await call(['clear-input']).catch(() => {});
+        await clearInput();
         throw error;
       }
       await restore();
