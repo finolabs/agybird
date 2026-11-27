@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-import { cancelWaitMs } from '../../scripts/companion.mjs';
+import { cancelWaitMs, DESKTOP_STOP_GRACE_MS } from '../../scripts/companion.mjs';
 import { companionEnv, runCompanion } from './helpers.mjs';
 
 const FAKE = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'fake-desktop-bridge.mjs');
@@ -232,8 +232,10 @@ test('a signal to a foreground desktop task gives the runner its grace to stop t
 });
 
 test('cancel waits long enough for a desktop runner to use its whole grace', () => {
-  // SIGTERM at the next worker poll (1 s), 12 s of grace, then killTree's own 3 s.
-  assert.ok(cancelWaitMs({ request: { transport: 'desktop' } }) > 16_000);
+  // The runner's cleanup calls are bounded to 16 s together; the grace exceeds them.
+  assert.ok(DESKTOP_STOP_GRACE_MS > 16_000);
+  // SIGTERM at the next worker poll (1 s), the grace, then killTree's own 3 s.
+  assert.ok(cancelWaitMs({ request: { transport: 'desktop' } }) > 1_000 + DESKTOP_STOP_GRACE_MS + 3_000);
   assert.equal(cancelWaitMs({ request: {} }), 15_000);
 });
 

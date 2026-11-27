@@ -38,6 +38,13 @@ class OtherConversation extends Error {
 
 // Send waits in the app for the new conversation's title, which identifies it.
 const SEND_TIMEOUT_MS = 45_000;
+// The bridge calls of cleanup are bounded, so that all a signalled run may
+// still make fit the 20 s the companion gives it before it kills the run: a
+// decline and Stop (5 s each), then the clipboard and the front app (3 s
+// each), 16 s at most; clearing the composer (3 + 5 s) replaces Stop. The lock
+// already says the app may run before any of them (markLockForApp).
+const PRESS_TIMEOUT_MS = 5_000;
+const RESTORE_TIMEOUT_MS = 3_000;
 
 function processIsRunning(pid) {
   try {
@@ -69,7 +76,11 @@ function readLock(path) {
   }
 }
 
-function lockHeld(path, holder) {
+const sameLock = (a, b) => Boolean(a && b) && a.pid === b.pid && a.conversation === b.conversation && a.expiresAt === b.expiresAt;
+
+// `ended` is an app lock the app was seen to be done with: its conversation on
+// screen with no run.
+function lockHeld(path, holder, ended = null) {
   if (holder.unreadable) {
     try {
       return Date.now() - statSync(path).mtimeMs < UNREADABLE_LOCK_MS;
@@ -77,10 +88,22 @@ function lockHeld(path, holder) {
       return false;
     }
   }
+  const alive = Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid);
+  // Marked from Send on: the app may run the task whether or not its run is
+  // still alive, and the app sets no deadline on it, so no expiry frees it.
+  // Only evidence does: the app showing its conversation with no run, once its
+  // run is gone, or the user removing the lock.
+  if (holder.app === true) return alive || !sameLock(holder, ended);
   if (Number.isFinite(holder.expiresAt) && Date.now() > holder.expiresAt) return false;
-  // Kept by a run that ended while the app may still be running its task.
-  if (holder.app === true) return Number.isFinite(holder.expiresAt);
-  return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid);
+  return alive;
+}
+
+// The lock of a run that is gone and left the app possibly running, with the
+// conversation to check, if it knew one.
+function abandonedAppLock(path) {
+  const holder = readLock(path);
+  if (holder?.app !== true || !holder.conversation) return null;
+  return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid) ? null : holder;
 }
 
 // A takeover guard older than this was left by a run that died while holding it.
@@ -107,7 +130,8 @@ function takeGuard(guard) {
 // the takeover guard, after it reads the lock again under the guard. No run can
 // then remove a lock another run has just taken, so at most one run holds it.
 // `hooks.stale` runs once a run holds the guard over a stale lock (tests only).
-export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {} } = {}) {
+// `ended` is an app lock the caller saw the app to be done with.
+export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {}, ended = null } = {}) {
   mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
   const content = JSON.stringify({ pid, expiresAt });
   const temporary = `${path}.${pid}.tmp`;
@@ -126,31 +150,38 @@ export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {} } =
       rmSync(temporary, { force: true });
     }
   };
+  let holder = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (link()) return path;
-    const holder = readLock(path);
+    holder = readLock(path);
     if (holder === null) continue;
-    if (lockHeld(path, holder) || !takeGuard(guard)) break;
+    if (lockHeld(path, holder, ended) || !takeGuard(guard)) break;
     try {
       hooks.stale?.();
       const again = readLock(path);
-      if (again !== null && lockHeld(path, again)) break;
+      if (again !== null && lockHeld(path, again, ended)) break;
       rmSync(path, { force: true });
       if (link()) return path;
     } finally {
       rmSync(guard, { force: true });
     }
   }
+  if (holder?.app === true && !(Number.isInteger(holder.pid) && processIsRunning(holder.pid))) {
+    const where = holder.conversation ? ` in its conversation ${JSON.stringify(holder.conversation)}; once the app shows that conversation with no run, retry` : '';
+    throw new Blocked('locked', `An earlier desktop run may still be going in the Antigravity app${where}. Or, once you are sure the app runs nothing for it, remove ${path}.`);
+  }
   throw new Blocked('locked', 'Another desktop run is using the Antigravity app; retry once it finishes.');
 }
 
-// After a run that could not press Stop, its lock stays, past the end of this
-// process, until the run's own deadline: the app may still run that task.
-function keepLockForApp(path, expiresAt) {
+// From just before Send (or an answer) is pressed, the lock says the app may
+// run this task, with its conversation once known, so it outlives this process
+// however it ends, a kill during cleanup included. Released only by a run that
+// saw the task end, by evidence (lockHeld), or by the user.
+function markLockForApp(path, expiresAt, conversation) {
   if (readLock(path)?.pid !== process.pid) return;
   const temporary = `${path}.${process.pid}.tmp`;
   rmSync(temporary, { force: true });
-  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, app: true }), { mode: 0o600, flag: 'wx' });
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, app: true, conversation }), { mode: 0o600, flag: 'wx' });
   renameSync(temporary, path);
 }
 
@@ -266,19 +297,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let turnOver = false;
   // Set when the app may still run the task but Stop could not be pressed.
   let holdLock = false;
-  let runDeadline = null;
+  let lockExpiresAt = null;
   let finished = false;
   // The title of the run's own conversation, as the Send call read it right
   // after pressing Send; null while it is the untitled new conversation.
   let conversation = null;
   const expected = () => conversation ?? UNTITLED;
+  const markApp = () => {
+    if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation);
+  };
 
   // Puts back what clipboard-get saved: its text and its own markers. Anything
   // else it held (an image, a file, rich text) cannot be, and the run says so.
   const putClipboardBack = async (clipboard) => {
     const lost = 'The clipboard held more than text (an image, a file or rich text); only its text was put back.';
     if (clipboard.other && !warnings.includes(lost)) warnings.push(lost);
-    await call(['clipboard-restore'], { input: JSON.stringify({ text: clipboard.text ?? null, markers: clipboard.markers ?? [] }) }).catch(() => warnings.push('The clipboard could not be restored.'));
+    await call(['clipboard-restore'], { input: JSON.stringify({ text: clipboard.text ?? null, markers: clipboard.markers ?? [] }), timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => warnings.push('The clipboard could not be restored.'));
   };
   // The clipboard holds the prompt from clipboard-set until the paste is read back.
   let clipboardHeld = false;
@@ -292,20 +326,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     await restoreClipboard();
     const { frontmost } = saved;
     saved = null;
-    if (frontmost && frontmost !== BUNDLE_ID) await call(['restore', frontmost]).catch(() => warnings.push(`${frontmost} could not be brought back to the front.`));
+    if (frontmost && frontmost !== BUNDLE_ID) await call(['restore', frontmost], { timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => warnings.push(`${frontmost} could not be brought back to the front.`));
   };
   // Clearing needs the app in front, which the user may have changed meanwhile.
   const clearInput = async () => {
     try {
-      await call(['front']);
-      await call(['clear-input', UNTITLED]);
+      await call(['front'], { timeoutMs: RESTORE_TIMEOUT_MS });
+      await call(['clear-input', UNTITLED], { timeoutMs: PRESS_TIMEOUT_MS });
     } catch {
       warnings.push('The prompt may still be in the Antigravity app input; clear it there before sending anything.');
     }
   };
+  // A lock kept for the app (holdLock) was marked before the press and stays.
   const cleanup = async () => {
     await restore();
-    if (lockPath) (holdLock ? keepLockForApp(lockPath, runDeadline) : releaseLock(lockPath));
+    if (lockPath && !holdLock) releaseLock(lockPath);
     lockPath = null;
   };
   const emit = (value) => {
@@ -338,8 +373,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     evidence.app_version = probe.version;
     checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
     const project = projectName(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
-    runDeadline = Date.now() + timeoutToMilliseconds(options.timeout);
-    lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'), runDeadline + LOCK_MARGIN_MS);
+    const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
+    // A lock an earlier run kept for the app is freed only by evidence that its
+    // task ended: the app showing that run's conversation with no run going.
+    const abandoned = abandonedAppLock(lockFile);
+    let ended = null;
+    if (abandoned) {
+      const shown = await bridge(['snapshot']);
+      if (shown.title === abandoned.conversation && !shown.running && !shown.dialog) ended = abandoned;
+    }
+    lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
+    lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
     const before = workTree(options.cwd);
     // The reply already on screen when the turn starts; a resumed conversation has one.
     let baselineReply = null;
@@ -359,6 +403,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // A refused answer pressed nothing and the app still waits, so only a
       // pressed one (or one cut off by a cancel) counts as sent.
       answering = true;
+      markApp();
       await bridge(['answer', resume.answer, resume.question, conversation]);
       sent = true;
       // Tells the companion the answer was pressed, so only now is it spent.
@@ -388,7 +433,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (normalized(input.value) !== normalized(prompt)) {
         throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
       }
-      // Marked first: a cancel that lands while Send is pressed must still stop the run.
+      // Marked first: a cancel that lands while Send is pressed must still stop
+      // the run, and a run killed from here on leaves the lock to the app task.
+      markApp();
       sent = true;
       let pressed;
       try {
@@ -407,6 +454,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         if (!String(pressed.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(pressed.title);
         conversation = pressed.title;
         evidence.conversation_title = conversation;
+        markApp();
       }
       await restore();
     }
@@ -445,7 +493,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (state.dialog) {
         if (changesSince() && options.mode === 'read') {
           // Declining lets the agent go on, so the run is then stopped on the way out.
-          await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected()]).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
+          await call(['answer', 'Skip', permissionRequest(state.dialog).question_full, expected()], { timeoutMs: PRESS_TIMEOUT_MS }).catch(() => warnings.push('The permission prompt could not be declined; answer it in the app.'));
           throw new Error('The run changed the working tree in read mode before it asked for a permission; Agybird declined the prompt.');
         }
         turnOver = true;
@@ -505,12 +553,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // before the lock goes. Another conversation on screen is never pressed.
     const running = (sent || (answering && cancelled)) && !turnOver;
     let stopped = false;
-    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected()]).then(() => true, () => false);
+    if (running) markApp();
+    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected()], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
     if (running && !stopped) {
+      // The lock, marked for the app before the press, stays until evidence frees it.
       holdLock = Boolean(lockPath);
-      // Until the run's deadline, and a few minutes at least after a timeout.
-      runDeadline = Math.max(runDeadline ?? 0, Date.now() + LOCK_MARGIN_MS);
-      warnings.push(`The run may still be going in the Antigravity app: Stop could not be pressed in its conversation. Stop it there.${holdLock ? ` Other desktop runs are refused until ${new Date(runDeadline).toLocaleTimeString()}, or until you remove ${lockPath} once the app shows no run.` : ''}`);
+      const until = conversation
+        ? ` Other desktop runs are refused until one finds the app showing ${JSON.stringify(conversation)} with no run, or until you remove ${lockPath} once it shows none.`
+        : ` Other desktop runs are refused until you remove ${lockPath} once the app shows no run.`;
+      warnings.push(`The run may still be going in the Antigravity app: Stop could not be pressed in its conversation. Stop it there.${holdLock ? until : ''}`);
     }
     if (pasted && !sent) await clearInput();
     if (cancelled) {

@@ -40,7 +40,9 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 // agybird:desktop-start
 export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
-const DESKTOP_STOP_GRACE_MS = 12_000;
+// Longer than the most a signalled desktop runner's cleanup can take: its
+// bridge calls are bounded to 16 s together (desktop.mjs).
+export const DESKTOP_STOP_GRACE_MS = 20_000;
 // agybird:desktop-end
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
@@ -274,7 +276,7 @@ async function executeJob(directory, job, env) {
   let stopRunner = (pid) => killTree(pid);
   // agybird:desktop-start
   // The desktop runner presses Stop in the app and puts the clipboard and the front
-  // app back before it exits, a few accessibility calls of about a second each. It
+  // app back before it exits, accessibility calls bounded to fit the grace. It
   // gets SIGTERM alone and time to do that while this loop keeps reaping; only a
   // runner still alive after the grace has its whole group killed.
   let termAt = null;

@@ -19,6 +19,8 @@
 // conversation untitled; Send then returns no title), switchWhileUntitled (the
 // app shows another conversation once those are over), titleBeforeSend (the
 // title shown before send instead of the untitled new conversation),
+// earlier ({ title, running }: the conversation of an earlier run on screen
+// until a new conversation opens),
 // conversations (the names the sidebar lists before send; default
 // ['Other Chat']), switchDuringNaming (the name of a listed conversation the
 // user opens while the app is still naming the run's, during Send's wait),
@@ -91,6 +93,7 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
 }
 
 function title() {
+  if (!state.sent && state.earlier) return state.earlier.title;
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
   if (state.switched) return `${state.switchDuringNaming} - ${state.project} - Antigravity`;
   if (state.untitledLeft > 0 || state.namingLeft > 0) return 'Antigravity';
@@ -171,7 +174,7 @@ function answer() {
         model: state.model,
         project: state.project,
         title: shownTitle,
-        running: running || Boolean(dialog),
+        running: running || Boolean(dialog) || Boolean(!state.sent && state.earlier?.running),
         sendable: !running && !dialog,
         dialog,
         reply,
@@ -179,6 +182,7 @@ function answer() {
     }
     case 'new-conversation':
       state.project = args[0];
+      delete state.earlier;
       return { ok: true };
     case 'front':
       state.frontmost = 'com.google.antigravity';

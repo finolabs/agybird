@@ -500,3 +500,47 @@ test('declining answers Skip in the conversation that asked and reads the reply'
   assert.equal(context.fake().answered, 'Skip');
   assert.equal(envelope.response, 'skipped it');
 });
+
+// A lock kept for an app task by a run that is gone (its pid is not running).
+const appLock = (context, expiresAt) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt, app: true, conversation: TITLE }));
+
+test('a kept app lock past its time still refuses a run while its conversation shows a run', async () => {
+  const context = setup({ earlier: { title: TITLE, running: true } });
+  appLock(context, Date.now() - 1);
+  const { envelope } = await run(context);
+  assert.equal(envelope.evidence.blocked_reason, 'locked');
+  assert.ok(envelope.warnings.some((warning) => warning.includes(lockFile(context))), envelope.warnings.join(' | '));
+  assert.ok(!names(context).includes('send'));
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+});
+
+test('a kept app lock is released once the app shows its conversation with no run', async () => {
+  const context = setup({ earlier: { title: TITLE, running: false } });
+  appLock(context, Date.now() + 60 * 60_000);
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assertCleanedUp(context);
+  // Another conversation on screen is no evidence either way.
+  const other = setup({ earlier: { title: 'Other Chat - ws - Antigravity', running: false } });
+  appLock(other, Date.now() - 1);
+  assert.equal((await run(other)).envelope.evidence.blocked_reason, 'locked');
+});
+
+test('a stalled Stop finds the app lock already kept, and cleanup ends on its own within the grace', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ stuck: true, delays: { stop: 60_000 } });
+  const { child, done } = start(context);
+  while (!names(context).includes('send') || !names(context).slice(names(context).indexOf('send') + 1).includes('snapshot')) await new Promise((resolve) => setTimeout(resolve, 20));
+  const started = Date.now();
+  child.kill('SIGTERM');
+  await waitFor(context, 'stop');
+  // Were the runner killed now, while Stop stalls, the lock must already say the app may run.
+  const kept = JSON.parse(readFileSync(lockFile(context), 'utf8'));
+  assert.equal(kept.app, true);
+  assert.equal(kept.conversation, TITLE);
+  const { envelope } = await done;
+  assert.ok(Date.now() - started < 12_000, `cleanup took ${Date.now() - started} ms`);
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)));
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(context.fake().frontmost, 'com.example.host');
+});
