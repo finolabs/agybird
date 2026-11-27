@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -235,6 +235,24 @@ test('cancel waits long enough for a desktop runner to use its whole grace', () 
   // SIGTERM at the next worker poll (1 s), 12 s of grace, then killTree's own 3 s.
   assert.ok(cancelWaitMs({ request: { transport: 'desktop' } }) > 16_000);
   assert.equal(cancelWaitMs({ request: {} }), 15_000);
+});
+
+test('an approval whose run is blocked before it presses the answer can be retried', async () => {
+  const context = workspace({ dialog: DIALOG, reply: 'listed' });
+  const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const approval = `${first.job.id}:0`;
+  const lock = join(context.env.AGYBIRD_STATE_DIR, 'desktop.lock');
+  writeFileSync(lock, String(process.pid));
+  const blocked = json(await context.companion(['task', '--approve', approval, '--json']));
+  assert.equal(blocked.envelope.evidence.blocked_reason, 'locked');
+  assert.equal(blocked.envelope.evidence.answered, undefined);
+  rmSync(lock);
+  const retried = json(await context.companion(['task', '--approve', approval, '--json']));
+  assert.equal(retried.envelope.status, 'success', JSON.stringify(retried.envelope.warnings));
+  assert.equal(retried.envelope.evidence.answered, '1');
+  assert.equal(context.calls().filter((call) => call.startsWith('answer')).length, 1);
+  const again = await context.companion(['task', '--approve', approval, '--json']);
+  assert.match(again.stderr, /already answered/);
 });
 
 test('a desktop request is approved once, and can be declined instead', async () => {

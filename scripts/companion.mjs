@@ -32,6 +32,7 @@ import { resolveAgyBinary } from './agybird.mjs';
 import { collectScope } from './lib/scope.mjs';
 import { chooseModel, readQuota, TIERS } from './lib/quota.mjs';
 // agybird:desktop-start
+import { processAlive, withJobLock } from './lib/jobs.mjs';
 import { assertTransportSupported, checkTransport, resolveTransport } from './lib/transport.mjs';
 // agybird:desktop-end
 
@@ -623,7 +624,7 @@ export function approvedRules(directory, approvals = []) {
       if ((job.answered ?? []).includes(Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
       const title = envelope.evidence?.conversation_title;
       if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
-      return { rules: [], transport: 'desktop', id, index: Number(index), answered: job.answered ?? [], question: request.question_full, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+      return { rules: [], transport: 'desktop', id, index: Number(index), question: request.question_full, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
     }
     // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
@@ -682,11 +683,34 @@ async function commandTask(argv, env) {
     if (approval.question) {
       runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title);
       if (options.decline) runnerArgs.push('--resume-answer', 'Skip');
-      // An answer is given once; a later prompt with the same words is a new request.
-      updateJob(storeFor(cwd, env), approval.id, { answered: [...approval.answered, approval.index] });
     }
     const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
-    return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
+    if (!approval.question) return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
+    // An answer is given once; a later prompt with the same words is a new
+    // request. The request is claimed under the job lock, so two approvals
+    // cannot both answer it, and it is spent only once the runner reports that
+    // it pressed the answer: a run blocked before that can be approved again.
+    const store = storeFor(cwd, env);
+    withJobLock(store, approval.id, () => {
+      const current = readJob(store, approval.id);
+      if ((current.answered ?? []).includes(approval.index)) throw new Error(`Request ${approval.index} of ${approval.id} was already answered; if the app asks again, approve the new request it reports.`);
+      const claim = current.answering?.[approval.index];
+      if (claim && claim !== process.pid && processAlive(claim)) throw new Error(`Request ${approval.index} of ${approval.id} is being answered by another approval; wait for it.`);
+      writeJob(store, { ...current, answering: { ...current.answering, [approval.index]: process.pid } });
+    });
+    let result;
+    try {
+      result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env });
+    } finally {
+      withJobLock(store, approval.id, () => {
+        const current = readJob(store, approval.id);
+        const answering = { ...current.answering };
+        delete answering[approval.index];
+        const pressed = Boolean(result?.envelope?.evidence?.answered);
+        writeJob(store, { ...current, answering, ...(pressed ? { answered: [...new Set([...(current.answered ?? []), approval.index])] } : {}) });
+      });
+    }
+    return finishTask(options, result);
   }
   // agybird:desktop-end
   const category = approval.category ?? options.category ?? 'code';

@@ -348,6 +348,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       answering = true;
       await bridge(['answer', resume.answer, resume.question, conversation]);
       sent = true;
+      // Tells the companion the answer was pressed, so only now is it spent.
+      evidence.answered = resume.answer;
     } else {
       saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
