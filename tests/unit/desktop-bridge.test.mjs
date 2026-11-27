@@ -19,7 +19,7 @@ function fake(state = {}) {
 }
 
 test('the wrapper returns each command\'s JSON line', async () => {
-  const { env, state } = fake({ runningPolls: 1, reply: 'READY' });
+  const { env, state } = fake({ sent: true, runningPolls: 1, reply: 'READY' });
   assert.deepEqual(await callBridge(['probe'], { env }), { trusted: true, pid: 4242, version: '2.35.2', frontmost: 'com.example.host' });
   assert.equal((await callBridge(['snapshot'], { env })).running, true);
   const done = await callBridge(['snapshot'], { env });

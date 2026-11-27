@@ -38,11 +38,11 @@ function children(element) {
   return out;
 }
 
-function walk(element, nodes) {
+function walk(element, nodes, depth = 0) {
   if (nodes.length >= MAX_NODES) return nodes;
-  const node = { role: text(get(element, 'AXRole')), label: text(get(element, 'AXDescription')) || text(get(element, 'AXTitle')), element };
+  const node = { role: text(get(element, 'AXRole')), label: text(get(element, 'AXDescription')) || text(get(element, 'AXTitle')), depth, element };
   nodes.push(node);
-  for (const child of children(element)) walk(child, nodes);
+  for (const child of children(element)) walk(child, nodes, depth + 1);
   return nodes;
 }
 
@@ -95,13 +95,22 @@ function dialog(nodes) {
   return { question, options };
 }
 
+// The reply is the group right after the last `Agent said` heading, at the
+// heading's own depth; the response actions that follow are a separate group.
 function reply(nodes) {
-  let last = -1;
+  let heading = -1;
   nodes.forEach((node, index) => {
-    if (node.role === 'AXStaticText' && staticText(node) === 'Agent said') last = index;
+    if (node.role === 'AXHeading' && node.label === 'Agent said') heading = index;
   });
-  if (last < 0) return null;
-  return nodes.slice(last + 1).filter((node) => node.role === 'AXStaticText').map(staticText).filter(Boolean).join('\n');
+  if (heading < 0) return null;
+  const depth = nodes[heading].depth;
+  const start = nodes.findIndex((node, index) => index > heading && node.depth <= depth);
+  if (start < 0 || nodes[start].depth < depth || nodes[start].role !== 'AXGroup') return null;
+  const lines = [];
+  for (let index = start + 1; index < nodes.length && nodes[index].depth > depth; index += 1) {
+    if (nodes[index].role === 'AXStaticText') lines.push(staticText(nodes[index]));
+  }
+  return lines.join('\n');
 }
 
 function snapshot(nodes) {
@@ -144,7 +153,27 @@ function focusInput(app) {
   return input;
 }
 
+function readStdin() {
+  const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+  return $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
+}
+
+// Only the plain-text flavour is saved and put back.
+const CLIPBOARD = {
+  'clipboard-get'() {
+    const value = $.NSPasteboard.generalPasteboard.stringForType($.NSPasteboardTypeString);
+    return { text: value && !value.isNil() ? value.js : null };
+  },
+  'clipboard-set'(empty) {
+    const board = $.NSPasteboard.generalPasteboard;
+    board.clearContents;
+    if (empty !== '--empty') board.setStringForType($(readStdin()), $.NSPasteboardTypeString);
+    return { ok: true };
+  },
+};
+
 const COMMANDS = {
+  ...CLIPBOARD,
   probe() {
     const app = runningApp();
     const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
@@ -175,14 +204,25 @@ const COMMANDS = {
   },
   restore(app, bundleId) {
     if (!/^[A-Za-z0-9.-]+$/.test(bundleId || '')) throw new Error('usage: restore <bundle id>');
-    const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleId);
-    if (!apps.count) return { ok: false };
-    return { ok: apps.objectAtIndex(0).activateWithOptions($.NSApplicationActivateIgnoringOtherApps) };
+    const shell = Application.currentApplication();
+    shell.includeStandardAdditions = true;
+    shell.doShellScript(`/usr/bin/open -b ${bundleId}`);
+    delay(0.3);
+    const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+    return { ok: Boolean(front) && text(front.bundleIdentifier) === bundleId };
   },
   'paste-input'(app) {
     const input = focusInput(app);
     menu(app, 'Edit', 'Paste');
-    return { ok: true, value: text(get(input.element, 'AXValue')) };
+    // The paste lands asynchronously: read until the value is non-blank and steady.
+    let value = '';
+    for (let tries = 0; tries < 30; tries += 1) {
+      delay(0.1);
+      const next = text(get(input.element, 'AXValue'));
+      if (next.trim() && next === value) break;
+      value = next;
+    }
+    return { ok: true, value };
   },
   'clear-input'(app) {
     focusInput(app);
@@ -191,7 +231,13 @@ const COMMANDS = {
     return { ok: true };
   },
   send(app) {
-    press(find(tree(app), 'AXButton', 'Send message'), 'Send message');
+    // The button appears only once the input holds text, which can lag the paste.
+    let button = null;
+    for (let tries = 0; tries < 10 && !button; tries += 1) {
+      if (tries > 0) delay(0.2);
+      button = find(tree(app), 'AXButton', 'Send message');
+    }
+    press(button, 'Send message');
     return { ok: true };
   },
   answer(app, option) {
@@ -206,6 +252,23 @@ const COMMANDS = {
     }
     return { ok: true };
   },
+  // Puts the last reply, as the app's own Markdown, on the clipboard.
+  'copy-reply'(app) {
+    const nodes = tree(app);
+    let group = -1;
+    nodes.forEach((node, index) => {
+      if (node.role === 'AXGroup' && node.label === 'Response actions') group = index;
+    });
+    if (group < 0) throw new Error('not_found: Response actions');
+    const depth = nodes[group].depth;
+    let button = null;
+    for (let index = group + 1; index < nodes.length && nodes[index].depth > depth && !button; index += 1) {
+      if (nodes[index].role === 'AXButton' && nodes[index].label === 'Copy') button = nodes[index];
+    }
+    press(button, 'Copy');
+    delay(0.2);
+    return { ok: true };
+  },
   stop(app) {
     press(find(tree(app), 'AXButton', 'Stop execution'), 'Stop execution');
     return { ok: true };
@@ -216,7 +279,7 @@ function run(argv) {
   const [command, ...args] = argv;
   try {
     if (!Object.prototype.hasOwnProperty.call(COMMANDS, command)) throw new Error(`unknown command: ${command}`);
-    if (command === 'probe') return JSON.stringify(COMMANDS.probe());
+    if (command === 'probe' || command in CLIPBOARD) return JSON.stringify(COMMANDS[command](...args));
     if (!$.AXIsProcessTrusted()) throw new Error('not_trusted');
     return JSON.stringify(COMMANDS[command](application(), ...args));
   } catch (error) {

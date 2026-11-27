@@ -15,12 +15,13 @@ function bridgeCommand(env) {
     : ['/usr/bin/osascript', ['-l', 'JavaScript', AX_SCRIPT_PATH]];
 }
 
-export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export function callBridge(args, { env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, input } = {}) {
   const name = args[0];
   if (name === 'answer' && !ANSWERS.has(args[1])) return Promise.reject(new Error('Desktop bridge refused the answer: only 1 or Skip may be answered.'));
   const [command, prefix] = bridgeCommand(env);
   return new Promise((resolve, reject) => {
-    const child = spawn(command, [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, [...prefix, ...args], { env, shell: false, windowsHide: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = '';
     let stderr = '';
     let timedOut = false;

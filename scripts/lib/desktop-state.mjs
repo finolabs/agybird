@@ -1,0 +1,110 @@
+// Decisions of the desktop runner that need no app: what it refuses, what
+// preflight blocks on, and how a snapshot becomes an envelope.
+
+export const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
+export const TESTED_VERSION = /^2\.35\./;
+const UNATTENDED_PRESETS = new Set(['Auto', 'Turbo']);
+const MAX_FIELD = 300;
+
+export class Blocked extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.reason = reason;
+  }
+}
+
+// Options of the CLI runner that the app cannot honour, named so the caller
+// knows which one to drop.
+export function refusedOption(options) {
+  if (options.category === 'image') return 'image generation (--category image)';
+  if (options.swarm) return '--swarm';
+  if (options.grants.length > 0) return '--grant';
+  if (options.model !== undefined) return '--model';
+  if (options.conversation !== undefined) return '--conversation';
+  if (options.effort !== undefined) return '--effort';
+  if (options.agent !== undefined) return '--agent';
+  if (options.sandbox) return '--sandbox';
+  return null;
+}
+
+export function checkProbe(probe, { platform, allowVersion }) {
+  if (platform !== 'darwin') throw new Blocked('not_macos', 'The desktop transport runs only on macOS.');
+  if (!probe.pid) throw new Blocked('app_missing', 'The Antigravity app is not running; open it and sign in, then retry.');
+  if (!probe.trusted) throw new Blocked('not_trusted', 'Accessibility is not granted to the app that runs Agybird. Grant it in System Settings > Privacy & Security > Accessibility, then start a new session.');
+  if (!allowVersion && !TESTED_VERSION.test(probe.version ?? '')) {
+    throw new Blocked('unsupported_version', `Antigravity ${probe.version ?? '(unknown version)'} is outside the tested 2.35.x range; set AGYBIRD_DESKTOP_ALLOW_VERSION=1 to run anyway.`);
+  }
+}
+
+export function checkLabels(snapshot) {
+  const missing = REQUIRED_LABELS.filter((label) => !snapshot.labels?.[label]);
+  if (missing.length > 0) throw new Blocked('labels_missing', `The Antigravity window lacks ${missing.join(', ')}: an unsupported app version or language.`);
+}
+
+export function presetWarnings(preset) {
+  if (!UNATTENDED_PRESETS.has(preset)) return [];
+  return [`Antigravity's permissions preset is ${preset}: the app may run commands and edit files without asking. Read mode detects working-tree changes after the fact; it cannot prevent them.`];
+}
+
+function cut(value) {
+  const flat = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > MAX_FIELD ? `${flat.slice(0, MAX_FIELD)}…` : flat;
+}
+
+export function permissionRequest(dialog) {
+  const wider = dialog.options.find((option) => /^2 /.test(option)) ?? '';
+  const scope = /'([^']+)'/.exec(wider)?.[1] ?? null;
+  return {
+    tool: 'Antigravity app',
+    target: cut(dialog.question),
+    target_truncated: cut(dialog.question) !== String(dialog.question ?? '').trim(),
+    suggested_rule: null,
+    grantable: false,
+    question: cut(dialog.question),
+    scope: scope === null ? null : cut(scope),
+    options: dialog.options.map(cut),
+    reason: 'The Antigravity app is waiting for an answer to a permission prompt.',
+  };
+}
+
+// The structured result is the last fenced JSON block of the reply; only the
+// top level of the schema (type object, required keys) is checked.
+export function structuredFromReply(reply, schema) {
+  const blocks = [...String(reply ?? '').matchAll(/```(?:json)?[ \t]*\n([\s\S]*?)\n```/g)];
+  if (blocks.length === 0) throw new Error('The reply has no fenced JSON block for --json-schema.');
+  let value;
+  try {
+    value = JSON.parse(blocks.at(-1)[1]);
+  } catch {
+    throw new Error('The last fenced block of the reply is not valid JSON.');
+  }
+  if (schema.type === 'object' && (value === null || typeof value !== 'object' || Array.isArray(value))) throw new Error('The JSON block is not an object.');
+  const missing = (schema.required ?? []).filter((key) => !(key in value));
+  if (missing.length > 0) throw new Error(`The JSON block lacks ${missing.join(', ')}.`);
+  return value;
+}
+
+// Each side is { head, hashes: { file: content hash } } over the files git
+// reports as changed or untracked; a file differs when its hash does.
+export function changedFiles(before, after) {
+  const files = new Set([...Object.keys(before.hashes), ...Object.keys(after.hashes)]);
+  return [...files].filter((file) => before.hashes[file] !== after.hashes[file]).sort();
+}
+
+export function envelope({ status, category, response = null, structured = null, requests = [], warnings = [], evidence }) {
+  return {
+    schema_version: 1,
+    status,
+    category: category ?? null,
+    conversation_id: null,
+    response,
+    structured_output: structured,
+    tool_calls: [],
+    subagents: [],
+    permission_requests: requests,
+    artifacts: [],
+    warnings,
+    usage: null,
+    evidence: { transport: 'desktop', ...evidence },
+  };
+}
