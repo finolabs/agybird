@@ -148,6 +148,15 @@ test('read mode turns a working-tree change into an error', async () => {
   assert.ok(envelope.warnings.some((warning) => /read mode/.test(warning)));
 });
 
+test('read mode sees a change to a dirty file past the first 500', async () => {
+  const context = setup();
+  for (let index = 0; index < 600; index += 1) writeFileSync(join(context.cwd, `f${String(index).padStart(3, '0')}.txt`), 'before\n');
+  writeFileSync(context.env.AGYBIRD_FAKE_DESKTOP_STATE, JSON.stringify({ onSend: { path: join(context.cwd, 'f599.txt'), content: 'after\n' } }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.deepEqual(envelope.evidence.changed_files, ['f599.txt']);
+});
+
 test('write mode reports the files the run changed', async () => {
   const context = setup();
   writeFileSync(context.env.AGYBIRD_FAKE_DESKTOP_STATE, JSON.stringify({ onSend: { path: join(context.cwd, 'README.md'), content: 'changed\n' } }));

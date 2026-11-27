@@ -158,12 +158,13 @@ function fileHash(path) {
   }
 }
 
-// The working tree as file hashes, read with the repository's git programs off.
+// The working tree as file hashes, read with the repository's git programs off,
+// over every changed or untracked file, not only the first ones a review lists.
 // Outside a repository there is nothing to compare.
 function workTree(cwd) {
   let scope;
   try {
-    scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 1 });
+    scope = collectScope({ cwd, scope: 'working-tree', maxBytes: 1, listLimit: Infinity });
   } catch {
     return null;
   }
