@@ -23,7 +23,7 @@ Agybird triggers only when you ask for Agybird, `agy`, or Antigravity CLI by nam
 - The job store of the commands (`/agybird:*` in Claude Code, `$agybird-*` in Codex): in the plugin's data folder, or `~/.agybird/jobs/` when the host gives none, one folder per repository holding each job's prompt, result, rendered output and log, readable only by you. A review's prompt contains the diff it covered. The store also keeps the review gate switch and a five-minute cache of the `agy -p /usage` and `agy models` output. Nothing is uploaded from it; delete a folder to forget its jobs. Uninstalling the Claude Code plugin removes the plugin data folder.
 
 - The transport you choose in setup, in `config.json` in the job store (globally, or per repository with `--here`).
-- `~/.agybird/desktop.lock`: while a desktop run is going, the process id of that run.
+- `~/.agybird/desktop.lock`: while a desktop run is going, the process id of that run and when its lock expires.
 
 With the desktop transport the task goes to Google through the Antigravity desktop app instead of `agy`, under the same account and terms. The runner reads the text of the conversation it started (to tell when the turn ended, and the permission prompt it shows) and copies the reply, which it stores in the job store as the CLI path stores results. It puts the task on the clipboard for about a second to paste it, and the reply while copying it, and restores what the clipboard held before; only plain text is restored, so a copied image or file on the clipboard is lost. It reads the name of the app in front so it can bring it back.
 

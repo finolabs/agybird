@@ -35,6 +35,8 @@ test('a dialog becomes a request with its question, rule scope and options, neve
   assert.equal(request.grantable, false);
   assert.equal(request.target_truncated, true);
   assert.ok(request.question.length <= 301);
+  assert.equal(permissionRequest({ question: 'Allow\n  ls?', options: [] }).target_truncated, false);
+  assert.equal(request.question_full, `Allow ${'x'.repeat(400)}?`);
 });
 
 test('the structured output is the last fenced JSON block and must hold the required keys', () => {

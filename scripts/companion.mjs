@@ -129,9 +129,8 @@ function lastJsonLine(text) {
   return null;
 }
 
-// Runs the runner once and returns its envelope. The prompt goes through stdin,
-// never the argument list, exactly as the skill does it.
-export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+// The runner and its arguments for one request.
+export function runnerCommand(workspace, request) {
   const args = [
     RUNNER_PATH,
     '--category', request.category,
@@ -143,6 +142,13 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
   // agybird:desktop-start
   if (request.transport === 'desktop') args[0] = DESKTOP_RUNNER_PATH;
   // agybird:desktop-end
+  return args;
+}
+
+// Runs the runner once and returns its envelope. The prompt goes through stdin,
+// never the argument list, exactly as the skill does it.
+export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+  const args = runnerCommand(workspace, request);
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
   return new Promise((resolvePromise, reject) => {
@@ -534,6 +540,7 @@ const TASK_FLAGS = {
   '--grant-scope': 'value',
   // agybird:desktop-start
   '--via': 'value',
+  '--decline': 'value',
   // agybird:desktop-end
 };
 
@@ -576,9 +583,10 @@ export function approvedRules(directory, approvals = []) {
       if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
       if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
       if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
+      if ((job.answered ?? []).includes(Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
       const title = envelope.evidence?.conversation_title;
       if (!title) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
-      return { rules: [], transport: 'desktop', question: request.question, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+      return { rules: [], transport: 'desktop', id, index: Number(index), answered: job.answered ?? [], question: request.question_full ?? request.question, title, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
     }
     // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
@@ -607,16 +615,24 @@ async function readStdin() {
 
 async function commandTask(argv, env) {
   const { options, positional } = parseFlags(argv, TASK_FLAGS);
-  const approving = (options.approve ?? []).length > 0;
+  let approvals = options.approve ?? [];
+  // agybird:desktop-start
+  if (options.decline) {
+    if (approvals.length > 0) throw new Error('Choose --approve or --decline, not both.');
+    approvals = [options.decline];
+  }
+  // agybird:desktop-end
+  const approving = approvals.length > 0;
   const text = positional.join(' ').trim() || (await readStdin()).trim() || (approving ? GRANTED_PROMPT : '');
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
   if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
   if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const cwd = options.cwd ?? process.cwd();
-  const approval = approvedRules(storeFor(cwd, env), options.approve);
+  const approval = approvedRules(storeFor(cwd, env), approvals);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
   // agybird:desktop-start
   if (approving && options.via) throw new Error('An approval resumes the job on its own transport; drop --via.');
+  if (options.decline && approval.transport !== 'desktop') throw new Error('--decline answers a prompt waiting in the Antigravity app, so it applies only to a desktop request; a CLI request is declined by not granting it.');
   // An approval resumes the job on the transport it ran on, whatever is chosen now.
   const transport = approving ? (approval.transport ?? 'cli') : transportFor({ cwd, env, flag: options.via }).transport;
   if (transport === 'desktop') {
@@ -626,7 +642,12 @@ async function commandTask(argv, env) {
     const category = approval.category ?? options.category ?? 'code';
     if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
     const runnerArgs = [];
-    if (approval.question) runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title);
+    if (approval.question) {
+      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title);
+      if (options.decline) runnerArgs.push('--resume-answer', 'Skip');
+      // An answer is given once; a later prompt with the same words is a new request.
+      updateJob(storeFor(cwd, env), approval.id, { answered: [...approval.answered, approval.index] });
+    }
     const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
     return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
   }
@@ -837,7 +858,12 @@ async function commandSetup(argv, env) {
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
   const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
   // agybird:desktop-start
-  ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
+  try {
+    ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
+  } catch (error) {
+    Object.assign(report, { transport: null, transportSource: 'invalid' });
+    report.problems.push(`${error.message} Run setup with --transport cli or --transport desktop (with --here for this repository's config) to replace it.`);
+  }
   // agybird:desktop-end
   try {
     const binary = resolveAgyBinary(env);

@@ -7,13 +7,13 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildDelegationPrompt, findProjectForWorkspace, isDirectExecution, parseArgs, readPrompt, timeoutToMilliseconds, validateRequest } from './agybird.mjs';
 import { callBridge } from './lib/desktop-bridge.mjs';
-import { Blocked, changedFiles, checkLabels, checkProbe, envelope, permissionRequest, presetWarnings, refusedOption, structuredFromReply } from './lib/desktop-state.mjs';
+import { Blocked, changedFiles, diffStat, checkLabels, checkPlatform, checkProbe, envelope, permissionRequest, presetWarnings, refusedOption, structuredFromReply } from './lib/desktop-state.mjs';
 import { collectScope } from './lib/scope.mjs';
 
 const BUNDLE_ID = 'com.google.antigravity';
@@ -36,21 +36,85 @@ function processIsRunning(pid) {
   }
 }
 
-// One desktop run at a time on this machine: they share one app and one clipboard.
-function acquireLock(path) {
-  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+// A lock with no content yet is being written, so it counts as held this long.
+const UNREADABLE_LOCK_MS = 60_000;
+// Past its run's deadline plus this margin, a lock is stale even if its pid now
+// belongs to another process.
+const LOCK_MARGIN_MS = 5 * 60_000;
+
+function readLock(path) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8').trim();
+  } catch (error) {
+    return error.code === 'ENOENT' ? null : { unreadable: true };
+  }
+  if (!text) return { unreadable: true };
+  try {
+    return text.startsWith('{') ? JSON.parse(text) : { pid: Number(text) };
+  } catch {
+    return { unreadable: true };
+  }
+}
+
+function lockHeld(path, holder) {
+  if (holder.unreadable) {
     try {
-      writeFileSync(path, String(process.pid), { flag: 'wx', mode: 0o600 });
+      return Date.now() - statSync(path).mtimeMs < UNREADABLE_LOCK_MS;
+    } catch {
+      return false;
+    }
+  }
+  if (Number.isFinite(holder.expiresAt) && Date.now() > holder.expiresAt) return false;
+  return Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid);
+}
+
+// One desktop run at a time on this machine: they share one app and one
+// clipboard. The lock is linked into place whole, never seen empty, and a stale
+// one is moved aside before it is replaced, so two runs taking over the same
+// stale lock cannot both win.
+function acquireLock(path, expiresAt) {
+  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 });
+  const content = JSON.stringify({ pid: process.pid, expiresAt });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, content, { mode: 0o600 });
+    try {
+      linkSync(temporary, path);
       return path;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const holder = Number(readFileSync(path, 'utf8'));
-      if (Number.isInteger(holder) && holder > 0 && processIsRunning(holder)) break;
-      rmSync(path, { force: true });
+    } finally {
+      rmSync(temporary, { force: true });
     }
+    const holder = readLock(path);
+    if (holder === null) continue;
+    if (lockHeld(path, holder)) break;
+    const aside = `${path}.${process.pid}.stale`;
+    try {
+      renameSync(path, aside);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    // Another run may have replaced the stale lock between the read and the move.
+    const moved = readLock(aside);
+    if (moved && lockHeld(aside, moved)) {
+      try {
+        linkSync(aside, path);
+      } catch {
+        // that run's lock is back, or a third run holds the place now
+      }
+      rmSync(aside, { force: true });
+      break;
+    }
+    rmSync(aside, { force: true });
   }
   throw new Blocked('locked', 'Another desktop run is using the Antigravity app; retry once it finishes.');
+}
+
+function releaseLock(path) {
+  if (readLock(path)?.pid === process.pid) rmSync(path, { force: true });
 }
 
 // The app lists projects by name only, so the name must lead to this folder alone.
@@ -105,8 +169,10 @@ function takeResume(argv) {
   };
   const question = take('--resume-dialog');
   const title = take('--resume-title');
+  const answer = take('--resume-answer') ?? '1';
   if ((question === null) !== (title === null)) throw new Error('--resume-dialog and --resume-title go together');
-  return { argv: rest, question, title };
+  if (!['1', 'Skip'].includes(answer)) throw new Error('--resume-answer is 1 or Skip');
+  return { argv: rest, question, title, answer };
 }
 
 // A new conversation's web area reads "Antigravity" until the app titles it.
@@ -167,7 +233,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   };
   const cleanup = async () => {
     await restore();
-    if (lockPath) rmSync(lockPath, { force: true });
+    if (lockPath) releaseLock(lockPath);
     lockPath = null;
   };
   const emit = (value) => {
@@ -192,11 +258,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let prompt = buildDelegationPrompt(options, await readPrompt());
     if (schema) prompt += `\nEnd your reply with one fenced \`\`\`json block whose content matches this JSON schema:\n${JSON.stringify(schema)}`;
 
+    const platform = env.AGYBIRD_DESKTOP_BRIDGE ? 'darwin' : process.platform;
+    checkPlatform(platform);
     const probe = await bridge(['probe']);
     evidence.app_version = probe.version;
-    checkProbe(probe, { platform: env.AGYBIRD_DESKTOP_BRIDGE ? 'darwin' : process.platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
+    checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
     const project = projectName(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
-    lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'));
+    lockPath = acquireLock(join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock'), Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS);
     const before = workTree(options.cwd);
     // The reply already on screen when the turn starts; a resumed conversation has one.
     let baselineReply = null;
@@ -205,7 +273,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (resume.question !== null) {
       const waiting = await bridge(['snapshot']);
       if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
-      if (!waiting.dialog || permissionRequest(waiting.dialog).question !== resume.question) {
+      if (!waiting.dialog || permissionRequest(waiting.dialog).question_full !== resume.question) {
         throw new Error(`The Antigravity app no longer asks ${JSON.stringify(resume.question)}; answer it in the app, or start the task again.`);
       }
       conversation = resume.title;
@@ -214,7 +282,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       warnings.push(...presetWarnings(waiting.preset));
       baselineReply = waiting.reply;
       sent = true;
-      await bridge(['answer', '1', resume.question, conversation]);
+      await bridge(resume.answer === '1' ? ['answer', '1', resume.question, conversation] : ['answer', 'Skip', '', conversation]);
     } else {
       saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
@@ -326,9 +394,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         warnings.push(error.message);
       }
     }
-    if (changesSince() && options.mode === 'read') {
-      status = 'error';
-      warnings.push('The run changed the working tree in read mode.');
+    if (changesSince()) {
+      if (options.mode === 'read') {
+        status = 'error';
+        warnings.push('The run changed the working tree in read mode.');
+      } else {
+        try {
+          evidence.diff_stat = diffStat(collectScope({ cwd: options.cwd, scope: 'working-tree' }).diff, evidence.changed_files);
+        } catch {
+          warnings.push('The diff stat of the changed files could not be read.');
+        }
+      }
     }
     await cleanup();
     emit(envelope({ status, category: options.category, response, structured, warnings, evidence }));

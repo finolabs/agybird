@@ -5,6 +5,8 @@ export const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model
 export const TESTED_VERSION = /^2\.35\./;
 const UNATTENDED_PRESETS = new Set(['Auto', 'Turbo']);
 const MAX_FIELD = 300;
+// The whole question an approval is matched on, kept apart from the shortened one shown.
+export const MAX_QUESTION = 4_000;
 
 export class Blocked extends Error {
   constructor(reason, message) {
@@ -27,8 +29,12 @@ export function refusedOption(options) {
   return null;
 }
 
-export function checkProbe(probe, { platform, allowVersion }) {
+export function checkPlatform(platform) {
   if (platform !== 'darwin') throw new Blocked('not_macos', 'The desktop transport runs only on macOS.');
+}
+
+export function checkProbe(probe, { platform, allowVersion }) {
+  checkPlatform(platform);
   if (!probe.pid) throw new Blocked('app_missing', 'The Antigravity app is not running; open it and sign in, then retry.');
   if (!probe.trusted) throw new Blocked('not_trusted', 'Accessibility is not granted to the app that runs Agybird. Grant it in System Settings > Privacy & Security > Accessibility, then start a new session.');
   if (!allowVersion && !TESTED_VERSION.test(probe.version ?? '')) {
@@ -46,8 +52,12 @@ export function presetWarnings(preset) {
   return [`Antigravity's permissions preset is ${preset}: the app may run commands and edit files without asking. Read mode detects working-tree changes after the fact; it cannot prevent them.`];
 }
 
+export function flatten(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
 function cut(value) {
-  const flat = String(value ?? '').replace(/\s+/g, ' ').trim();
+  const flat = flatten(value);
   return flat.length > MAX_FIELD ? `${flat.slice(0, MAX_FIELD)}…` : flat;
 }
 
@@ -57,10 +67,11 @@ export function permissionRequest(dialog) {
   return {
     tool: 'Antigravity app',
     target: cut(dialog.question),
-    target_truncated: cut(dialog.question) !== String(dialog.question ?? '').trim(),
+    target_truncated: cut(dialog.question) !== flatten(dialog.question),
     suggested_rule: null,
     grantable: false,
     question: cut(dialog.question),
+    question_full: flatten(dialog.question).slice(0, MAX_QUESTION),
     scope: scope === null ? null : cut(scope),
     options: dialog.options.map(cut),
     reason: 'The Antigravity app is waiting for an answer to a permission prompt.',
@@ -103,6 +114,36 @@ export function structuredFromReply(reply, schema) {
 export function changedFiles(before, after) {
   const files = new Set([...Object.keys(before.hashes), ...Object.keys(after.hashes)]);
   return [...files].filter((file) => before.hashes[file] !== after.hashes[file]).sort();
+}
+
+// Added and removed lines per file, from a working-tree diff against HEAD (as
+// collectScope writes it, new files included), for the files the run changed.
+export function diffStat(diff, files) {
+  const counts = new Map();
+  let current = null;
+  let fresh = false;
+  let lastPlus = false;
+  const close = () => {
+    if (current && fresh && lastPlus) current.added -= 1;
+  };
+  for (const line of String(diff ?? '').split('\n')) {
+    const header = /^diff --git a\/(.+) b\/(.+)$/.exec(line) ?? /^--- new file (.+?)(?: \(.*\))?$/.exec(line);
+    if (header) {
+      close();
+      const file = header[2] ?? header[1];
+      current = { file, added: 0, removed: 0 };
+      counts.set(file, current);
+      fresh = line.startsWith('--- new file');
+      lastPlus = false;
+      continue;
+    }
+    if (!current || line.startsWith('+++ ') || line.startsWith('--- ')) continue;
+    lastPlus = line === '+';
+    if (line.startsWith('+')) current.added += 1;
+    else if (line.startsWith('-')) current.removed += 1;
+  }
+  close();
+  return files.filter((file) => counts.has(file)).map((file) => counts.get(file));
 }
 
 export function envelope({ status, category, response = null, structured = null, requests = [], warnings = [], evidence }) {

@@ -28,5 +28,5 @@ For each entry, ask the user (with the host's question tool when it has one) whe
 
 Add `--via desktop` or `--via cli` only when the user asked for the Antigravity app or the CLI for this task; otherwise the companion uses the transport chosen in setup.
 
-An entry with `transport: "desktop"` is a prompt waiting in the Antigravity app instead: ask only whether to allow it this time or decline, quoting its `question` exactly, and ask nothing when `approvable` is false. Only after an allow, run `command node "<plugin-root>/scripts/companion.mjs" task --approve <approval>` with no other flag; it answers "Yes, allow this time" once. A wider rule (its `scope`) is the user's to give in the app itself.
+An entry with `transport: "desktop"` is a prompt waiting in the Antigravity app instead: ask only whether to allow it this time or decline, quoting its `question` exactly, and ask nothing when `approvable` is false. Only after an allow, run `command node "<plugin-root>/scripts/companion.mjs" task --approve <approval>` with no other flag; it answers "Yes, allow this time" once. After a decline, run the same command with `--decline <approval>` instead, which answers Skip in the app. A wider rule (its `scope`) is the user's to give in the app itself.
 <!-- agybird:desktop-end -->

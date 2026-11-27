@@ -122,7 +122,7 @@ You were given this repository's link to install it for the user. Follow these s
 
 1. **Find your host**: Claude Code, Codex, Antigravity, or another agent that reads Agent Skills.
 2. **Confirm with the user before installing.** The install changes their agent configuration for every project, and Agybird runs the user's own `agy` on their Gemini subscription, which spends their quota. Offer the plugin by default and the plain skill as the alternative; install only one of the two, since both together list the skill twice.
-3. **Check the requirements**: Node.js 20 or newer, and `agy` installed and signed in (the user runs `agy` once interactively; you never handle their credentials).
+3. **Check the requirements**: Node.js 20 or newer, and `agy` installed and signed in (the user runs `agy` once interactively; you never handle their credentials). A user who will use only the opt-in [desktop transport](#desktop-transport) on macOS needs the Antigravity app instead of `agy`.
 4. **Check for an existing install**: run `claude plugin list` or `codex plugin list`. If Agybird is installed as `agybird@agybird` or from the older `Finolabs` catalog, stop and ask the user, then follow the [migration guide](docs/migration.md).
 5. **Install** with your host's commands:
 
@@ -134,7 +134,7 @@ You were given this repository's link to install it for the user. Follow these s
    | Other agents | `npx skills add finolabs/agybird` |
 
 6. **Verify** that `claude plugin list`, `codex plugin list` or `agy plugin list` shows `agybird`, and report the output to the user as it is, failures included.
-7. **Hand over.** Tell the user to open a new session and run `/agybird:setup` (`$agybird-setup` on Codex) to check `agy` and its sign-in.
+7. **Hand over.** Tell the user to open a new session and run `/agybird:setup` (`$agybird-setup` on Codex) to check `agy` and its sign-in and to choose the transport: the CLI (default) or, on macOS, the desktop app.
 
 Done when the host lists `agybird` and the user knows to open a new session and run setup.
 
@@ -190,7 +190,7 @@ With `desktop`, the runner `scripts/desktop.mjs` drives the app through the macO
 
 - **Before the first run:** grant Accessibility to the app that runs Agybird (System Settings > Privacy & Security > Accessibility) and start a new session; open the repository as a project in the app. A refused preflight returns `blocked` with a reason such as `not_trusted` or `no_project`.
 - **What it touches:** the app comes to the front for about a second while the task is pasted, and the clipboard briefly holds the task and later the reply; both are put back. It sends no keystrokes and presses only the app's own controls. Do not type into the app during that moment; a paste that reads back wrong is cleared and never sent. One desktop run happens at a time on the machine.
-- **Permissions:** the app's permissions preset (`Request Review`, `Default`, `Auto` or `Turbo`) is yours and is never changed. Under `Auto` and `Turbo` the app may run commands and edit files without asking; the envelope warns, and in read mode any working-tree change turns the run into `error`, which detects a change after the fact but cannot prevent it. Under `Request Review` a prompt in the app ends the run as `needs_permission`; `/agybird:rescue` asks you, and a yes answers "Yes, allow this time" once, after checking the app still asks the same question. A wider rule is yours to give in the app.
+- **Permissions:** the app's permissions preset (`Request Review`, `Default`, `Auto` or `Turbo`) is yours and is never changed. Under `Auto` and `Turbo` the app may run commands and edit files without asking; the envelope warns, and in read mode any working-tree change turns the run into `error`, which detects a change after the fact but cannot prevent it. Under `Request Review` a prompt in the app ends the run as `needs_permission`; `/agybird:rescue` asks you, and a yes answers "Yes, allow this time" once, after checking the app still shows the same conversation and question, and a no answers Skip there. A wider rule is yours to give in the app.
 - **Not supported:** image work (it stays on the CLI), choosing a model or reasoning level, resuming a conversation, `--swarm`, the review gate and usage. Cancelling a job presses Stop in the app.
 
 Checked live on macOS with the app 2.35.2 under `Turbo`: see [docs/verification](docs/verification/2026-11-27-desktop-live-macos.md). The Anthropic directory and Codex directory editions leave the desktop transport out.

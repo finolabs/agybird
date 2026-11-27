@@ -285,3 +285,44 @@ test('a resumed run answers nothing when the app shows another conversation or a
   assert.equal(envelope.status, 'error');
   assert.equal(reordered.fake().answered, undefined);
 });
+
+test('a lock being written, or still within its time, is held; one past its time is taken over', async () => {
+  const fresh = setup();
+  writeFileSync(join(fresh.stateDir, 'desktop.lock'), '');
+  assert.equal((await run(fresh)).envelope.evidence.blocked_reason, 'locked');
+  const expired = setup();
+  writeFileSync(join(expired.stateDir, 'desktop.lock'), JSON.stringify({ pid: process.pid, expiresAt: Date.now() - 1 }));
+  assert.equal((await run(expired)).envelope.status, 'success');
+  assert.equal(existsSync(join(expired.stateDir, 'desktop.lock')), false);
+});
+
+test('off macOS the runner blocks before touching anything', { skip: process.platform === 'darwin' && 'macOS runs the real bridge' }, async () => {
+  const context = setup();
+  delete context.env.AGYBIRD_DESKTOP_BRIDGE;
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'not_macos');
+});
+
+test('write mode reports a diff stat of the files it changed', async () => {
+  const context = setup();
+  writeFileSync(context.env.AGYBIRD_FAKE_DESKTOP_STATE, JSON.stringify({ onSend: { path: join(context.cwd, 'README.md'), content: 'changed\nmore\n' } }));
+  const { envelope } = await run(context, ['--mode', 'write']);
+  assert.deepEqual(envelope.evidence.diff_stat, [{ file: 'README.md', added: 2, removed: 1 }]);
+});
+
+test('an approval is matched on the whole question, not its shortened form', async () => {
+  const long = `Allow ${'x'.repeat(320)}`;
+  const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, question: `${long} A?` } });
+  const { envelope } = await run(context, ['--resume-dialog', `${long} B?`, '--resume-title', TITLE]);
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().answered, undefined);
+});
+
+test('declining answers Skip in the conversation that asked and reads the reply', async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, reply: 'skipped it' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-answer', 'Skip']);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(context.fake().answered, 'Skip');
+  assert.equal(envelope.response, 'skipped it');
+});

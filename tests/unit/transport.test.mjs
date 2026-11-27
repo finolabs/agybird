@@ -26,3 +26,9 @@ test('the desktop transport is refused outside macOS', () => {
   assert.throws(() => assertTransportSupported('desktop', 'linux'), /macOS/);
   assert.throws(() => assertTransportSupported('desktop', 'win32'), /macOS/);
 });
+
+test('the CLI runner command line is unchanged when no transport is set', async () => {
+  const { RUNNER_PATH, runnerCommand } = await import('../../scripts/companion.mjs');
+  const request = { category: 'code', mode: 'read', timeout: '10m', runnerArgs: ['--model', 'm'] };
+  assert.deepEqual(runnerCommand('/w', request), [RUNNER_PATH, '--category', 'code', '--cwd', '/w', '--mode', 'read', '--timeout', '10m', '--model', 'm']);
+});

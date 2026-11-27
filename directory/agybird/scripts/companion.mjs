@@ -122,9 +122,8 @@ function lastJsonLine(text) {
   return null;
 }
 
-// Runs the runner once and returns its envelope. The prompt goes through stdin,
-// never the argument list, exactly as the skill does it.
-export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+// The runner and its arguments for one request.
+export function runnerCommand(workspace, request) {
   const args = [
     RUNNER_PATH,
     '--category', request.category,
@@ -133,6 +132,13 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     '--timeout', request.timeout,
     ...request.runnerArgs,
   ];
+  return args;
+}
+
+// Runs the runner once and returns its envelope. The prompt goes through stdin,
+// never the argument list, exactly as the skill does it.
+export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+  const args = runnerCommand(workspace, request);
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
   return new Promise((resolvePromise, reject) => {
@@ -519,13 +525,14 @@ async function readStdin() {
 
 async function commandTask(argv, env) {
   const { options, positional } = parseFlags(argv, TASK_FLAGS);
-  const approving = (options.approve ?? []).length > 0;
+  let approvals = options.approve ?? [];
+  const approving = approvals.length > 0;
   const text = positional.join(' ').trim() || (await readStdin()).trim() || (approving ? GRANTED_PROMPT : '');
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
   if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
   if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const cwd = options.cwd ?? process.cwd();
-  const approval = approvedRules(storeFor(cwd, env), options.approve);
+  const approval = approvedRules(storeFor(cwd, env), approvals);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
   const category = approval.category ?? options.category ?? 'code';
   const allowedCategories = ['code', 'general'];

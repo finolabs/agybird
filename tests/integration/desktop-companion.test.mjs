@@ -168,3 +168,32 @@ test('cancel leaves a desktop run time to stop the app and put the clipboard bac
   assert.equal(context.fake().clipboard, 'user clipboard');
   assert.equal(context.fake().frontmost, 'com.example.host');
 });
+
+test('a desktop request is approved once, and can be declined instead', async () => {
+  const context = workspace({ dialog: DIALOG, reply: 'listed' });
+  const first = json(await context.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const approval = `${first.job.id}:0`;
+  json(await context.companion(['task', '--approve', approval, '--json']));
+  const again = await context.companion(['task', '--approve', approval, '--json']);
+  assert.notEqual(again.code, 0);
+  assert.match(again.stderr, /already answered/);
+
+  const other = workspace({ dialog: DIALOG, reply: 'declined' });
+  const asked = json(await other.companion(['task', '--via', 'desktop', '--json', 'List the files']));
+  const declined = json(await other.companion(['task', '--decline', `${asked.job.id}:0`, '--json']));
+  assert.equal(declined.envelope.status, 'success');
+  assert.deepEqual(other.calls().filter((call) => call.startsWith('answer')), ['answer Skip  Fake Task - ws - Antigravity']);
+  const cli = workspace();
+  const blocked = JSON.parse((await cli.companion(['task', '--json', 'CASE_FORGED_AUTH'])).stdout).job;
+  const refused = await cli.companion(['task', '--decline', `${blocked.id}:0`]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /desktop/);
+});
+
+test('setup still reports when the transport config holds an unknown value', async () => {
+  const context = workspace();
+  context.choose('gui');
+  const report = json(await context.companion(['setup', '--json']));
+  assert.equal(report.transportSource, 'invalid');
+  assert.ok(report.problems.some((problem) => /gui/.test(problem)));
+});

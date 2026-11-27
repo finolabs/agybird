@@ -16,7 +16,7 @@ const MAX_NODES = 20000;
 const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
 const ANSWERS = ['1', 'Skip'];
 const OPTION_1 = '1 Yes, allow this time';
-const MAX_FIELD = 300;
+const MAX_QUESTION = 4000;
 
 function get(element, name) {
   const value = Ref();
@@ -139,10 +139,9 @@ function title(nodes) {
   return area ? area.label : null;
 }
 
-// The runner keeps the question flattened and cut as it stores it.
-function cut(value) {
-  const flat = String(value || '').replace(/\s+/g, ' ').trim();
-  return flat.length > MAX_FIELD ? `${flat.slice(0, MAX_FIELD)}…` : flat;
+// The runner matches the whole question, flattened as it stores it.
+function flatten(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION);
 }
 
 function requireTitle(nodes, expected) {
@@ -243,6 +242,8 @@ const COMMANDS = {
     if (!/^[A-Za-z0-9.-]+$/.test(bundleId || '')) throw new Error('usage: restore <bundle id>');
     const shell = Application.currentApplication();
     shell.includeStandardAdditions = true;
+    // Only an app still running is brought back; open -b would relaunch one the user quit.
+    if (!$.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleId).count) return { ok: false };
     shell.doShellScript(`/usr/bin/open -b ${bundleId}`);
     delay(0.3);
     const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
@@ -290,7 +291,7 @@ const COMMANDS = {
       return { ok: true };
     }
     if (question === undefined || expectedTitle === undefined) throw new Error('usage: answer 1 <question> <conversation title>');
-    if (cut(prompt.question) !== question) throw new Error('question_changed');
+    if (flatten(prompt.question) !== question) throw new Error('question_changed');
     const first = nodes.findIndex((node) => node.role === 'AXRadioButton' && node.label.trim() === OPTION_1);
     if (first < 0) throw new Error('not_found: option 1');
     press(nodes[first], 'option 1');
