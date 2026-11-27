@@ -41,6 +41,9 @@ test('the structured output is the last fenced JSON block and must hold the requ
   const schema = { type: 'object', required: ['a'] };
   assert.deepEqual(structuredFromReply('```json\n{"a":0}\n```\ntext\n```json\n{"a":1}\n```', schema), { a: 1 });
   assert.throws(() => structuredFromReply('none', schema), /no fenced JSON/);
+  // An earlier code block of another language must not pair its closing fence with the JSON block's opening one.
+  assert.deepEqual(structuredFromReply('See:\n```javascript\nreturn value = 1;\n```\nWhy.\n\n```json\n{\n  "a": "x"\n}\n```', schema), { a: 'x' });
+  assert.throws(() => structuredFromReply('```javascript\n{"a":1}\n```', schema), /no fenced JSON/);
   assert.throws(() => structuredFromReply('```json\n{"b":1}\n```', schema), /lacks a/);
   assert.throws(() => structuredFromReply('```json\n[1]\n```', schema), /not an object/);
 });

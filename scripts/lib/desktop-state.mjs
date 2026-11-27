@@ -70,11 +70,25 @@ export function permissionRequest(dialog) {
 // The structured result is the last fenced JSON block of the reply; only the
 // top level of the schema (type object, required keys) is checked.
 export function structuredFromReply(reply, schema) {
-  const blocks = [...String(reply ?? '').matchAll(/```(?:json)?[ \t]*\n([\s\S]*?)\n```/g)];
-  if (blocks.length === 0) throw new Error('The reply has no fenced JSON block for --json-schema.');
+  // Fences are read line by line, so each opening fence pairs with its own close.
+  const blocks = [];
+  let open = null;
+  for (const line of String(reply ?? '').split('\n')) {
+    const fence = /^\s*```\s*([\w-]*)\s*$/.exec(line);
+    if (open === null) {
+      if (fence) open = { language: fence[1].toLowerCase(), lines: [] };
+    } else if (fence && !fence[1]) {
+      blocks.push(open);
+      open = null;
+    } else {
+      open.lines.push(line);
+    }
+  }
+  const json = blocks.filter((block) => block.language === 'json' || block.language === '');
+  if (json.length === 0) throw new Error('The reply has no fenced JSON block for --json-schema.');
   let value;
   try {
-    value = JSON.parse(blocks.at(-1)[1]);
+    value = JSON.parse(json.at(-1).lines.join('\n'));
   } catch {
     throw new Error('The last fenced block of the reply is not valid JSON.');
   }
