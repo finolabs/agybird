@@ -501,6 +501,36 @@ test('declining answers Skip in the conversation that asked and reads the reply'
   assert.equal(envelope.response, 'skipped it');
 });
 
+test('an answer whose bridge call fails after the press is handled as pressed: Stop, and the uncertainty reported', async () => {
+  const resumed = ['--resume-dialog', DIALOG.question, '--resume-title', TITLE];
+  const context = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, answerThenCrash: true });
+  const { envelope } = await run(context, resumed);
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().answered, '1');
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'stop'), ['stop', TITLE]);
+  assert.equal(context.fake().stopped, true);
+  // Spent, since it may have been pressed, and said to be uncertain.
+  assert.equal(envelope.evidence.answered, '1');
+  assert.equal(envelope.evidence.answer_uncertain, true);
+  assert.ok(envelope.warnings.some((warning) => /may have been pressed/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(existsSync(lockFile(context)), false);
+
+  const unstoppable = setup({ sent: true, project: 'ws', dialog: DIALOG, stuck: true, answerThenCrash: true, stopFails: true });
+  const kept = await run(unstoppable, resumed);
+  assert.ok(kept.envelope.warnings.some((warning) => /may still be going/.test(warning)));
+  assert.deepEqual(JSON.parse(readFileSync(lockFile(unstoppable), 'utf8')).conversation, TITLE);
+  assert.equal(JSON.parse(readFileSync(lockFile(unstoppable), 'utf8')).app, true);
+});
+
+test('an answer refused before any press is not spent and stops nothing', async () => {
+  const context = setup({ sent: true, project: 'ws', dialog: { ...DIALOG, options: ["1 Yes, and always allow 'ls'", ...DIALOG.options.slice(1)] } });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE]);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.evidence.answered, undefined);
+  assert.ok(!names(context).includes('stop'));
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
 // A lock kept for an app task by a run that is gone (its pid is not running).
 const appLock = (context, expiresAt) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt, app: true, conversation: TITLE }));
 

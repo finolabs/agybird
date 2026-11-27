@@ -26,7 +26,8 @@
 // user opens while the app is still naming the run's, during Send's wait),
 // sendReturnsNoTitle (Send returns no title though the app titles it at once),
 // failSnapshotAfterSend (every snapshot after send fails), stopFails (Stop
-// execution cannot be pressed), onSend ({ path, content }: a file the "agent" writes when the
+// execution cannot be pressed), answerThenCrash (the answer is pressed, then
+// the bridge exits with an error), onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -229,6 +230,11 @@ function answer() {
       }
       state.answered = option;
       if (option === '1') begin();
+      if (state.answerThenCrash) {
+        save();
+        process.stderr.write('fake bridge crashed after the press\n');
+        process.exit(1);
+      }
       return { ok: true };
     }
     case 'copy-reply':

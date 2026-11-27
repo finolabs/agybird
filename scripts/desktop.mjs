@@ -291,7 +291,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let pasted = false;
   // Set once Send (or, resumed, the answer) may have been pressed, so the app may be running the task.
   let sent = false;
-  // A resumed run pressing its answer: a cancel then may have let the app go on.
+  // A resumed run about to press its answer.
   let answering = false;
   // Set once the turn ended or the app waits on a prompt: nothing runs any more.
   let turnOver = false;
@@ -401,10 +401,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       warnings.push(...presetWarnings(waiting.preset));
       baselineReply = waiting.reply;
       // A refused answer pressed nothing and the app still waits, so only a
-      // pressed one (or one cut off by a cancel) counts as sent.
+      // pressed one, or one whose call failed after it may have pressed, counts as sent.
       answering = true;
       markApp();
-      await bridge(['answer', resume.answer, resume.question, conversation]);
+      // A cancel before the call starts presses nothing; one during it may have.
+      if (cancelled) throw new Cancelled();
+      try {
+        await bridge(['answer', resume.answer, resume.question, conversation]);
+      } catch (error) {
+        // As with Send: refused before any press, nothing was answered; a
+        // timeout, a crash or a cancel may have pressed it, so the app may be
+        // running and the answer is spent, said to be uncertain.
+        if (error instanceof Cancelled || !/ failed: (?:refused|usage|not_found|other_conversation|question_changed|several_dialogs|press_failed|not_trusted)/.test(error.message)) {
+          sent = true;
+          evidence.answered = resume.answer;
+          evidence.answer_uncertain = true;
+          warnings.push(`The answer may have been pressed in the Antigravity app before the run lost track of it (${error.message}); it counts as given, and the run was stopped there if it could be.`);
+        }
+        throw error;
+      }
       sent = true;
       // Tells the companion the answer was pressed, so only now is it spent.
       evidence.answered = resume.answer;
@@ -551,7 +566,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // Whatever ended the run after Send (a cancel, a timeout, a failed read), the
     // app may still run the task: Stop is pressed in the run's own conversation
     // before the lock goes. Another conversation on screen is never pressed.
-    const running = (sent || (answering && cancelled)) && !turnOver;
+    const running = sent && !turnOver;
     let stopped = false;
     if (running) markApp();
     if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected()], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
@@ -565,7 +580,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
     if (pasted && !sent) await clearInput();
     if (cancelled) {
-      if (!sent && !answering) error = new Error('The run was cancelled before the prompt was sent.');
+      if (!sent) error = new Error(answering ? 'The run was cancelled before the answer was pressed.' : 'The run was cancelled before the prompt was sent.');
       else error = new Error(stopped ? 'The run was cancelled and stopped in the app.' : 'The run was cancelled, but Stop could not be pressed in the app.');
     } else if (caught instanceof TimedOut) {
       error = new Error(`The run timed out after ${options.timeout}${stopped ? ' and was stopped in the app' : ''}.`);
