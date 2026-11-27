@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- Added an opt-in desktop transport for macOS: `setup --transport cli|desktop [--here]` chooses it (the CLI stays the default and unchanged), `--via cli|desktop` overrides it for one `rescue`, `review` or `adversarial-review`, and `scripts/desktop.mjs` runs the task in a new conversation of the Antigravity desktop app through the Accessibility API, returning the same envelope. It sends no keystrokes, keeps the app's permissions preset as set (warning under `Auto` and `Turbo`), answers a permission prompt only with "Yes, allow this time" after the user's yes, fails read mode on any working-tree change, and restores the clipboard and the front app. The Anthropic directory and Codex directory editions leave it out.
+
 ## 0.4.5 - 2026-11-13
 
 - Added the runner flag `--swarm`, which puts `/swarm` in front of the delegated task so `agy` runs it as a coordinator with worker agents (swarms are in the `agy` changelog from 1.5.5). It needs `--new-session`, `read` mode and category `code` or `general`; `write` is refused because worker modes and denials are unchecked. Workers do not appear in `subagents[]`. Checked live with `agy` 1.5.8 only.

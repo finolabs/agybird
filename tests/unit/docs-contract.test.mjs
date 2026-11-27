@@ -50,6 +50,24 @@ test('threat model covers the required trust and abuse cases', () => {
   }
 });
 
+test('the desktop transport is documented as opt-in, with its permissions and what it touches', () => {
+  const readme = read('README.md');
+  assert.match(readme, /## Desktop transport/);
+  assert.match(readme, /opt-in/i);
+  assert.match(readme, /macOS/);
+  assert.match(readme, /Accessibility/);
+  assert.match(readme, /Turbo/);
+  assert.match(readme, /clipboard/i);
+  const threatModel = read('docs/threat-model.md');
+  for (const topic of ['Accessibility', 'Turbo', 'keystroke', 'clipboard', 'Yes, allow this time', 'desktop.lock']) {
+    assert.match(threatModel, new RegExp(topic, 'i'), topic);
+  }
+  const privacy = read('PRIVACY.md');
+  assert.match(privacy, /desktop transport/i);
+  assert.match(privacy, /clipboard/i);
+  assert.match(read('CHANGELOG.md').split('## 0.')[0], /desktop transport/i);
+});
+
 test('community files contain concrete contribution and conduct policies', () => {
   assert.match(read('CONTRIBUTING.md'), /npm run check/);
   assert.match(read('CONTRIBUTING.md'), /zero runtime dependencies/i);

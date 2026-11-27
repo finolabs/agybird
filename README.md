@@ -60,6 +60,8 @@ agy plugin install https://github.com/finolabs/agybird
 - A Google account and Antigravity plan that is eligible for the requested capability.
 - Last checked live with `agy` 1.5.8 on macOS (13 November 2026): a read-only run, an expired timeout, a `--json-schema` follow-up resumed with `--conversation`, and a write run in `accept-edits` mode. The commands' review, a task with automatic model choice, usage and the review gate were last checked live with `agy` 1.5.5, and image and permission-grant runs on earlier `agy` releases. In an installed Claude Code only `/agybird:setup` has run so far (0.4.3, through `command node`); the other commands and Codex have not been checked installed. CI runs the suite on Linux, macOS, and Windows against a simulated `agy`, so a newer CLI that changes its JSON stream can break the runner until a release catches up.
 
+The opt-in [desktop transport](#desktop-transport) needs macOS, the Antigravity desktop app (2.35.x tested) signed in, and Accessibility granted to the app that runs Agybird; it does not need `agy`.
+
 Google continues to enforce subscription eligibility, quota and credit availability, permissions, sandbox configuration, and generated-content policy. Agybird does not bypass any of them.
 
 ## Install
@@ -171,7 +173,7 @@ The plugin also adds commands that run through `scripts/companion.mjs`. In Claud
 | `/agybird:rescue` | `$agybird-rescue` | Hands a task to Antigravity, read-only unless you pass `--write`, resuming the repository's conversation unless `--fresh`. |
 | `/agybird:status`, `/agybird:result`, `/agybird:cancel` | `$agybird-status`, `$agybird-result`, `$agybird-cancel` | List, show and stop jobs; review and rescue take `--background`. |
 | `/agybird:usage` | `$agybird-usage` | Quota per pool with local reset times, and the model each tier would use now. |
-| `/agybird:setup` | `$agybird-setup` | Checks `agy` and its sign-in, and switches the review gate for one repository. |
+| `/agybird:setup` | `$agybird-setup` | Checks `agy` and its sign-in, switches the review gate for one repository, and chooses the transport: the CLI (default) or the desktop app. |
 | `/agybird:image` | `$agybird-image` | Generates an image, or edits `--reference` images. |
 
 Review and rescue pick their model from Antigravity's own quota report when you name none: the usable model of the tier with the most room. When that tier has no quota left, the command stops and shows the reset times instead of moving to a more expensive tier.
@@ -180,9 +182,22 @@ A permission Antigravity asks for is never granted for you. `/agybird:rescue` re
 
 **Review gate.** `/agybird:setup --enable-review-gate` turns on a Stop hook for that repository: when Claude Code ends a turn with uncommitted changes, Antigravity reviews them read-only on a light-tier model, and a finding of medium severity or worse sends Claude back once to fix it or explain. It is off by default, spends quota on every gated turn, never blocks twice in a row, and lets the turn end with a notice when `agy` is missing, out of quota or slower than 12 minutes. Codex runs it only after you review and trust the plugin's hooks.
 
+## Desktop transport
+
+Agybird can also hand work to the Antigravity desktop app instead of `agy`. It is opt-in and macOS only: `/agybird:setup` (or `$agybird-setup`) asks once, with the CLI as the recommended default, and `setup --transport cli|desktop` changes the choice for every repository, or for one with `--here`. `--via cli|desktop` on `rescue`, `review` and `adversarial-review` overrides it for one call. With no choice made, nothing changes.
+
+With `desktop`, the runner `scripts/desktop.mjs` drives the app through the macOS Accessibility API, by JXA under `osascript`, so it works the same from Claude Code, Codex and ZCode and adds no dependency. Each run opens a new conversation in the app's project for the repository, pastes the task, sends it, waits for the turn to end and copies the reply with the app's own Copy button. It returns the same envelope as the CLI runner, with `evidence.transport: "desktop"`, the app version, the permissions preset and `changed_files`.
+
+- **Before the first run:** grant Accessibility to the app that runs Agybird (System Settings > Privacy & Security > Accessibility) and start a new session; open the repository as a project in the app. A refused preflight returns `blocked` with a reason such as `not_trusted` or `no_project`.
+- **What it touches:** the app comes to the front for about a second while the task is pasted, and the clipboard briefly holds the task and later the reply; both are put back. It sends no keystrokes and presses only the app's own controls. Do not type into the app during that moment; a paste that reads back wrong is cleared and never sent. One desktop run happens at a time on the machine.
+- **Permissions:** the app's permissions preset (`Request Review`, `Default`, `Auto` or `Turbo`) is yours and is never changed. Under `Auto` and `Turbo` the app may run commands and edit files without asking; the envelope warns, and in read mode any working-tree change turns the run into `error`, which detects a change after the fact but cannot prevent it. Under `Request Review` a prompt in the app ends the run as `needs_permission`; `/agybird:rescue` asks you, and a yes answers "Yes, allow this time" once, after checking the app still asks the same question. A wider rule is yours to give in the app.
+- **Not supported:** image work (it stays on the CLI), choosing a model or reasoning level, resuming a conversation, `--swarm`, the review gate and usage. Cancelling a job presses Stop in the app.
+
+Checked live on macOS with the app 2.35.2 under `Turbo`: see [docs/verification](docs/verification/2026-11-27-desktop-live-macos.md). The Anthropic directory and Codex directory editions leave the desktop transport out.
+
 ## Data and network
 
-Agybird has no server, analytics, or telemetry. The runner starts one local `agy` process per invocation and talks to nothing else: it sends the task on standard input, reads `agy`'s JSON stream, and prints one envelope. Everything `agy` does with the task, including reading workspace files, fetching URLs, and generating images, happens in Google's CLI under the user's own Google account and Antigravity settings. Outside the workspace the runner writes only `~/.agybird/sessions/` (workspace path and conversation id, never prompts or results), small grant lock files under `~/.agybird/grant-locks/` (one per approved grant, marked released when it ends) and a record per running run under `~/.agybird/active-runs/`, with process and conversation ids only. The commands also keep a job store, in the plugin's data folder or `~/.agybird/jobs/`, holding each job's prompt, result and log, a five-minute quota cache, and the review gate switch. Reviews read `git` themselves and send the diff, and the gate also sends Claude's last message of the turn. See [PRIVACY.md](PRIVACY.md).
+Agybird has no server, analytics, or telemetry. The runner starts one local `agy` process per invocation and talks to nothing else: it sends the task on standard input, reads `agy`'s JSON stream, and prints one envelope. Everything `agy` does with the task, including reading workspace files, fetching URLs, and generating images, happens in Google's CLI under the user's own Google account and Antigravity settings. Outside the workspace the runner writes only `~/.agybird/sessions/` (workspace path and conversation id, never prompts or results), small grant lock files under `~/.agybird/grant-locks/` (one per approved grant, marked released when it ends) and a record per running run under `~/.agybird/active-runs/`, with process and conversation ids only. The commands also keep a job store, in the plugin's data folder or `~/.agybird/jobs/`, holding each job's prompt, result and log, a five-minute quota cache, and the review gate switch. Reviews read `git` themselves and send the diff, and the gate also sends Claude's last message of the turn. The desktop transport sends the task through the Antigravity app instead of `agy`, reads only the conversation it started, and keeps the transport choice in the job store and a lock in `~/.agybird/desktop.lock`. See [PRIVACY.md](PRIVACY.md).
 
 ## Safety defaults
 
@@ -194,6 +209,7 @@ Agybird has no server, analytics, or telemetry. The runner starts one local `agy
 - Image success requires a completed tool event and a real nonempty artifact in the working directory or the matching Antigravity conversation artifact directory.
 - Reviews never let `git` start a program the repository configures: fsmonitor, textconv, external diff and filter drivers are switched off while the diff is collected.
 - Commands run only when you call them; the review gate runs only where you switched it on.
+- The desktop transport is opt-in, sends no keystrokes, never changes the app's permissions preset and approves a prompt only once, after your yes.
 
 See the [threat model](docs/threat-model.md), [security policy](SECURITY.md), and [official Antigravity overview](https://antigravity.google/docs/cli/overview).
 
