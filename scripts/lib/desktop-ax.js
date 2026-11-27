@@ -296,16 +296,51 @@ function readStdin() {
   return $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
 }
 
-// Only the plain-text flavour is saved and put back.
+// NSPasteboardContentsCurrentHostOnly: kept off Universal Clipboard.
+const CURRENT_HOST_ONLY = 1;
+// The nspasteboard.org markers: clipboard managers skip the item and keep no history of it.
+const PROMPT_MARKERS = ['org.nspasteboard.TransientType', 'org.nspasteboard.ConcealedType'];
+const TEXT_TYPES = ['public.utf8-plain-text', 'public.utf16-external-plain-text', 'public.utf16-plain-text', 'NSStringPboardType'];
+
+function boardTypes(board) {
+  const list = board.types;
+  const out = [];
+  if (list && !list.isNil()) for (let index = 0; index < list.count; index += 1) out.push(text(list.objectAtIndex(index)));
+  return out;
+}
+
+// Every write first empties the pasteboard; `options` 0 or CURRENT_HOST_ONLY.
+function writeText(value, markers, options) {
+  const board = $.NSPasteboard.generalPasteboard;
+  board.prepareForNewContentsWithOptions(options);
+  if (value === null || value === undefined) return;
+  board.setStringForType($(value), $.NSPasteboardTypeString);
+  for (const marker of markers) board.setStringForType($(''), $(marker));
+}
+
+// Only the plain-text flavour is saved and put back, with the nspasteboard.org
+// markers it carried; `other` says the clipboard also held something else (an
+// image, a file, rich text), which a restore loses.
 const CLIPBOARD = {
   'clipboard-get'() {
-    const value = $.NSPasteboard.generalPasteboard.stringForType($.NSPasteboardTypeString);
-    return { text: value && !value.isNil() ? value.js : null };
-  },
-  'clipboard-set'(empty) {
     const board = $.NSPasteboard.generalPasteboard;
-    board.clearContents;
-    if (empty !== '--empty') board.setStringForType($(readStdin()), $.NSPasteboardTypeString);
+    const value = board.stringForType($.NSPasteboardTypeString);
+    const types = boardTypes(board);
+    return {
+      text: value && !value.isNil() ? value.js : null,
+      markers: types.filter((type) => type.indexOf('org.nspasteboard.') === 0),
+      other: types.some((type) => type.indexOf('org.nspasteboard.') !== 0 && TEXT_TYPES.indexOf(type) < 0),
+    };
+  },
+  // The prompt: on this Mac only, marked transient and concealed.
+  'clipboard-set'() {
+    writeText(readStdin(), PROMPT_MARKERS, CURRENT_HOST_ONLY);
+    return { ok: true };
+  },
+  // What clipboard-get saved, as JSON on stdin: its text and its own markers.
+  'clipboard-restore'() {
+    const saved = JSON.parse(readStdin());
+    writeText(saved.text, (saved.markers || []).filter((type) => /^org\.nspasteboard\.[A-Za-z]+$/.test(type)), 0);
     return { ok: true };
   },
 };
@@ -397,7 +432,9 @@ const COMMANDS = {
     for (const target of chooseAnswer(nodes, option, question, expectedTitle, staticText)) press(nodes[target.index], target.what);
     return { ok: true };
   },
-  // Puts the last reply, as the app's own Markdown, on the clipboard.
+  // Puts the last reply, as the app's own Markdown, on the clipboard and reads
+  // it back in the same call, so the runner can restore the clipboard at once.
+  // The app writes it there unmarked; that window is as short as this call.
   'copy-reply'(app, expectedTitle) {
     const nodes = tree(app);
     requireTitle(nodes, expectedTitle);
@@ -417,7 +454,8 @@ const COMMANDS = {
     press(button, 'Copy');
     for (let tries = 0; tries < 20 && board.changeCount === before; tries += 1) delay(0.1);
     if (board.changeCount === before) throw new Error('copy_unchanged');
-    return { ok: true };
+    const value = board.stringForType($.NSPasteboardTypeString);
+    return { ok: true, text: value && !value.isNil() ? value.js : null };
   },
   stop(app, expectedTitle) {
     const nodes = tree(app);

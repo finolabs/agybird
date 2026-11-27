@@ -9,6 +9,8 @@
 // shows as running, with the earlier reply still on screen), dialog
 // ({ question, options }), replyBeforeDialog (on screen while the dialog waits),
 // reply, paste (what paste-input reads back instead of the clipboard), clipboard,
+// clipboardMarkers (its org.nspasteboard.* types), clipboardOther (it also holds
+// non-text content, which a restore loses),
 // dialog.fragments (the question as separate text nodes), extraDialog (a second
 // { question, options } dialog shown below the first),
 // copyNoop (Copy leaves the clipboard as it was), title (the conversation title
@@ -64,11 +66,20 @@ else if (state.exit) {
   process.stderr.write('fake bridge failure\n');
   process.exit(state.exit);
 } else if (state.raw !== undefined) process.stdout.write(`${state.raw}\n`);
-else if (command === 'clipboard-set' && args[0] !== '--empty') {
+else if (command === 'clipboard-set' || command === 'clipboard-restore') {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
-  state.clipboard = Buffer.concat(chunks).toString('utf8');
-  (state.clipboardWrites ??= []).push(state.clipboard);
+  const input = Buffer.concat(chunks).toString('utf8');
+  if (command === 'clipboard-set') {
+    state.clipboard = input;
+    (state.clipboardWrites ??= []).push(state.clipboard);
+  } else {
+    // Only the text and its markers come back; anything else the clipboard held is gone.
+    const saved = JSON.parse(input);
+    state.clipboard = saved.text;
+    state.restoredMarkers = saved.markers;
+    state.clipboardOther = false;
+  }
   process.stdout.write('{"ok":true}\n');
   save();
 } else {
@@ -116,11 +127,7 @@ function waiting() {
 }
 
 function answer() {
-  if (command === 'clipboard-get') return { text: state.clipboard };
-  if (command === 'clipboard-set') {
-    state.clipboard = null;
-    return { ok: true };
-  }
+  if (command === 'clipboard-get') return { text: state.clipboard, markers: state.clipboardMarkers ?? [], other: Boolean(state.clipboardOther) };
   if (command === 'probe') return { trusted: state.trusted, pid: 4242, version: state.version, frontmost: state.frontmost };
   if (!state.trusted) return { error: 'not_trusted' };
   switch (command) {
@@ -189,7 +196,7 @@ function answer() {
       if (!shown(args[0])) return { error: 'other_conversation' };
       if (state.copyNoop) return { error: 'copy_unchanged' };
       state.clipboard = state.reply;
-      return { ok: true };
+      return { ok: true, text: state.reply };
     case 'stop':
       if (!shown(args[0])) return { error: 'other_conversation' };
       if (state.stopFails) return { error: 'press_failed: Stop execution' };

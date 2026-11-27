@@ -272,13 +272,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let conversation = null;
   const expected = () => conversation ?? UNTITLED;
 
+  // Puts back what clipboard-get saved: its text and its own markers. Anything
+  // else it held (an image, a file, rich text) cannot be, and the run says so.
+  const putClipboardBack = async (clipboard) => {
+    const lost = 'The clipboard held more than text (an image, a file or rich text); only its text was put back.';
+    if (clipboard.other && !warnings.includes(lost)) warnings.push(lost);
+    await call(['clipboard-restore'], { input: JSON.stringify({ text: clipboard.text ?? null, markers: clipboard.markers ?? [] }) }).catch(() => warnings.push('The clipboard could not be restored.'));
+  };
+  // The clipboard holds the prompt from clipboard-set until the paste is read back.
+  let clipboardHeld = false;
+  const restoreClipboard = async () => {
+    if (!clipboardHeld) return;
+    clipboardHeld = false;
+    await putClipboardBack(saved.clipboard);
+  };
   const restore = async () => {
     if (!saved) return;
-    const { clipboard, frontmost } = saved;
+    await restoreClipboard();
+    const { frontmost } = saved;
     saved = null;
-    if (pasted) {
-      await (clipboard === null ? call(['clipboard-set', '--empty']) : call(['clipboard-set'], { input: clipboard })).catch(() => warnings.push('The clipboard could not be restored.'));
-    }
     if (frontmost && frontmost !== BUNDLE_ID) await call(['restore', frontmost]).catch(() => warnings.push(`${frontmost} could not be brought back to the front.`));
   };
   // Clearing needs the app in front, which the user may have changed meanwhile.
@@ -351,7 +363,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // Tells the companion the answer was pressed, so only now is it spent.
       evidence.answered = resume.answer;
     } else {
-      saved = { clipboard: (await bridge(['clipboard-get'])).text, frontmost: probe.frontmost };
+      saved = { clipboard: await bridge(['clipboard-get']), frontmost: probe.frontmost };
       // Frontmost before the conversation opens: a composer created while the app
       // is in the background re-mounts when it comes forward and drops the paste.
       await bridge(['front']);
@@ -363,10 +375,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       warnings.push(...presetWarnings(opened.preset));
 
       pasted = true;
+      clipboardHeld = true;
       await bridge(['clipboard-set'], { input: prompt });
       // A long prompt (a review's diff) takes seconds to read back line by line.
       // Paste, clear and Send act only while the app shows the untitled new conversation.
       const input = await bridge(['paste-input', UNTITLED], { timeoutMs: 120_000 });
+      // The composer holds the prompt now; the clipboard goes back before Send.
+      await restoreClipboard();
       // A mismatch, a failed Send or a cancel before Send leaves the composer to
       // be cleared on the way out.
       if (normalized(input.value) !== normalized(prompt)) {
@@ -443,16 +458,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     // The accessibility text is rendered Markdown, split into words and without
     // code fences; the app's Copy button gives the reply as written.
+    // Copy reads the reply back in the same call, and the clipboard is put back
+    // right after, so the reply sits there only that long.
     let response = state.reply;
-    const clipboard = (await bridge(['clipboard-get'])).text;
+    const clipboard = await bridge(['clipboard-get']);
     try {
-      await bridge(['copy-reply', expected()]);
-      response = (await bridge(['clipboard-get'])).text ?? state.reply;
+      response = (await bridge(['copy-reply', expected()])).text ?? state.reply;
     } catch (error) {
       if (error instanceof Cancelled) throw error;
       warnings.push(`The reply could not be copied from the app (${error.message}); its on-screen text is returned instead.`);
     } finally {
-      await (clipboard === null ? call(['clipboard-set', '--empty']) : call(['clipboard-set'], { input: clipboard })).catch(() => warnings.push('The clipboard could not be restored.'));
+      await putClipboardBack(clipboard);
     }
 
     let status = 'success';

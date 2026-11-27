@@ -202,7 +202,8 @@ test('a paste that reads back differently is cleared and never sent', async () =
 test('SIGTERM stops the run in the app and cleans up', { skip: process.platform === 'win32' }, async () => {
   const context = setup({ stuck: true });
   const { child, done } = start(context);
-  while (!names(context).includes('send')) await new Promise((resolve) => setTimeout(resolve, 20));
+  // Once the run polls, Send has returned and bound the conversation.
+  while (!names(context).slice(names(context).indexOf('send') + 1).includes('snapshot') || !names(context).includes('send')) await new Promise((resolve) => setTimeout(resolve, 20));
   child.kill('SIGTERM');
   const { envelope } = await done;
   assert.equal(envelope.status, 'error');
@@ -312,6 +313,18 @@ test('write mode reports what changed before a permission prompt', async () => {
   assert.equal(envelope.status, 'needs_permission');
   assert.deepEqual(envelope.evidence.changed_files, ['README.md']);
   assert.equal(envelope.evidence.conversation_title, TITLE);
+});
+
+test('the clipboard is put back before Send, with its own markers, and lost non-text content is reported', async () => {
+  const context = setup({ runningPolls: 1, clipboardMarkers: ['org.nspasteboard.ConcealedType'], clipboardOther: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const order = names(context);
+  assert.ok(order.indexOf('clipboard-restore') > order.indexOf('paste-input'), 'restored after the paste');
+  assert.ok(order.indexOf('clipboard-restore') < order.indexOf('send'), 'restored before Send');
+  assert.deepEqual(context.fake().restoredMarkers, ['org.nspasteboard.ConcealedType']);
+  assert.ok(envelope.warnings.some((warning) => /only its text/.test(warning)));
+  assertCleanedUp(context);
 });
 
 test('a Copy that leaves the clipboard unchanged falls back to the on-screen reply, never the user clipboard', async () => {

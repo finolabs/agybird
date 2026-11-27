@@ -47,6 +47,18 @@ test('the wrapper refuses every dialog answer but option 1 and Skip, without cal
   assert.deepEqual(await callBridge(['answer', '1', DIALOG_QUESTION, 'Fake Task - workspace - Antigravity'], { env }), { ok: true });
 });
 
+test('the AX script writes the prompt current-host-only and marked transient and concealed', () => {
+  const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
+  const start = source.indexOf("'clipboard-set'(");
+  const write = source.slice(start, source.indexOf('\n  },', start));
+  assert.ok(start > 0);
+  assert.match(write, /CURRENT_HOST_ONLY/);
+  assert.match(write, /PROMPT_MARKERS/);
+  assert.match(source, /const PROMPT_MARKERS = \['org\.nspasteboard\.TransientType', 'org\.nspasteboard\.ConcealedType'\];/);
+  assert.match(source, /prepareForNewContentsWithOptions\(options\)/);
+  assert.doesNotMatch(source, /clearContents/, 'every write goes through prepareForNewContentsWithOptions');
+});
+
 test('the AX script sends no keystrokes and answers only option 1 or Skip', () => {
   const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
   assert.doesNotMatch(source, /keystroke\(|key code|keyCode|CGEvent/i);
