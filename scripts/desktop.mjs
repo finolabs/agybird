@@ -494,6 +494,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (normalized(input.value) !== normalized(prompt)) {
         throw new Error('The prompt in the app input did not match what was pasted (was the app in use?); nothing was sent.');
       }
+      // The clipboard restore above is never interrupted, so a cancel that came
+      // during it is taken here, before Send: nothing was sent, the composer is
+      // cleared and the lock is not kept for the app.
+      if (cancelled) throw new Cancelled();
       // Marked first: a cancel that lands while Send is pressed must still stop
       // the run, and a run killed from here on leaves the lock to the app task.
       markApp();

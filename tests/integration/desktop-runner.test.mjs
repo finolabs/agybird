@@ -285,6 +285,20 @@ test('a cancel during the paste clears the composer and restores everything with
   assertCleanedUp(context);
 });
 
+test('a cancel during the clipboard restore before Send clears the composer, presses no Stop and frees the lock', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ delays: { 'clipboard-restore': 1_500 } });
+  const { child, done } = start(context);
+  await waitFor(context, 'clipboard-restore');
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /cancelled before the prompt was sent/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().cleared, true, 'the composer was cleared');
+  assert.ok(!names(context).includes('send'), 'Send was not pressed');
+  assert.ok(!names(context).includes('stop'), 'Stop was not pressed against an unsent conversation');
+  assertCleanedUp(context);
+});
+
 test('options the desktop transport cannot honour are refused before the app is touched', async () => {
   for (const args of [['--model', 'x'], ['--swarm', '--new-session'], ['--conversation', 'c1'], ['--effort', 'high']]) {
     const context = setup();
