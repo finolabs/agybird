@@ -240,7 +240,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (finished) return;
     finished = true;
     process.stdout.write(`${JSON.stringify(value)}\n`);
-    process.exitCode = value.status === 'success' || value.status === 'needs_permission' ? 0 : 1;
+    // As agybird.mjs: every classified outcome exits 0, only an error exits 1.
+    process.exitCode = value.status === 'error' ? 1 : 0;
   };
   const onTerm = () => {
     cancelled = true;

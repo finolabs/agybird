@@ -100,7 +100,7 @@ test('preflight blocks with a specific reason and leaves no lock', async () => {
     const { code, envelope } = await run(context);
     assert.equal(envelope.status, 'blocked', reason);
     assert.equal(envelope.evidence.blocked_reason, reason);
-    assert.notEqual(code, 0);
+    assert.equal(code, 0, `${reason}: blocked exits 0, as the CLI runner does`);
     assert.ok(!names(context).includes('send'), reason);
     assert.equal(existsSync(join(context.stateDir, 'desktop.lock')), false, reason);
   }
@@ -180,8 +180,9 @@ test('a run past its deadline is stopped and reported as an error', async () => 
 
 test('a paste that reads back differently is cleared and never sent', async () => {
   const context = setup({ paste: 'something else' });
-  const { envelope } = await run(context);
+  const { code, envelope } = await run(context);
   assert.equal(envelope.status, 'error');
+  assert.equal(code, 1, 'only error exits 1');
   assert.ok(names(context).includes('clear-input'));
   assert.ok(!names(context).includes('send'));
   assertCleanedUp(context);
