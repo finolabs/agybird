@@ -1,6 +1,6 @@
 # Desktop sessions: projects on demand and runs that do not wait for each other
 
-Status: settled (owner decisions of 2026-11-28); not implemented.
+Status: settled (owner decisions of 2026-11-28). A1–A5 and C1–C3 in finolabs/agybird#60; B1–B5 and C4 not implemented.
 Evidence: `docs/verification/2026-11-28-desktop-spike-projects-sidebar.md` (F1–F9 below refer to it).
 
 ## Goal
@@ -30,7 +30,7 @@ The app lock (`~/.agybird/desktop.lock`) is held only while a run acts on the ap
 
 - B1. **Start, under the lock:** the idle wait, the clipboard, the switch to the app, the new conversation and its project, the paste, giving the front and the clipboard back, the read back, Send, and binding the run's conversation by title and marker. The lock is held until the title has settled: the 2.36 rename after Send (or 15 s with no rename). Then it is released.
 - B2. **Wait, with no lock:** the runner reads its row in the sidebar (title and project, F3) every poll. `In Progress` keeps waiting. `Blocked` and `Idle` go to B3. A row missing from the sidebar for 3 polls in a row ends the run `error` without pressing anything.
-- B3. **Result, under the lock:** the runner opens its conversation from the sidebar (F4), checks the title and its own marker in the same read as today, and only then reads: a dialog (`needs_permission`, or the new `needs_input` of C3), or the reply through Copy. The lock is released at once. Stop on timeout or cancel, and an approved answer, run under the lock the same way.
+- B3. **Result, under the lock:** the runner opens its conversation from the sidebar (F4), checks the title and its own marker in the same read as today, and only then reads: a dialog (`needs_permission`, or `blocked: agent_question` of C3), or the reply through Copy. The lock is released at once. Stop on timeout or cancel, and an approved answer, run under the lock the same way.
 - B4. At most 5 runs are between B1 and the end of B3 at once; a sixth ends `blocked: too_many_runs` before touching the app. Each live run has its own record (`~/.agybird/desktop-runs/<marker>.json`: pid, project, title, deadline), replacing the `app: true` lock holder; a record whose process is gone is resolved as today's kept lock is: by evidence (B3's read showing the run's conversation with no run going) or by the user.
 - B5. The switch of the conversation on screen in B3 does not wait for the user (decision 4), but the app is never brought to the front for it.
 
@@ -38,7 +38,7 @@ The app lock (`~/.agybird/desktop.lock`) is held only while a run acts on the ap
 
 - C1. A `front` that leaves the app behind ends the run before the conversation opens: `error` "Antigravity did not come to the front", nothing pasted (F7).
 - C2. A paste refused before it pastes (`not_frontmost`, `not_found`, `other_conversation`, `truncated`) counts as not pasted: no "left unsent" warning, no clearing (F7).
-- C3. A dialog that is an agent question, not a permission prompt, ends the run `needs_input` with the question and its options read whole; it is never answered by the permission flow (F6).
+- C3. A dialog that is an agent question, not a permission prompt (its option 1 is not "1 Yes, allow this time"), ends the run `blocked: agent_question` with the question and its options in `evidence.agent_question`; it is never answered by the permission flow (F6). A blocked reason, not a new envelope status, keeps the public statuses unchanged.
 - C4. A turn ends only when the sidebar shows the run's row under `Idle` and the conversation read in B3 shows a reply with no run going; an interim message while the row is `In Progress` is never returned (F5).
 
 ## Out of scope
