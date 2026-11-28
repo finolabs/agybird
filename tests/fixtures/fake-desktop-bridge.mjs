@@ -49,7 +49,9 @@
 // probes report, the last repeated; default 60), locked (the screen is
 // locked), onScreen (an app window is on the Space shown; default true),
 // clipboardItems (every item of the clipboard, as clipboard-get saves it whole),
-// restoreFails (clipboard-restore answers ok false).
+// restoreFails (clipboard-restore answers ok false), frontFails (front leaves
+// the app behind), frontLostBeforePaste (another app is in front at the paste),
+// notListed (new-conversation finds no such project).
 // Each call records the app in front as it starts in frontmostAtCalls.
 //
 // A version of 2.36.x shows the 2.36 layout: one New Conversation link in the
@@ -433,7 +435,7 @@ function answer() {
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
       const found = state.sent && !lagging && waiting() ? decisions.dialogs(screenNodes(true))[0] : null;
-      const dialog = found ? { question: found.question, options: [...found.options] } : null;
+      const dialog = found ? { question: found.question, options: [...found.options], permission: found.permission } : null;
       const running = Boolean(state.sent) && !lagging && !dialog && (state.stuck || state.runningPolls > 0);
       if (running && !state.stuck) state.runningPolls -= 1;
       let reply = null;
@@ -454,6 +456,8 @@ function answer() {
       };
     }
     case 'new-conversation':
+      // notListed: the app does not list the project yet.
+      if (state.notListed) return { error: `not_found: project ${args[0]}` };
       if (pickerLayout()) {
         try {
           openWithPicker(args[0]);
@@ -466,14 +470,17 @@ function answer() {
       delete state.earlier;
       return { ok: true };
     case 'front':
-      state.frontmost = 'com.google.antigravity';
-      return { ok: true };
+      // frontFails: macOS keeps another app in front.
+      if (!state.frontFails) state.frontmost = 'com.google.antigravity';
+      return { ok: !state.frontFails };
     case 'restore':
       state.frontmost = args[0];
       return { ok: true };
     case 'paste-input': {
       const input = pick(args[0], 'Message input');
       if (input.error) return { error: input.error };
+      // frontLostBeforePaste: another app takes the front between the switch and the paste.
+      if (state.frontLostBeforePaste) state.frontmost = 'com.example.other';
       if (state.frontmost !== 'com.google.antigravity') return { error: 'not_frontmost' };
       const value = state.paste ?? state.clipboard;
       if (input.node.rival) state.rivalComposer = value;

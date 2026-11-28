@@ -218,7 +218,9 @@ function dialogs(nodes, read) {
           parts.push(String(textOf(entry)));
         }
       }
-      found.push({ question: flatten(parts.join(' ')), options, option1, skip, submit: inside((entry) => isButton(entry, 'Submit')), ambiguous: firsts > 1 });
+      // Only a dialog whose option 1 is the app's permission answer is a
+      // permission prompt; an agent's own question ("1 Red", "2 Blue") is not.
+      found.push({ question: flatten(parts.join(' ')), options, option1, skip, submit: inside((entry) => isButton(entry, 'Submit')), ambiguous: firsts > 1, permission: option1 >= 0 && nodes[option1].label.trim() === OPTION_1 });
       return;
     }
   });
@@ -235,7 +237,11 @@ function chooseAnswer(nodes, option, question, expected, nonce, read) {
   const shown = dialogs(nodes, read);
   if (shown.length === 0) throw new Error('not_found: permission dialog');
   requireOwn(nodes, expected, nonce, read);
-  const asking = shown.filter((prompt) => prompt.question === question);
+  const matching = shown.filter((prompt) => prompt.question === question);
+  // A dialog whose option 1 is not the app's permission answer (an agent's own
+  // question, or a wider grant) is never answered.
+  if (matching.length > 0 && !matching.some((prompt) => prompt.permission)) throw new Error('not_found: option 1');
+  const asking = matching.filter((prompt) => prompt.permission);
   if (asking.length === 0) throw new Error('question_changed');
   if (asking.length > 1 || asking[0].ambiguous) throw new Error('several_dialogs');
   const prompt = asking[0];
@@ -554,7 +560,7 @@ function snapshot(nodes) {
     title: title(nodes),
     running: running(nodes),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
-    dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options }))[0] || null,
+    dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options, permission: prompt.permission }))[0] || null,
     reply: reply(nodes, staticText),
   };
 }

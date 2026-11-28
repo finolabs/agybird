@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -136,6 +136,36 @@ test('a clipboard restore whose write fails is reported, never taken as restored
   assert.ok(envelope.warnings.some((warning) => /clipboard could not be restored/.test(warning)), envelope.warnings.join(' | '));
 });
 
+test('an agent question is reported for the user to answer in the app, never as a permission prompt', async () => {
+  const context = setup({ dialog: { question: 'Which color do you prefer?', options: ['1 Red', '2 Blue', '3 Other (write your answer)'] } });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'agent_question');
+  assert.deepEqual(envelope.permission_requests, []);
+  assert.deepEqual(envelope.evidence.agent_question.options, ['1 Red', '2 Blue', '3 Other (write your answer)']);
+  assert.ok(!names(context).includes('answer') && !names(context).includes('stop'));
+  assertCleanedUp(context);
+});
+
+test('a switch to the app that leaves it behind ends the run before a conversation opens', async () => {
+  const context = setup({ frontFails: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /did not come to the front/.test(warning)), envelope.warnings.join(' | '));
+  for (const name of ['new-conversation', 'clipboard-set', 'paste-input', 'send']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assertCleanedUp(context);
+});
+
+test('a paste refused before it pastes leaves no prompt behind and warns of none', async () => {
+  const context = setup({ frontLostBeforePaste: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(!order.includes('clear-input') && !order.includes('send'));
+  assert.ok(!envelope.warnings.some((warning) => /left unsent|may still be in the Antigravity app input/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().clipboard, 'user clipboard');
+});
+
 test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {
   const context = setup({ idleSeq: [0.1] });
   context.env.AGYBIRD_DESKTOP_IDLE_WAIT_MS = '50';
@@ -194,7 +224,6 @@ test('preflight blocks with a specific reason and leaves no lock', async () => {
     [{ trusted: false }, {}, 'not_trusted'],
     [{ version: '2.40.0' }, {}, 'unsupported_version'],
     [{ missingLabel: 'Select model' }, {}, 'labels_missing'],
-    [{}, { projects: [] }, 'no_project'],
     [{}, { projects: ['ws', 'ws'] }, 'ambiguous_project'],
   ];
   for (const [state, projectOptions, reason] of cases) {
@@ -206,6 +235,50 @@ test('preflight blocks with a specific reason and leaves no lock', async () => {
     assert.ok(!names(context).includes('send'), reason);
     assert.equal(existsSync(join(context.stateDir, 'desktop.lock')), false, reason);
   }
+});
+
+const projectFiles = (context) => readdirSync(context.env.AGYBIRD_PROJECTS_DIR).map((entry) => JSON.parse(readFileSync(join(context.env.AGYBIRD_PROJECTS_DIR, entry), 'utf8')));
+
+test('a folder no project points at gets one, named after it, and the next run reuses it', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const first = await run(context);
+  assert.equal(first.envelope.status, 'success', first.envelope.warnings.join(' | '));
+  const name = basename(context.cwd);
+  assert.equal(first.envelope.evidence.project_created, true);
+  assert.equal(first.envelope.evidence.project, name);
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', name]);
+  const [created] = projectFiles(context);
+  assert.equal(created.projectResources.resources[0].gitFolder.folderUri, pathToFileURL(context.cwd).href);
+  const second = await run(context);
+  assert.equal(second.envelope.evidence.project_created, undefined);
+  assert.equal(projectFiles(context).length, 1, 'no second project');
+});
+
+test('a new project never takes a name another project has', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const name = basename(context.cwd);
+  writeFileSync(join(context.env.AGYBIRD_PROJECTS_DIR, 'other.json'), JSON.stringify({ id: 'other', name, projectResources: { resources: [{ gitFolder: { folderUri: 'file:///elsewhere' } }] } }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.evidence.project, `${name}-2`);
+});
+
+test('a linked worktree gets its own project named <repo>-<worktree>', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const worktree = join(mkdtempSync(join(tmpdir(), 'agybird-dr-wt-')), 'feature-x');
+  git(context.cwd, 'worktree', 'add', '-q', '-b', 'feature-x', worktree);
+  const { envelope } = await start({ ...context, cwd: worktree }).done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.evidence.project, `${basename(context.cwd)}-feature-x`);
+  assert.ok(projectFiles(context).some((project) => project.projectResources.resources[0].gitFolder.folderUri === pathToFileURL(realpathSync(worktree)).href || project.projectResources.resources[0].gitFolder.folderUri === pathToFileURL(worktree).href));
+});
+
+test('a created project the app does not list blocks with nothing pasted', async () => {
+  const context = setup({ notListed: true }, { projects: [] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'project_not_listed');
+  assert.ok(!names(context).includes('clipboard-set'));
+  assertCleanedUp(context);
 });
 
 test('an app version outside the tested range runs when the user confirmed it', async () => {

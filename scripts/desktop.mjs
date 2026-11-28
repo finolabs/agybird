@@ -9,9 +9,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
-import { buildDelegationPrompt, findProjectForWorkspace, isDirectExecution, parseArgs, readPrompt, timeoutToMilliseconds, validateRequest } from './agybird.mjs';
+import { buildDelegationPrompt, createProject, findProjectForWorkspace, isDirectExecution, parseArgs, readPrompt, timeoutToMilliseconds, validateRequest } from './agybird.mjs';
 import { callBridge } from './lib/desktop-bridge.mjs';
 import { Blocked, changedFiles, diffStat, checkLabels, checkPlatform, checkProbe, envelope, permissionRequest, presetWarnings, refusedOption, structuredFromReply } from './lib/desktop-state.mjs';
 import { collectScope } from './lib/scope.mjs';
@@ -206,20 +206,56 @@ function releaseLock(path) {
   if (readLock(path)?.pid === process.pid) rmSync(path, { force: true });
 }
 
-// The app lists projects by name only, so the name must lead to this folder alone.
-function projectName(cwd, directory) {
-  const found = findProjectForWorkspace(cwd, directory);
-  const name = found?.document?.name;
-  if (!name) throw new Blocked('no_project', `Antigravity has no project for ${cwd}; open the folder as a project in the app first.`);
-  const namesakes = readdirSync(directory).filter((entry) => entry.endsWith('.json')).filter((entry) => {
+// Every project name on this Mac, read from the project files.
+function projectNames(directory) {
+  let entries = [];
+  try {
+    entries = readdirSync(directory).filter((entry) => entry.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  return entries.map((entry) => {
     try {
-      return JSON.parse(readFileSync(join(directory, entry), 'utf8')).name === name;
+      return JSON.parse(readFileSync(join(directory, entry), 'utf8')).name;
     } catch {
-      return false;
+      return undefined;
     }
   });
+}
+
+// The name a new project takes: the folder's name for a main checkout or a
+// plain folder, `<repo>-<worktree>` for a linked worktree (the repo named by
+// the main checkout that holds the common Git directory), then -2, -3... while
+// a project already has it (Fio, 28/11/2026).
+export function newProjectName(cwd, taken) {
+  const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8', shell: false, windowsHide: true });
+  const inside = git(['rev-parse', '--is-inside-work-tree']).stdout?.trim() === 'true';
+  let base = basename(cwd);
+  if (inside) {
+    const gitDir = resolve(cwd, git(['rev-parse', '--git-dir']).stdout.trim());
+    const common = resolve(cwd, git(['rev-parse', '--git-common-dir']).stdout.trim());
+    if (gitDir !== common && basename(common) === '.git') base = `${basename(dirname(common))}-${basename(cwd)}`;
+  }
+  const used = new Set(taken);
+  let name = base;
+  for (let n = 2; used.has(name); n += 1) name = `${base}-${n}`;
+  return { name, git: inside };
+}
+
+// The app lists projects by name only, so the name must lead to this folder
+// alone. A folder no project points at gets a new project (Fio, 28/11/2026).
+function resolveProject(cwd, directory) {
+  const found = findProjectForWorkspace(cwd, directory);
+  if (!found) {
+    const { name, git } = newProjectName(cwd, projectNames(directory));
+    createProject(cwd, name, { directory, git });
+    return { name, created: true };
+  }
+  const name = found.document?.name;
+  if (!name) throw new Blocked('no_project', `The Antigravity project for ${cwd} has no name; name it in the app.`);
+  const namesakes = projectNames(directory).filter((other) => other === name);
   if (namesakes.length > 1) throw new Blocked('ambiguous_project', `${namesakes.length} Antigravity projects are named ${JSON.stringify(name)}; rename all but the one for ${cwd} in the app.`);
-  return name;
+  return { name, created: false };
 }
 
 function fileHash(path) {
@@ -481,7 +517,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const probe = await bridge(['probe']);
     evidence.app_version = probe.version;
     checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
-    const project = projectName(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
+    const resolved = resolveProject(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
+    const project = resolved.name;
+    if (resolved.created) {
+      evidence.project_created = true;
+      evidence.project = project;
+    }
     const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
     // A lock an earlier run kept for the app is freed only by evidence that its
     // task ended: the app showing that run's conversation with no run going.
@@ -551,8 +592,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       saved = { clipboard: ready.clipboard };
       // Frontmost before the conversation opens: a composer created while the app
       // is in the background re-mounts when it comes forward and drops the paste.
-      await bridge(['front']);
-      await bridge(['new-conversation', project]);
+      const fronted = await bridge(['front']);
+      if (fronted.ok !== true) throw new Error('Antigravity did not come to the front, so the run did not open a conversation; nothing was pasted or sent.');
+      try {
+        await bridge(['new-conversation', project]);
+      } catch (error) {
+        // A project this run created that the picker does not list yet.
+        if (resolved.created && / failed: not_found: project /.test(error.message)) throw new Blocked('project_not_listed', `The Antigravity app does not list the new project ${JSON.stringify(project)} yet; nothing was pasted or sent. Retry, or open the folder as a project in the app.`);
+        throw error;
+      }
       const opened = await bridge(['snapshot']);
       if (opened.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot tell its composer from another; nothing was pasted or sent.`);
       checkLabels(opened);
@@ -566,7 +614,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       clipboardHeld = true;
       await bridge(['clipboard-set'], { input: prompt });
       // Paste, clear and Send act only while the app shows the untitled new conversation.
-      await bridge(['paste-input', UNTITLED], { timeoutMs: 30_000 });
+      try {
+        await bridge(['paste-input', UNTITLED], { timeoutMs: 30_000 });
+      } catch (error) {
+        // Refused before Edit > Paste: the composer holds nothing of the run's.
+        if (!(error instanceof Cancelled) && / failed: (?:not_frontmost|not_found|other_conversation|several_conversations|outside_conversation|several_controls|truncated|not_trusted|usage)/.test(error.message)) pasted = false;
+        throw error;
+      }
       // The composer holds the prompt now: the clipboard and the front go back
       // to the user at once, and the rest (the read back, Send) runs with the
       // app behind. A long prompt (a review's diff) takes seconds to read back.
@@ -656,6 +710,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (!follow(state)) {
         if (Date.now() >= deadline) throw new TimedOut(options.timeout);
         continue;
+      }
+      if (state.dialog && state.dialog.permission === false) {
+        // An agent's question is the user's to answer in the app; it is never
+        // answered through the permission flow.
+        turnOver = true;
+        evidence.agent_question = { question: state.dialog.question, options: state.dialog.options };
+        throw new Blocked('agent_question', `The agent in the Antigravity app asked a question and waits for the answer there: ${JSON.stringify(state.dialog.question)} (options: ${state.dialog.options.join('; ')}). Answer it in the app; Agybird does not answer agent questions.`);
       }
       if (state.dialog) {
         if (changesSince() && options.mode === 'read') {

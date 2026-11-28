@@ -4,6 +4,10 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- The desktop transport creates the Antigravity project a folder lacks, as the CLI transport does, instead of ending `blocked: no_project`: named after the folder, `<repo>-<worktree>` for a linked worktree (the app cannot run a worktree inside its main checkout's project), with `-2` and so on while a name is taken. A project the app does not list ends `blocked: project_not_listed`.
+- An agent's own question in the app (options such as "1 Red") ends a desktop run `blocked: agent_question` with the question in `evidence.agent_question`; it was read as a permission prompt before, and approving it could press an answer.
+- A desktop run whose switch to the app leaves it behind now stops before it opens a conversation, and a paste refused before it pastes no longer warns that a prompt was left unsent in the app.
+
 ## 0.4.8 - 2026-11-28
 
 - The desktop transport supports Antigravity 2.36 beside 2.35 (`TESTED_VERSION` covers 2.35.x and 2.36.x). On 2.36 a new conversation opens from the one `New Conversation` link, and the runner picks the project in the new conversation's project picker: it sets the picker's search field to the project name, presses the item whose own name is exactly that name (never a near-name), and reads the picker back; the menu is searched and pressed only while the untitled new conversation shows. It requires `Where the agent runs` to be `This Computer` before and after, and never changes where the agent runs, the branch, the model or the preset; any mismatch ends the run `error` before anything is pasted. On 2.35 the sidebar link is used as before.
