@@ -1370,12 +1370,17 @@ test('--archive-finished archives listed conversations that are alone and Idle, 
   const context = setup({ sidebarRows: { 'Done|ws': ['Idle'], 'Going|ws': ['In Progress'], 'Twice|ws': ['Idle', 'Idle'] } });
   const items = ['Done', 'Going', 'Twice', 'Gone'].map((name) => ({ title: `${name} - ws - Antigravity`, project: 'ws' }));
   items.push({ title: 'Odd title', project: 'ws' });
-  // A run of 0.4.8 recorded no project: it is found from the title.
+  // A run of 0.4.8 recorded no project: the workspace's own project is taken.
   items[0].project = null;
+  // A live run has this conversation: it is never archived.
+  items.push({ title: 'Busy - ws - Antigravity', project: 'ws' });
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  writeFileSync(join(runs, 'live.json'), JSON.stringify({ pid: process.pid, marker: 'live', title: 'Busy - ws - Antigravity', project: 'ws', app: true }));
   const { envelope } = await run(context, ['--archive-finished'], JSON.stringify(items));
   assert.equal(envelope.status, 'success');
-  assert.deepEqual(envelope.archived, ['Done - ws - Antigravity']);
-  assert.deepEqual(envelope.skipped.map((entry) => entry.reason.split(':')[0]), ['not_idle', 'several_rows', 'not_found', 'no conversation title of its project']);
+  assert.deepEqual(envelope.archived, [{ title: 'Done - ws - Antigravity', project: 'ws' }]);
+  assert.deepEqual(envelope.skipped.map((entry) => entry.reason.split(':')[0]).sort(), ['active_run', 'no conversation title of its project', 'not_found', 'not_idle', 'several_rows']);
   assert.deepEqual(context.fake().archived, ['Done|ws']);
   for (const name of ['front', 'open-row', 'snapshot']) assert.ok(!names(context).includes(name), `no ${name}`);
   assert.equal(existsSync(lockFile(context)), false);

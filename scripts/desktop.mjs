@@ -391,21 +391,48 @@ const PARTIAL_TREE = "The Antigravity app's accessibility tree is too large to r
 // every other character must read back in order.
 const normalized = (text) => String(text ?? '').replace(/\s+/g, '');
 
-// `--archive-finished`: archives the conversations of runs that already ended,
-// listed on stdin as JSON [{ title, project }] (the app's window titles), each
-// only when its sidebar row is alone and Idle. Holds the app lock meanwhile,
-// waiting for a run that acts in phases as a starting run does; it never
-// brings the app to the front or changes the conversation on screen.
-export async function archiveFinished(items, env = process.env) {
+// `--archive-finished`: archives the conversations of runs that already ended
+// with their reply read, listed on stdin as JSON [{ title, project }] (the
+// app's window titles), each only when its sidebar row is alone and Idle and
+// no live run, nor a gone one that may still run, has that conversation.
+// A run of 0.4.8 recorded no project: only a title of this workspace's own
+// project is taken then. Holds the app lock meanwhile, at most
+// ARCHIVE_HOLD_MS, waiting for a run that acts in phases as a starting run
+// does; it never brings the app to the front or changes the conversation on
+// screen. A signal interrupts the call in flight, and the lock is released.
+const ARCHIVE_HOLD_MS = 60_000;
+export async function archiveFinished(items, env = process.env, { cwd = process.cwd(), signal } = {}) {
+  const projectsDir = env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects');
+  let own = null;
+  try {
+    own = findProjectForWorkspace(cwd, projectsDir)?.document?.name ?? null;
+  } catch {
+    own = null;
+  }
+  const archived = [];
+  const skipped = [];
+  const wanted = [];
+  for (const item of items) {
+    const title = item?.title;
+    const project = typeof item?.project === 'string' && item.project ? item.project : own;
+    if (typeof title !== 'string' || typeof project !== 'string' || !isProjectTitle(title, project)) {
+      skipped.push({ title, reason: 'no conversation title of its project' });
+      continue;
+    }
+    if (!wanted.some((entry) => entry.title === title && entry.project === project)) wanted.push({ title, project });
+  }
+  if (wanted.length === 0) return { archived, skipped };
   const platform = env.AGYBIRD_DESKTOP_BRIDGE ? 'darwin' : process.platform;
   checkPlatform(platform);
-  const call = (args, options) => callBridge(args, { env, ...options });
+  const call = (args, options) => callBridge(args, { env, signal, ...options });
   const probe = await call(['probe']);
   checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
-  const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
+  const stateDir = env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird');
+  const lockFile = join(stateDir, 'desktop.lock');
   const until = Date.now() + ATTACH_WAIT_MS;
   let lockPath = null;
   for (;;) {
+    if (signal?.aborted) throw new Error('Archiving was interrupted before it took the app.');
     try {
       lockPath = acquireLock(lockFile, Date.now() + 10 * 60_000);
       break;
@@ -416,23 +443,25 @@ export async function archiveFinished(items, env = process.env) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
-  const archived = [];
-  const skipped = [];
-  // A run of 0.4.8 or earlier recorded no project: the longest project name
-  // the title ends with is its project.
-  const names = projectNames(env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
-  const projectOf = (title) => names.filter((name) => typeof name === 'string' && name && String(title).endsWith(` - ${name} - Antigravity`)).sort((a, b) => b.length - a.length)[0] ?? null;
   try {
-    for (const item of items) {
-      const title = item?.title;
-      const project = typeof item?.project === 'string' ? item.project : projectOf(title);
-      if (typeof title !== 'string' || typeof project !== 'string' || !isProjectTitle(title, project)) {
-        skipped.push({ title, reason: 'no conversation title of its project' });
+    // Under the lock: the conversations live runs (or gone runs that may still
+    // run) have are never archived, whatever an older job of the same title says.
+    const busy = new Set(readRecords(join(stateDir, 'desktop-runs'))
+      .filter(({ record }) => recordAlive(record) || record.app === true)
+      .map(({ record }) => `${record.title}|${record.project}`));
+    const holdUntil = Date.now() + ARCHIVE_HOLD_MS;
+    for (const { title, project } of wanted) {
+      if (busy.has(`${title}|${project}`)) {
+        skipped.push({ title, reason: 'active_run' });
+        continue;
+      }
+      if (Date.now() >= holdUntil || signal?.aborted) {
+        skipped.push({ title, reason: 'time: run archive again for the rest' });
         continue;
       }
       try {
         await call(['archive-row', rowTitle(title, project), project], { timeoutMs: PRESS_TIMEOUT_MS });
-        archived.push(title);
+        archived.push({ title, project });
       } catch (error) {
         skipped.push({ title, reason: error.message.replace(/^.* failed: /, '') });
       }
@@ -445,13 +474,20 @@ export async function archiveFinished(items, env = process.env) {
 
 export async function main(argv = process.argv.slice(2), env = process.env) {
   if (argv.includes('--archive-finished')) {
+    const stop = new AbortController();
+    const onSignal = () => stop.abort();
+    process.once('SIGTERM', onSignal);
+    process.once('SIGINT', onSignal);
     try {
       const items = JSON.parse((await readPrompt()) || '[]');
       if (!Array.isArray(items)) throw new Error('--archive-finished reads a JSON list of { title, project } on stdin');
-      process.stdout.write(`${JSON.stringify({ status: 'success', ...(await archiveFinished(items, env)) })}\n`);
+      process.stdout.write(`${JSON.stringify({ status: 'success', ...(await archiveFinished(items, env, { cwd: argv.includes('--cwd') ? resolve(argv[argv.indexOf('--cwd') + 1] ?? '.') : process.cwd(), signal: stop.signal })) })}\n`);
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ status: error instanceof Blocked ? 'blocked' : 'error', blocked_reason: error.reason, error: error.message })}\n`);
       process.exitCode = error instanceof Blocked ? 0 : 1;
+    } finally {
+      process.removeListener('SIGTERM', onSignal);
+      process.removeListener('SIGINT', onSignal);
     }
     return;
   }

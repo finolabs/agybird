@@ -457,13 +457,17 @@ function sidebarState(nodes, title, project, read) {
 // that row is alone and under Idle: a running, waiting or namesake row is
 // never archived. Throws the reason otherwise.
 function archiveButton(nodes, title, project, read) {
+  if (nodes.truncated) throw new Error('truncated');
   const shown = sidebarState(nodes, title, project, read);
   if (shown.rows.length === 0) throw new Error(`not_found: sidebar row ${title}`);
   if (shown.rows.length > 1) throw new Error(`several_rows: ${title}`);
   if (shown.rows[0].status !== 'Idle') throw new Error(`not_idle: ${shown.rows[0].status}`);
   const row = parentOf(nodes, shown.rows[0].index);
-  for (let at = row + 1; at < subtreeEnd(nodes, row); at += 1) if (nodes[at].role === 'AXButton' && nodes[at].label === 'Archive conversation') return at;
-  throw new Error('not_found: Archive conversation');
+  const buttons = [];
+  for (let at = row + 1; at < subtreeEnd(nodes, row); at += 1) if (nodes[at].role === 'AXButton' && nodes[at].label === 'Archive conversation') buttons.push(at);
+  if (buttons.length === 0) throw new Error('not_found: Archive conversation');
+  if (buttons.length > 1) throw new Error('several_controls: Archive conversation');
+  return buttons[0];
 }
 
 // desktop-decisions:end

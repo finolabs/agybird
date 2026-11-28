@@ -376,8 +376,16 @@ test('archive archives the conversations of finished desktop jobs, once', async 
   const first = json(await context.companion(['archive', '--json']));
   assert.equal(first.candidates, 1);
   assert.deepEqual(first.archived, ['Fake Task - ws - Antigravity']);
+  // Marked archived in its stored result: not offered again.
   const again = json(await context.companion(['archive', '--json']));
-  assert.deepEqual(again.archived, []);
-  assert.match(again.skipped[0].reason, /not_found/);
+  assert.equal(again.candidates, 0);
+  assert.notEqual((await context.companion(['archive', 'job-x'])).code, 0, 'no arguments');
+});
+
+test('archive leaves a desktop job that timed out before its reply was read', async () => {
+  const context = workspace({ stuck: true });
+  context.choose('desktop');
+  json(await context.companion(['task', '--timeout', '1s', '--json', 'Run forever']));
+  assert.equal(json(await context.companion(['archive', '--json'])).candidates, 0);
 });
 

@@ -935,15 +935,13 @@ async function commandSetup(argv, env) {
   const cwd = options.cwd ?? process.cwd();
   // agybird:desktop-start
   if (options.here && !options.transport) throw new Error('--here applies only with --transport.');
+  if (options.archiveFinished !== undefined && !['on', 'off'].includes(options.archiveFinished)) throw new Error('--archive-finished is on or off.');
   if (options.transport) {
     assertTransportSupported(checkTransport(options.transport, '--transport'));
     if (options.here) writeConfig(cwd, env, { transport: options.transport });
     else writeGlobalConfig(env, { transport: options.transport });
   }
-  if (options.archiveFinished !== undefined) {
-    if (!['on', 'off'].includes(options.archiveFinished)) throw new Error('--archive-finished is on or off.');
-    writeGlobalConfig(env, { archiveFinished: options.archiveFinished === 'on' });
-  }
+  if (options.archiveFinished !== undefined) writeGlobalConfig(env, { archiveFinished: options.archiveFinished === 'on' });
   // agybird:desktop-end
   const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
@@ -1131,33 +1129,61 @@ async function commandRunJob(argv, env) {
 
 // agybird:desktop-start
 // Archives, in the Antigravity app, the conversations of this workspace's
-// desktop jobs that ended (success or error), each only when its sidebar row
-// is alone and Idle. Jobs and their results stay in the job store.
+// desktop jobs that completed with their reply read (success, or an error
+// after the reply), each only when its sidebar row is alone and Idle; a
+// cancelled, timed-out or blocked job is never archived. An archived job is
+// marked in its stored result, so it is not offered again. Jobs and results
+// stay in the job store.
 async function commandArchive(argv, env) {
-  const { options } = parseFlags(argv, { ...COMMON });
+  const { options, positional } = parseFlags(argv, { ...COMMON });
+  if (positional.length > 0) throw new Error('archive takes no arguments; it archives every finished desktop job of this repository.');
   const cwd = options.cwd ?? process.cwd();
   const directory = storeFor(cwd, env);
   const items = [];
+  const jobsOf = new Map();
   for (const job of listJobs(directory)) {
-    if (job.request?.transport !== 'desktop') continue;
-    const result = readStoredResult(directory, job.id);
+    if (job.request?.transport !== 'desktop' || job.status !== 'completed') continue;
+    let result;
+    try {
+      result = readStoredResult(directory, job.id);
+    } catch {
+      continue;
+    }
     const title = result?.evidence?.conversation_title;
-    if (!['success', 'error'].includes(result?.status) || typeof title !== 'string' || result.evidence.archived === true) continue;
-    // Older runs recorded no project; the runner finds it from the title.
+    const read = result?.status === 'success' || (result?.status === 'error' && typeof result.response === 'string');
+    if (!read || typeof title !== 'string' || result.evidence.archived === true) continue;
+    // Older runs recorded no project; the runner takes the workspace's own then.
     const project = typeof result.evidence.project === 'string' ? result.evidence.project : null;
-    if (!items.some((item) => item.title === title && item.project === project)) items.push({ title, project });
+    const key = `${title}|${project}`;
+    if (!jobsOf.has(key)) {
+      jobsOf.set(key, []);
+      items.push({ title, project });
+    }
+    jobsOf.get(key).push(job.id);
   }
   let report = { archived: [], skipped: [] };
   if (items.length > 0) {
-    const child = spawnSync(process.execPath, [DESKTOP_RUNNER_PATH, '--archive-finished'], { cwd, env, input: JSON.stringify(items), encoding: 'utf8', shell: false, windowsHide: true, timeout: 5 * 60_000 });
-    report = lastJsonLine(child.stdout ?? '') ?? { status: 'error', error: (child.stderr || 'the desktop runner gave no result').trim() };
+    const child = spawnSync(process.execPath, [DESKTOP_RUNNER_PATH, '--archive-finished', '--cwd', cwd], { cwd, env, input: JSON.stringify(items), encoding: 'utf8', shell: false, windowsHide: true, timeout: 4 * 60_000, killSignal: 'SIGTERM' });
+    report = lastJsonLine(child.stdout ?? '') ?? { status: 'error', error: (child.error?.message || child.stderr || 'the desktop runner gave no result').trim() };
     if (report.status !== 'success') throw new Error(report.error ?? 'archiving failed');
+    for (const { title, project } of report.archived) {
+      const ids = jobsOf.get(`${title}|${project}`) ?? jobsOf.get(`${title}|null`) ?? [];
+      for (const id of ids) {
+        try {
+          const stored = readStoredResult(directory, id);
+          stored.evidence = { ...stored.evidence, archived: true };
+          writeFileSync(resultPath(directory, id), `${JSON.stringify(stored)}\n`, { mode: 0o600 });
+        } catch {
+          // the job is offered again next time, and its row is gone from the sidebar by then
+        }
+      }
+    }
   }
   const text = [
     `Archived ${report.archived.length} of ${items.length} finished desktop conversations in the Antigravity app.`,
     ...report.skipped.map((entry) => `Left ${JSON.stringify(entry.title)}: ${entry.reason}`),
   ].join('\n');
-  output(options, { candidates: items.length, ...report }, text);
+  output(options, { candidates: items.length, ...report, archived: report.archived.map((entry) => entry.title) }, text);
 }
 // agybird:desktop-end
 export const COMMANDS = {
