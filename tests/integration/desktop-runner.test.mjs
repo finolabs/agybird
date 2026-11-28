@@ -1254,14 +1254,24 @@ test('a conversation opened from the sidebar is read again until the view has sw
   assert.equal(context.fake().opened, 1, 'one press, then reads');
 });
 
-test('a kept app lock is freed when the sidebar shows its conversation alone and Idle', async () => {
+test('a kept app lock is freed when the sidebar shows its conversation alone and Idle while another one is on screen', async () => {
+  const kept = (context, extra = {}) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE, project: 'ws', ...extra }));
   const context = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
-  writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE }));
+  kept(context);
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
   const busy = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['In Progress'] } });
-  writeFileSync(lockFile(busy), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE }));
+  kept(busy);
   assert.equal((await run(busy)).envelope.evidence.blocked_reason, 'locked');
+  // A lock that did not record its project is left to the screen or the user.
+  const unnamed = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  kept(unnamed, { project: undefined });
+  assert.equal((await run(unnamed)).envelope.evidence.blocked_reason, 'locked');
+  // The kept conversation on screen, still running: the sidebar is never asked.
+  const running = setup({ runningPolls: 1, earlier: { title: 'Gone Task - ws - Antigravity', running: true, message: OWN }, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  kept(running);
+  assert.equal((await run(running)).envelope.evidence.blocked_reason, 'locked');
+  assert.ok(!names(running).includes('sidebar-state'));
 });
 
 test('a run whose row leaves the sidebar while it waits ends after 3 reads, and the lock does not stay', async () => {

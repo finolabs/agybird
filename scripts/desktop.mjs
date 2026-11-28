@@ -243,7 +243,7 @@ export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {}, en
     }
   }
   if (holder?.app === true && !(Number.isInteger(holder.pid) && processIsRunning(holder.pid))) {
-    const where = holder.conversation ? ` in its conversation ${JSON.stringify(holder.conversation)}; once the app shows that conversation with no run, retry` : '';
+    const where = holder.conversation ? ` in its conversation ${JSON.stringify(holder.conversation)}; once the app shows that conversation with no run, or its sidebar lists it alone under Idle, retry` : '';
     throw new Blocked('locked', `An earlier desktop run may still be going in the Antigravity app${where}. Or, once you are sure the app runs nothing for it, remove ${path}.`);
   }
   throw new Blocked('locked', 'Another desktop run is using the Antigravity app; retry once it finishes.');
@@ -253,11 +253,11 @@ export function acquireLock(path, expiresAt, { pid = process.pid, hooks = {}, en
 // run this task, with its conversation once known, so it outlives this process
 // however it ends, a kill during cleanup included. Released only by a run that
 // saw the task end, by evidence (lockHeld), or by the user.
-function markLockForApp(path, expiresAt, conversation, marker) {
+function markLockForApp(path, expiresAt, conversation, marker, project) {
   if (readLock(path)?.pid !== process.pid) return;
   const temporary = `${path}.${process.pid}.tmp`;
   rmSync(temporary, { force: true });
-  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, runs: true, app: true, conversation, marker }), { mode: 0o600, flag: 'wx' });
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid, expiresAt, runs: true, app: true, conversation, marker, project }), { mode: 0o600, flag: 'wx' });
   renameSync(temporary, path);
 }
 
@@ -461,7 +461,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (runRecord) writeRecord(runRecord, { pid: process.pid, marker, project: projectName, title: conversation, expiresAt: lockExpiresAt, app });
   };
   const markApp = () => {
-    if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation, marker);
+    if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation, marker, projectName);
     writeOwnRecord(true);
   };
   // Gives the app to other runs while the agent works.
@@ -482,13 +482,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       await via(['open-row', name, projectName, String(n)], limit(PRESS_TIMEOUT_MS));
       // The view switches a moment after the press: read again while the
       // window still shows another title, up to OPEN_READS reads.
+      // A namesake still on screen from the row before reads the same title
+      // without the marker, so every read up to OPEN_READS is made.
       for (let read = 0; read < OPEN_READS; read += 1) {
         const shown = await via(['snapshot', marker], limit());
         if (shown.truncated !== true && shown.title === conversation && shown.own === true) return true;
-        if (shown.title === conversation) break;
-        // In a cancel's grace `limit` bounds the wait; otherwise the next read
-        // through `bridge` throws once the run is cancelled.
-        await new Promise((resolve) => setTimeout(resolve, limit(OPEN_READ_GAP_MS)?.timeoutMs ?? OPEN_READ_GAP_MS));
+        if (read + 1 === OPEN_READS) break;
+        // In a cancel's grace `limit` bounds the wait; otherwise a cancel wakes it.
+        if (via === bridge) {
+          await sleep(OPEN_READ_GAP_MS);
+          if (cancelled) throw new Cancelled();
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, limit(OPEN_READ_GAP_MS).timeoutMs));
+        }
       }
     }
     throw new Error(`The run's conversation ${JSON.stringify(conversation)} could not be opened from the sidebar; nothing was pressed in it.`);
@@ -685,13 +691,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // may have renamed the conversation since the lock recorded it (2.36),
       // so a titled conversation showing the run's own message is its own.
       if (shown.truncated !== true && shown.title !== null && shown.title !== UNTITLED && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
-      // Or the sidebar shows that conversation alone and Idle, with the app
-      // showing another one (the title names its project last).
-      const named = /^(.+) - ([^]+?) - Antigravity$/.exec(abandoned.conversation);
-      if (!ended && named) {
+      // Or, only when a whole read shows another conversation (neither the
+      // kept one's title nor its run's message, which would be stronger
+      // evidence either way), the sidebar lists the kept conversation alone
+      // and Idle in the project the lock recorded.
+      const elsewhere = shown.truncated !== true && shown.title !== null && shown.title !== abandoned.conversation && shown.own !== true;
+      const project = typeof abandoned.project === 'string' && abandoned.project ? abandoned.project : null;
+      if (!ended && elsewhere && project && isProjectTitle(abandoned.conversation, project)) {
         let side = null;
         try {
-          side = await bridge(['sidebar-state', named[1], named[2]]);
+          side = await bridge(['sidebar-state', rowTitle(abandoned.conversation, project), project]);
         } catch (error) {
           if (error instanceof Cancelled) throw error;
         }
@@ -1090,7 +1099,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       let until = '';
       if (holdLock) {
         until = conversation
-          ? ` Other desktop runs are refused until one finds the app showing ${JSON.stringify(conversation)} with no run, or until you remove ${lockPath} once it shows none.`
+          ? ` Other desktop runs are refused until one finds the app showing ${JSON.stringify(conversation)} with no run, or its sidebar listing it alone under Idle, or until you remove ${lockPath} once it shows none.`
           : ` Other desktop runs are refused until you remove ${lockPath} once the app shows no run.`;
       } else if (keepRecord) {
         until = ` It counts among the ${MAX_RUNS} desktop runs until the sidebar shows it Idle, or until you remove ${runRecord} once it shows no run.`;
