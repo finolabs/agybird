@@ -8,7 +8,7 @@ import test from 'node:test';
 import { AX_SCRIPT_PATH, loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
 import { permissionRequest } from '../../scripts/lib/desktop-state.mjs';
 
-const { chooseAnswer, chooseComposer, chooseCopy, chooseStop, dialogs, namedConversation, reply, requireOwn, running, title } = loadAxDecisions();
+const { chooseAnswer, chooseComposer, chooseCopy, chooseNewConversation, choosePicker, chooseProjectItem, chooseProjectSearch, chooseStop, dialogs, namedConversation, reply, requireLocal, requireOwn, running, title } = loadAxDecisions();
 const TITLE = 'Fake Task - ws - Antigravity';
 const OPTIONS = ['1 Yes, allow this time', "2 Yes, and always allow 'curl' in this conversation", "3 Yes, and always allow 'curl'", '4 No (tell the agent what to do instead)'];
 
@@ -326,4 +326,152 @@ test('the decisions region calls no accessibility API', () => {
   const region = source.slice(source.indexOf('// desktop-decisions:start'), source.indexOf('// desktop-decisions:end'));
   assert.ok(region.length > 0);
   assert.doesNotMatch(region, /\$[.(]|ObjC|Application\(|delay\(/);
+});
+
+// Antigravity 2.36: one titled web area holds the sidebar, with a single New
+// Conversation link, and the conversation, whose composer picks where the
+// agent runs and the project. `menu` lists the projects the open project
+// picker shows, as the app renders each: the name as its own text, then a
+// Project Settings button.
+function newConversation236({ current = 'studio', where = 'This Computer', menu = null, links = 1, windowTitle = 'Antigravity' } = {}) {
+  return [
+    node(0, 'AXWindow', 'Antigravity'),
+    node(1, 'AXWebArea', ''),
+    node(1, 'AXWebArea', windowTitle),
+    node(2, 'AXGroup', 'Sidebar'),
+    ...Array.from({ length: links }, () => [node(3, 'AXLink', 'New Conversation'), node(4, 'AXStaticText', '', 'New Conversation')]).flat(),
+    node(2, 'AXGroup'),
+    ...(where === null ? [] : [node(3, 'AXPopUpButton', `Where the agent runs, current: ${where}`)]),
+    node(3, 'AXPopUpButton', `Select project, current: ${current}`),
+    ...(menu === null ? [] : [
+      node(4, 'AXMenu', `Select project, current: ${current}`),
+      node(5, 'AXTextField', 'Search Projects'),
+      ...menu.flatMap((name) => [node(5, 'AXMenuItem', `${name} Project Settings`), node(6, 'AXGroup'), node(7, 'AXStaticText', '', name), node(6, 'AXButton', 'Project Settings')]),
+      node(5, 'AXMenuItem', 'New Project'),
+      node(5, 'AXMenuItem', 'No Project Project Settings'),
+    ]),
+    node(3, 'AXPopUpButton', 'Branch, current: main'),
+    node(3, 'AXTextArea', 'Message input'),
+    node(3, 'AXPopUpButton', 'Select model, current: Gemini 3.8 Flash Medium'),
+    node(3, 'AXPopUpButton', 'Agent permissions preset selector, current: Request Review'),
+  ];
+}
+const NEAR_NAMES = ['agybird-wt-agy', 'pin-agybird-0-4-5', 'agybird', 'agybird-codex-task-2'];
+
+test('a new conversation opens from the 2.35 sidebar link of the project, or the one 2.36 link', () => {
+  const old = sidebar('Antigravity', ['Other Chat']);
+  assert.deepEqual(plain(chooseNewConversation(old, 'ws')), { layout: 'sidebar', index: 3 });
+  assert.throws(() => chooseNewConversation(old, 'other'), /not_found: project other/);
+  const nodes = newConversation236();
+  const opened = plain(chooseNewConversation(nodes, 'agybird'));
+  assert.equal(opened.layout, 'picker');
+  assert.equal(nodes[opened.index].label, 'New Conversation');
+  assert.equal(nodes[opened.index].role, 'AXLink');
+  assert.throws(() => chooseNewConversation(newConversation236({ links: 2 }), 'agybird'), /several_controls: New Conversation/);
+  assert.throws(() => chooseNewConversation(newConversation236({ links: 0 }), 'agybird'), /not_found: New Conversation/);
+});
+
+test('the 2.36 project picker is read only in the new conversation, and the agent must run on this computer', () => {
+  const nodes = newConversation236();
+  const picker = plain(choosePicker(nodes, 'Select project'));
+  assert.equal(picker.current, 'studio');
+  assert.equal(nodes[picker.index].label, 'Select project, current: studio');
+  assert.equal(plain(choosePicker(nodes, 'Where the agent runs')).current, 'This Computer');
+  assert.doesNotThrow(() => requireLocal(nodes));
+  assert.throws(() => requireLocal(newConversation236({ where: 'Cloud' })), /not_local: the agent runs on Cloud/);
+  assert.throws(() => requireLocal(newConversation236({ where: null })), /not_found: Where the agent runs/);
+  // Another conversation's composer is not the new conversation's.
+  assert.throws(() => choosePicker(newConversation236({ windowTitle: TITLE }), 'Select project'), /other_conversation/);
+  const twice = newConversation236();
+  twice.splice(8, 0, node(3, 'AXPopUpButton', 'Select project, current: yody'));
+  assert.throws(() => choosePicker(twice, 'Select project'), /several_controls: Select project/);
+});
+
+test('the project is the menu item whose own name is exactly the project, never a near-name', () => {
+  const nodes = newConversation236({ menu: NEAR_NAMES });
+  const search = chooseProjectSearch(nodes);
+  assert.equal(nodes[search].label, 'Search Projects');
+  const item = chooseProjectItem(nodes, 'agybird');
+  assert.equal(nodes[item].label, 'agybird Project Settings');
+  assert.equal(nodes[item + 2].value, 'agybird');
+  assert.equal(nodes[chooseProjectItem(nodes, 'agybird-wt-agy')].label, 'agybird-wt-agy Project Settings');
+  // Only near-names listed, or none at all: nothing to press.
+  assert.throws(() => chooseProjectItem(newConversation236({ menu: ['agybird-wt-agy', 'pin-agybird-0-4-5'] }), 'agybird'), /not_found: project agybird/);
+  assert.throws(() => chooseProjectItem(newConversation236({ menu: [] }), 'agybird'), /not_found: project agybird/);
+  // The label alone is not the name: the item's own text must match.
+  const relabelled = newConversation236({ menu: ['agybird-x'] });
+  relabelled.find((entry) => entry.label === 'agybird-x Project Settings').label = 'agybird Project Settings';
+  assert.throws(() => chooseProjectItem(relabelled, 'agybird'), /not_found: project agybird/);
+  // Two items named exactly the project cannot be told apart.
+  assert.throws(() => chooseProjectItem(newConversation236({ menu: ['agybird', 'agybird'] }), 'agybird'), /several_controls: project agybird/);
+  // No open picker menu: nothing is searched or pressed.
+  assert.throws(() => chooseProjectSearch(newConversation236()), /not_found: project picker/);
+  assert.throws(() => chooseProjectItem(newConversation236(), 'agybird'), /not_found: project picker/);
+  assert.throws(() => chooseProjectItem(nodes, 'No Project'), /not_found: project No Project/);
+});
+
+// A 2.36 conversation: the user's message, then the agent's turn. While it
+// runs the turn shows "Agent working" and the composer a Cancel button; once
+// done, "Agent said" heads several groups (the time worked, the text, a list)
+// before the response actions.
+function conversation236(userText, { done = true, replyTexts = ['READY', 'Second line.'] } = {}) {
+  return bare(TITLE,
+    node(2, 'AXHeading', 'You said'),
+    node(2, 'AXGroup'),
+    node(3, 'AXStaticText', '', userText),
+    ...(done
+      ? [
+        node(2, 'AXHeading', 'Agent said'),
+        node(2, 'AXGroup'),
+        node(3, 'AXButton', 'Worked for 2m'),
+        node(2, 'AXGroup'),
+        node(3, 'AXStaticText', '', replyTexts[0]),
+        node(2, 'AXList'),
+        node(3, 'AXStaticText', '', replyTexts[1]),
+        node(2, 'AXGroup', 'Response actions'),
+        node(3, 'AXButton', 'Copy'),
+      ]
+      : [node(2, 'AXHeading', 'Agent working'), node(3, 'AXStaticText', '', 'Agent working')]),
+    node(2, 'AXTextArea', 'Message input'),
+    ...(done ? [] : [node(2, 'AXButton', 'Cancel (⌃C)')]),
+  );
+}
+
+test('on 2.36 a turn runs while Cancel shows, and Stop presses that Cancel', () => {
+  const going = conversation236(`Say READY.\n${MARK}`, { done: false });
+  assert.equal(running(going), true);
+  assert.equal(going[chooseStop(going, TITLE, NONCE)].label, 'Cancel (⌃C)');
+  assert.equal(reply(going), null);
+  const ended = conversation236(`Say READY.\n${MARK}`);
+  assert.equal(running(ended), false);
+  assert.throws(() => chooseStop(ended, TITLE, NONCE), /not_found: Stop execution/);
+});
+
+test('on 2.36 the reply is every group after "Agent said", up to its response actions', () => {
+  const nodes = conversation236(`Say READY.\n${MARK}`);
+  assert.equal(reply(nodes), 'READY\nSecond line.');
+  assert.equal(nodes[chooseCopy(nodes, TITLE, NONCE)].label, 'Copy');
+  assert.doesNotThrow(() => requireOwn(nodes, TITLE, NONCE));
+  // The marker repeated anywhere in the agent's reply is not the run's own message.
+  const echoed = conversation236('Another task.', { replyTexts: ['READY', MARK] });
+  assert.throws(() => requireOwn(echoed, TITLE, NONCE), /not_own/);
+});
+
+test('on 2.36 a marker in the sidebar, inside the titled web area, is not the conversation\'s own message', () => {
+  // Another conversation, unmarked, while the sidebar lists a chat whose title holds the run's marker.
+  const nodes = conversation236('Another task.');
+  const sidebarAt = nodes.findIndex((entry) => entry.role === 'AXWebArea' && entry.label === TITLE) + 1;
+  nodes.splice(sidebarAt, 0, node(2, 'AXGroup', 'Sidebar'), node(3, 'AXLink', 'New Conversation'), node(3, 'AXStaticText', '', `Chat ${MARK}`));
+  assert.throws(() => requireOwn(nodes, TITLE, NONCE), /not_own/);
+  assert.equal(namedConversation(nodes, 'Antigravity', 'ws', NONCE), null);
+  // The run's own message still counts with the same sidebar beside it.
+  const own = conversation236(`Say READY.\n${MARK}`);
+  own.splice(sidebarAt, 0, node(2, 'AXGroup', 'Sidebar'), node(3, 'AXStaticText', '', 'Other Chat'));
+  assert.doesNotThrow(() => requireOwn(own, TITLE, NONCE));
+});
+
+test('the project menu is searched and pressed only in the untitled new conversation', () => {
+  const titled = newConversation236({ windowTitle: TITLE, menu: ['agybird'] });
+  assert.throws(() => chooseProjectSearch(titled), /other_conversation/);
+  assert.throws(() => chooseProjectItem(titled, 'agybird'), /other_conversation/);
 });

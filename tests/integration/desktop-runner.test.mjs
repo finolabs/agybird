@@ -858,3 +858,115 @@ test('a stalled Stop finds the app lock already kept, and cleanup ends on its ow
   assert.equal(context.fake().clipboard, 'user clipboard');
   assert.equal(context.fake().frontmost, 'com.example.host');
 });
+
+// Antigravity 2.36 opens a new conversation from one New Conversation link and
+// picks the project in the composer's project picker, among near-names.
+const NEAR_NAMES = ['ws-wt-agy', 'pin-ws-0-4-5', 'ws', 'ws-codex-task-2'];
+
+test('on 2.36 the run picks the exact project in the new conversation\'s picker and returns the reply', async () => {
+  const context = setup({ version: '2.36.0', runningPolls: 2, reply: 'READY', pickerCurrent: 'studio', pickerProjects: NEAR_NAMES });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(envelope.response, 'READY');
+  assert.equal(envelope.evidence.app_version, '2.36.0');
+  const fake = context.fake();
+  assert.deepEqual(fake.pressed, ['New Conversation', 'Select project, current: studio', 'Search Projects = ws', 'ws Project Settings']);
+  assert.equal(fake.project, 'ws');
+  // Where the agent runs, the branch, the model and the preset are never changed.
+  assert.equal(fake.location ?? 'This Computer', 'This Computer');
+  assert.equal(fake.branch ?? 'main', 'main');
+  assert.equal(fake.model, 'Gemini 3.8 Flash Medium');
+  assert.equal(fake.preset, 'Request Review');
+  assertCleanedUp(context);
+});
+
+test('on 2.36 a picker already on the project is left as it is', async () => {
+  const context = setup({ version: '2.36.0', pickerCurrent: 'ws', pickerProjects: NEAR_NAMES });
+  assert.equal((await run(context)).envelope.status, 'success');
+  assert.deepEqual(context.fake().pressed, ['New Conversation']);
+});
+
+test('on 2.36 the run fails closed, before any paste, unless the picker ends on the exact project on this computer', async () => {
+  const cases = [
+    [{ pickerProjects: ['ws-wt-agy', 'pin-ws-0-4-5'] }, /not_found: project ws/],
+    [{ location: 'Cloud' }, /not_local: the agent runs on Cloud/],
+    [{ pickerNoop: true }, /project_unchanged/],
+    [{ newConversationLinks: 2 }, /several_controls: New Conversation/],
+    [{ newConversationLinks: 0 }, /not_found: New Conversation/],
+    [{ locationAfterOpen: 'Cloud' }, /would run the agent on "Cloud"/],
+  ];
+  for (const [state, pattern] of cases) {
+    const context = setup({ version: '2.36.0', pickerCurrent: 'studio', pickerProjects: NEAR_NAMES, ...state });
+    const { envelope } = await run(context);
+    assert.equal(envelope.status, 'error', JSON.stringify(state));
+    assert.ok(envelope.warnings.some((warning) => pattern.test(warning)), `${JSON.stringify(state)}: ${JSON.stringify(envelope.warnings)}`);
+    const order = names(context);
+    assert.ok(!order.includes('paste-input') && !order.includes('send') && !order.includes('clipboard-set'), JSON.stringify(state));
+    assertCleanedUp(context);
+  }
+});
+
+test('on 2.36 a run past its deadline presses the conversation\'s Cancel', async () => {
+  const context = setup({ version: '2.36.0', pickerProjects: NEAR_NAMES, stuck: true });
+  const { envelope } = await run(context, ['--timeout', '300ms']);
+  assert.equal(envelope.status, 'error');
+  assert.ok(names(context).includes('stop'));
+  assert.equal(context.fake().stopped, true);
+  assertCleanedUp(context);
+});
+
+// Antigravity 2.36 titles a new conversation with the prompt's first line,
+// then renames it a few seconds later. The run's marker, not the title, is
+// what identifies its conversation.
+test('a conversation the app renames after Send is followed while it shows the run\'s own message', async () => {
+  const context = setup({ version: '2.36.0', pickerProjects: ['ws'], runningPolls: 3, reply: 'READY', renameAfter: 1, renamed: 'Agybird CLI Ready Check' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(envelope.response, 'READY');
+  assert.equal(envelope.evidence.conversation_title, 'Agybird CLI Ready Check - ws - Antigravity');
+  const copy = context.fake().calls.find((call) => call[0] === 'copy-reply');
+  assert.equal(copy[1], 'Agybird CLI Ready Check - ws - Antigravity');
+  assertCleanedUp(context);
+});
+
+test('a rename into another project, or without the run\'s own message, still ends the run unread', async () => {
+  for (const state of [{ renamedProject: 'other' }, { renamedMessage: 'Another task of the user.' }]) {
+    const context = setup({ version: '2.36.0', pickerProjects: ['ws'], runningPolls: 5, renameAfter: 1, renamed: 'Agybird CLI Ready Check', ...state });
+    const { envelope } = await run(context);
+    assert.equal(envelope.status, 'error', JSON.stringify(state));
+    assert.ok(envelope.warnings.some((warning) => /another conversation|does not include the run's own message/.test(warning)), JSON.stringify(envelope.warnings));
+    assert.ok(!names(context).includes('stop') && !names(context).includes('copy-reply'), JSON.stringify(state));
+  }
+});
+
+test('a kept app lock is released once the app shows its renamed conversation with no run', async () => {
+  const context = setup({ earlier: { title: 'Agybird CLI Ready Check - ws - Antigravity', running: false, message: OWN } });
+  appLock(context, Date.now() + 60 * 60_000);
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assertCleanedUp(context);
+  // Renamed and still running holds the lock.
+  const going = setup({ earlier: { title: 'Agybird CLI Ready Check - ws - Antigravity', running: true, message: OWN } });
+  appLock(going, Date.now() - 1);
+  assert.equal((await run(going)).envelope.evidence.blocked_reason, 'locked');
+});
+
+test('on 2.36 a switch to a titled conversation while the project menu is open searches and presses nothing there', async () => {
+  const context = setup({ version: '2.36.0', pickerCurrent: 'studio', pickerProjects: NEAR_NAMES, titleWhileMenuOpen: 'Other Chat - ws - Antigravity' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /other_conversation/.test(warning)), JSON.stringify(envelope.warnings));
+  assert.deepEqual(context.fake().pressed, ['New Conversation', 'Select project, current: studio']);
+  assert.ok(!names(context).includes('paste-input'));
+  assertCleanedUp(context);
+});
+
+test('on 2.36 a marker in a sidebar title neither follows a rename into another conversation nor frees a kept lock', async () => {
+  const marked = setup({ version: '2.36.0', pickerProjects: ['ws'], runningPolls: 5, renameAfter: 1, renamed: 'Agybird CLI Ready Check', renamedMessage: 'Another task of the user.', sidebarExtra: 'MARKER' });
+  const { envelope } = await run(marked);
+  assert.equal(envelope.status, 'error', JSON.stringify(envelope.warnings));
+  assert.ok(!names(marked).includes('copy-reply') && !names(marked).includes('stop'));
+  const kept = setup({ version: '2.36.0', earlier: { title: 'Agybird CLI Ready Check - ws - Antigravity', running: false, message: 'Another task of the user.' }, sidebarExtra: OWN });
+  appLock(kept, Date.now() + 60 * 60_000);
+  assert.equal((await run(kept)).envelope.evidence.blocked_reason, 'locked');
+});

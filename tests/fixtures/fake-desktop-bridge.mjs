@@ -13,7 +13,9 @@
 // non-text content, which a restore loses),
 // dialog.fragments (the question as separate text nodes), extraDialog (a second
 // { question, options } dialog shown below the first),
-// copyNoop (Copy leaves the clipboard as it was), title (the conversation title
+// copyNoop (Copy leaves the clipboard as it was), renameAfter (snapshots after
+// Send after which the app renames the run's conversation to `renamed`, in
+// renamedProject if set, showing renamedMessage instead if set), title (the conversation title
 // once sent), switchAfter (snapshots after which the app shows another
 // conversation), untitledPolls (snapshots after send that still show the new
 // conversation untitled; Send then returns no title), switchWhileUntitled (the
@@ -44,6 +46,19 @@
 // onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
+//
+// A version of 2.36.x shows the 2.36 layout: one New Conversation link in the
+// sidebar (newConversationLinks of them; default 1) and a composer that picks
+// where the agent runs (location; default This Computer), the project
+// (pickerCurrent, the project before new-conversation; default project) and
+// the branch (branch; default main). The open project picker lists
+// pickerProjects (default [project]) filtered by its search; pickerNoop leaves
+// the picker unchanged when an item is pressed; locationAfterOpen is where the
+// agent runs once the conversation has opened; titleWhileMenuOpen is the
+// conversation the app shows once the project menu is open; sidebarExtra adds a
+// sidebar entry (MARKER: one holding the run's marker). Every press of the flow is
+// recorded in `pressed`. A turn shows Cancel (⌃C) instead of Stop execution and
+// its reply as several groups.
 
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 
@@ -107,7 +122,16 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
   save();
 }
 
+function pickerLayout() {
+  return /^2\.36\./.test(String(state.version));
+}
+
+function isStopNode(node) {
+  return node.role === 'AXButton' && (node.label === 'Stop execution' || node.label.startsWith('Cancel ('));
+}
+
 function title() {
+  if (state.menuOpen && state.titleWhileMenuOpen) return state.titleWhileMenuOpen;
   if (!state.sent && state.earlier) return state.earlier.title;
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
   if (state.rivalDuringNaming) return `${state.rivalDuringNaming} - ${state.project} - Antigravity`;
@@ -115,7 +139,13 @@ function title() {
   if (state.untitledLeft > 0 || state.namingLeft > 0) return 'Antigravity';
   if (state.switchWhileUntitled) return `Other Chat - ${state.project} - Antigravity`;
   if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return `Other Chat - ${state.project} - Antigravity`;
+  if (renamedNow()) return `${state.renamed} - ${state.renamedProject ?? state.project} - Antigravity`;
   return state.title ?? `Fake Task - ${state.project} - Antigravity`;
+}
+
+// The app renames the run's conversation once more than `renameAfter` snapshots were read after Send.
+function renamedNow() {
+  return state.sent && state.renameAfter !== undefined && (state.polled ?? 0) > state.renameAfter;
 }
 
 // The user's message the conversation on screen shows, as title() picks that
@@ -129,6 +159,7 @@ function conversationText() {
   if (state.switchWhileUntitled) return ANOTHER;
   if (state.switchAfter !== undefined && (state.polled ?? 0) > state.switchAfter) return ANOTHER;
   if (state.namesakeAfter !== undefined && (state.polled ?? 0) > state.namesakeAfter) return ANOTHER;
+  if (renamedNow() && state.renamedMessage !== undefined) return state.renamedMessage;
   return state.message ?? '';
 }
 
@@ -151,6 +182,18 @@ function listed() {
 // (Copy) and Stop execution.
 function controls() {
   if (!state.sent) return [];
+  if (pickerLayout()) {
+    return [
+      { depth: 2, role: 'AXHeading', label: 'Agent said' },
+      { depth: 2, role: 'AXGroup', label: '' },
+      { depth: 3, role: 'AXButton', label: 'Worked for 2s' },
+      { depth: 2, role: 'AXGroup', label: '' },
+      { depth: 3, role: 'AXStaticText', label: '', value: String(state.reply ?? '') },
+      { depth: 2, role: 'AXGroup', label: 'Response actions' },
+      { depth: 3, role: 'AXButton', label: 'Copy' },
+      { depth: 2, role: 'AXButton', label: 'Cancel (⌃C)' },
+    ];
+  }
   return [
     { depth: 2, role: 'AXHeading', label: 'Agent said' },
     { depth: 2, role: 'AXGroup', label: '' },
@@ -180,6 +223,79 @@ function composer(rival) {
   ];
 }
 
+// The 2.36 sidebar: its New Conversation links and the conversations listed.
+function sidebar236() {
+  return [
+    { depth: 2, role: 'AXGroup', label: 'Sidebar' },
+    ...Array.from({ length: state.newConversationLinks ?? 1 }, () => ({ depth: 3, role: 'AXLink', label: 'New Conversation' })),
+    ...listed().map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value })),
+    // A sidebar entry whose text holds a run marker (MARKER: the marker of the run in flight).
+    ...(state.sidebarExtra ? [{ depth: 3, role: 'AXStaticText', label: '', value: state.sidebarExtra === 'MARKER' ? `Chat ${runMarker()}` : state.sidebarExtra }] : []),
+  ];
+}
+
+// The marker line of the prompt the run sent, read from the composer it pasted.
+function runMarker() {
+  return /\[agybird-run [0-9a-f]+\]/.exec(String(state.composer ?? state.clipboardWrites?.[0] ?? ''))?.[0] ?? '';
+}
+
+// The 2.36 composer's pickers, with the project picker's menu while it is open.
+function pickers() {
+  if (!pickerLayout()) return [];
+  const current = state.pickerCurrent ?? state.project;
+  const shown = (state.pickerProjects ?? [state.project]).filter((name) => !state.search || name.includes(state.search));
+  return [
+    { depth: 2, role: 'AXPopUpButton', label: `Where the agent runs, current: ${state.location ?? 'This Computer'}` },
+    { depth: 2, role: 'AXPopUpButton', label: `Select project, current: ${current}` },
+    ...(state.menuOpen
+      ? [
+        { depth: 3, role: 'AXMenu', label: `Select project, current: ${current}` },
+        { depth: 4, role: 'AXTextField', label: 'Search Projects', value: state.search ?? '' },
+        ...shown.flatMap((name) => [
+          { depth: 4, role: 'AXMenuItem', label: `${name} Project Settings` },
+          { depth: 5, role: 'AXGroup', label: '' },
+          { depth: 6, role: 'AXStaticText', label: '', value: name },
+          { depth: 5, role: 'AXButton', label: 'Project Settings' },
+        ]),
+        { depth: 4, role: 'AXMenuItem', label: 'New Project' },
+      ]
+      : []),
+    { depth: 2, role: 'AXPopUpButton', label: `Branch, current: ${state.branch ?? 'main'}` },
+  ];
+}
+
+// The 2.36 flow of desktop-ax.js new-conversation, step by step on the window
+// this fake shows, with the shipped decisions; each press is recorded.
+function openWithPicker(project) {
+  const pressed = (state.pressed ??= []);
+  let nodes = screenNodes(false);
+  const opened = decisions.chooseNewConversation(nodes, project);
+  pressed.push(nodes[opened.index].label);
+  delete state.earlier;
+  nodes = screenNodes(false);
+  decisions.requireLocal(nodes);
+  const picker = decisions.choosePicker(nodes, 'Select project');
+  if (picker.current !== project) {
+    pressed.push(nodes[picker.index].label);
+    state.menuOpen = true;
+    nodes = screenNodes(false);
+    decisions.chooseProjectSearch(nodes);
+    state.search = project;
+    pressed.push(`Search Projects = ${project}`);
+    nodes = screenNodes(false);
+    const item = decisions.chooseProjectItem(nodes, project);
+    pressed.push(nodes[item].label);
+    state.menuOpen = false;
+    delete state.search;
+    if (!state.pickerNoop) state.pickerCurrent = nodes[item + 2].value;
+    const now = decisions.choosePicker(screenNodes(false), 'Select project');
+    if (now.current !== project) throw new Error(`project_unchanged: the new conversation shows project ${now.current}`);
+  }
+  decisions.requireLocal(screenNodes(false));
+  state.project = project;
+  if (state.locationAfterOpen) state.location = state.locationAfterOpen;
+}
+
 // The accessibility nodes of the window: the sidebar, its titled web area with
 // the user's message, one text node per line, the conversation's controls,
 // while one waits each dialog as the app renders it, then its composer. During the commands
@@ -188,16 +304,23 @@ function composer(rival) {
 // the part before the cut and is marked `truncated`, as walk() marks it.
 function screenNodes(withDialogs, cut = Boolean(state.truncatedIn?.includes(command))) {
   const text = conversationText();
+  // 2.35 lists the projects in an untitled web area; 2.36 shows its sidebar inside the conversation's.
   const nodes = [
     { depth: 0, role: 'AXWindow', label: 'Antigravity' },
     { depth: 1, role: 'AXWebArea', label: '' },
-    { depth: 2, role: 'AXButton', label: state.project },
-    { depth: 2, role: 'AXLink', label: 'New Conversation in Project' },
-    ...listed().map((value) => ({ depth: 2, role: 'AXStaticText', label: '', value })),
+    ...(pickerLayout()
+      ? []
+      : [
+        { depth: 2, role: 'AXButton', label: state.project },
+        { depth: 2, role: 'AXLink', label: 'New Conversation in Project' },
+        ...listed().map((value) => ({ depth: 2, role: 'AXStaticText', label: '', value })),
+      ]),
     { depth: 1, role: 'AXWebArea', label: title() },
+    ...(pickerLayout() ? sidebar236() : []),
     ...(text ? [{ depth: 2, role: 'AXGroup', label: '' }, ...text.split('\n').map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value }))] : []),
     ...controls(),
     ...dialogNodes(withDialogs),
+    ...pickers(),
     ...composer(false),
   ];
   if (state.secondComposerIn?.includes(command)) {
@@ -214,7 +337,7 @@ function screenNodes(withDialogs, cut = Boolean(state.truncatedIn?.includes(comm
     );
   }
   if (cut) {
-    const stop = nodes.findIndex((node) => node.role === 'AXButton' && node.label === 'Stop execution');
+    const stop = nodes.findIndex(isStopNode);
     if (stop >= 0) nodes.splice(stop);
     nodes.truncated = true;
   }
@@ -227,7 +350,7 @@ function screenNodes(withDialogs, cut = Boolean(state.truncatedIn?.includes(comm
 // conversation.
 function cutSnapshot(nonce) {
   const nodes = screenNodes(true, true);
-  const base = { labels: Object.fromEntries(LABELS.map((label) => [label, label !== state.missingLabel])), preset: state.preset, model: state.model, project: state.project };
+  const base = { labels: Object.fromEntries(LABELS.map((label) => [label, label !== state.missingLabel])), preset: state.preset, model: state.model, project: shownProject(), location: shownLocation() };
   try {
     const found = decisions.dialogs(nodes)[0];
     return {
@@ -254,6 +377,15 @@ function pick(expected, control) {
   } catch (error) {
     return { error: error.message };
   }
+}
+
+// The project and the place the composer shows: 2.36 has both pickers, 2.35 only the project.
+function shownProject() {
+  return pickerLayout() ? (state.pickerCurrent ?? state.project) : state.project;
+}
+
+function shownLocation() {
+  return pickerLayout() ? (state.location ?? 'This Computer') : null;
 }
 
 function waiting() {
@@ -297,7 +429,8 @@ function answer() {
         labels: Object.fromEntries(LABELS.map((label) => [label, label !== state.missingLabel])),
         preset: running ? null : state.preset,
         model: state.model,
-        project: state.project,
+        project: shownProject(),
+        location: shownLocation(),
         title: shownTitle,
         running: running || Boolean(dialog) || Boolean(!state.sent && state.earlier?.running),
         sendable: !running && !dialog,
@@ -307,6 +440,14 @@ function answer() {
       };
     }
     case 'new-conversation':
+      if (pickerLayout()) {
+        try {
+          openWithPicker(args[0]);
+        } catch (error) {
+          return { error: error.message };
+        }
+        return { ok: true };
+      }
       state.project = args[0];
       delete state.earlier;
       return { ok: true };

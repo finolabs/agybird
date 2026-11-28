@@ -19,8 +19,10 @@ test('preflight blocks outside macOS, without the app, without trust or on an un
   assert.equal(reason(probe, { platform: 'win32' }), 'not_macos');
   assert.equal(reason({ ...probe, pid: null }), 'app_missing');
   assert.equal(reason({ ...probe, trusted: false }), 'not_trusted');
-  assert.equal(reason({ ...probe, version: '2.36.0' }), 'unsupported_version');
-  assert.equal(reason({ ...probe, version: '2.36.0' }, { allowVersion: true }), null);
+  assert.equal(reason({ ...probe, version: '2.36.0' }), null);
+  assert.equal(reason({ ...probe, version: '2.36.12' }), null);
+  for (const version of ['2.37.0', '2.3.6', '2.34.9', '12.36.0', null]) assert.equal(reason({ ...probe, version }), 'unsupported_version', String(version));
+  assert.equal(reason({ ...probe, version: '2.37.0' }, { allowVersion: true }), null);
 });
 
 test('only Auto and Turbo warn about unattended commands', () => {

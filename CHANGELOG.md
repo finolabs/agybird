@@ -4,6 +4,11 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- The desktop transport supports Antigravity 2.36 beside 2.35 (`TESTED_VERSION` covers 2.35.x and 2.36.x). On 2.36 a new conversation opens from the one `New Conversation` link, and the runner picks the project in the new conversation's project picker: it sets the picker's search field to the project name, presses the item whose own name is exactly that name (never a near-name), and reads the picker back; the menu is searched and pressed only while the untitled new conversation shows. It requires `Where the agent runs` to be `This Computer` before and after, and never changes where the agent runs, the branch, the model or the preset; any mismatch ends the run `error` before anything is pasted. On 2.35 the sidebar link is used as before.
+- On 2.36 a running turn shows `Cancel (⌃C)` instead of `Stop execution`: the running state reads it (and the `Agent working` heading), and Stop presses it. A reply that spans several groups after `Agent said` is read whole, up to its response actions, and the run's marker repeated anywhere in it does not count as the run's own message; nor does the sidebar, which 2.36 draws inside the conversation's web area.
+- 2.36 renames a new conversation a few seconds after Send. A run follows the rename to a new title of the same project only in a read that shows its own message, marker included, under it, and the evidence that frees a kept lock accepts the renamed conversation the same way. Before, every 2.36 run ended `error` right after Send and kept the lock.
+- Checked live on Antigravity 2.36.0 (`docs/verification/2026-11-28-desktop-live-macos-2.36.md`).
+
 ## 0.4.7 - 2026-11-28
 
 - The desktop bridge reads every `NSArray` count through `Number()`. Under `osascript` the count can arrive as the string `"0"`, which is truthy, so a desktop run with the app closed failed with an exception instead of `blocked: app_missing`, and restoring the previous front app could relaunch an app the user had quit.
