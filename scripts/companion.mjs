@@ -806,7 +806,7 @@ export function buildReviewRequest({ kind, scope, options, focus = '' }) {
   });
   // The runner's own state folder keeps grant locks and recovery shared with
   // tasks; --no-record keeps this run from replacing the task session.
-  const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
+  const runnerArgs = ['--new-session', '--no-record', '--review', '--json-schema', REVIEW_SCHEMA_PATH];
   if (options.model) runnerArgs.push('--model', options.model);
   // A model picked from quota by the caller arrives as options.model too.
   if (options.effort) runnerArgs.push('--effort', options.effort);
@@ -1056,7 +1056,7 @@ async function stopGate(env) {
       FILES: fileList(scope.files),
       DIFF: escapeBlock(scope.diff, 'agybird_review_diff'),
     });
-    const runnerArgs = ['--new-session', '--no-record', '--json-schema', REVIEW_SCHEMA_PATH];
+    const runnerArgs = ['--new-session', '--no-record', '--review', '--json-schema', REVIEW_SCHEMA_PATH];
     if (model) runnerArgs.push('--model', model);
     const request = { category: 'code', mode: 'read', timeout: '8m', runnerArgs, prompt };
     // A deadline well inside the hook's own timeout: past it the job is cancelled,

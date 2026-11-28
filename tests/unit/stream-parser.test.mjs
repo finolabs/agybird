@@ -75,6 +75,23 @@ test('classifies a denial with no derivable allow-rule as blocked despite exit z
   assert.match(outcome.warnings.join('\n'), /permission/i);
 });
 
+test('a review that was refused an action but still gave its review succeeds and names what was refused', () => {
+  const parsed = { ...parseFixture('agy-1.1.9-permission.ndjson'), response: '{"verdict":"approve"}' };
+  const outcome = classifyOutcome({ parsed, exitCode: 0, stderr: '', options: { review: true } });
+  assert.equal(outcome.status, 'success');
+  assert.deepEqual(outcome.permissionRequests, []);
+  assert.match(outcome.warnings.join('\n'), /refused an action the review tried .*the review finished without it/);
+  // Not a review: the same run still waits for a grant.
+  assert.equal(classifyOutcome({ parsed, exitCode: 0, stderr: '' }).status, 'needs_permission');
+});
+
+test('a review refused an action before it gave a review is blocked with a rerun, not a grant', () => {
+  const parsed = { ...parseFixture('agy-1.1.9-permission.ndjson'), response: null };
+  const outcome = classifyOutcome({ parsed, exitCode: 0, stderr: '', options: { review: true } });
+  assert.equal(outcome.status, 'blocked');
+  assert.match(outcome.warnings.join('\n'), /cannot be approved and resumed, so run it again/);
+});
+
 test('classifies nested agy 1.1.9 tool_info permission errors as needing permission', () => {
   const parsed = parseFixture('agy-1.1.9-permission.ndjson');
   const outcome = classifyOutcome({ parsed, exitCode: 0, stderr: '' });
