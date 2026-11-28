@@ -565,3 +565,18 @@ test('the Load older messages button is taken only in the conversation named, ou
   assert.throws(() => olderButton([...nodes, { depth: 2, role: 'AXButton', label: 'Load older messages, showing 2 of 3' }], TITLE), /several_controls/);
 });
 
+test('only the one Idle sidebar row of a title is archived', () => {
+  const { archiveButton } = loadAxDecisions();
+  const nodes = sidebarNodes();
+  const at = archiveButton(nodes, 'Other Task', 'agybird');
+  assert.equal(nodes[at].label, 'Archive conversation');
+  assert.ok(at > nodes.findIndex((node) => node.role === 'AXLink' && node.label === 'Other Task'), 'the button of that row');
+  assert.throws(() => archiveButton(nodes, 'Code Review', 'agybird'), /several_rows/);
+  assert.throws(() => archiveButton(nodes, 'Code Review', 'huly-skill'), /not_idle: In Progress/);
+  assert.throws(() => archiveButton(nodes, 'Missing', 'agybird'), /not_found: sidebar row/);
+  const at2 = nodes.findIndex((node) => node.role === 'AXLink' && node.label === 'Other Task');
+  const doubled = [...nodes.slice(0, at2 + 1), { depth: nodes[at2].depth, role: 'AXButton', label: 'Archive conversation' }, ...nodes.slice(at2 + 1)];
+  assert.throws(() => archiveButton(doubled, 'Other Task', 'agybird'), /several_controls/);
+  assert.throws(() => archiveButton(Object.assign([...nodes], { truncated: true }), 'Other Task', 'agybird'), /truncated/);
+  assert.throws(() => archiveButton([...nodes, ...spoofNodes()].filter((node) => node.label !== 'Archive conversation'), 'Other Task', 'agybird'), /not_found: Archive conversation/);
+});

@@ -614,6 +614,20 @@ function answer() {
       state.olderPresses += 1;
       return { pressed: true };
     }
+    // archive-row: the run's own row reads Idle once the turn is over; other
+    // conversations read as sidebarRows says. archiveFails: the press fails.
+    case 'archive-row': {
+      const own = state.sent && `${args[0]} - ${args[1]} - Antigravity` === title() && args[1] === state.project ? ['Idle'] : [];
+      const rows = state.sidebarRows?.[`${args[0]}|${args[1]}`] ?? own;
+      if (state.archiveFails) return { error: 'press_failed: Archive conversation' };
+      // An archived conversation leaves the sidebar.
+      if (state.archived?.includes(`${args[0]}|${args[1]}`)) return { error: `not_found: sidebar row ${args[0]}` };
+      if (rows.length === 0) return { error: `not_found: sidebar row ${args[0]}` };
+      if (rows.length > 1) return { error: `several_rows: ${args[0]}` };
+      if (rows[0] !== 'Idle') return { error: `not_idle: ${rows[0]}` };
+      (state.archived ??= []).push(`${args[0]}|${args[1]}`);
+      return { ok: true };
+    }
     case 'open-row':
       if (state.openRowFails) return { error: 'not_found: sidebar row' };
       (state.opened ??= 0);
