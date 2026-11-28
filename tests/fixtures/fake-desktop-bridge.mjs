@@ -8,7 +8,7 @@
 // (never finishes once sent), lag (snapshots after send or answer before the run
 // shows as running, with the earlier reply still on screen), dialog
 // ({ question, options }), replyBeforeDialog (on screen while the dialog waits),
-// reply, paste (what paste-input reads back instead of the clipboard), clipboard,
+// reply, paste (what paste-input puts in the composer instead of the clipboard), clipboard,
 // clipboardMarkers (its org.nspasteboard.* types), clipboardOther (it also holds
 // non-text content, which a restore loses),
 // dialog.fragments (the question as separate text nodes), extraDialog (a second
@@ -45,7 +45,11 @@
 // truncatedPolls (snapshots after send or answer read cut off that way),
 // onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
-// instead of JSON), hang (never answers).
+// instead of JSON), hang (never answers), idleSeq (the idle seconds successive
+// probes report, the last repeated; default 60), locked (the screen is
+// locked), onScreen (an app window is on the Space shown; default true),
+// clipboardItems (every item of the clipboard, as clipboard-get saves it whole).
+// Each call records the app in front as it starts in frontmostAtCalls.
 //
 // A version of 2.36.x shows the 2.36 layout: one New Conversation link in the
 // sidebar (newConversationLinks of them; default 1) and a composer that picks
@@ -86,6 +90,8 @@ const state = {
 };
 const [command, ...args] = process.argv.slice(2);
 state.calls.push([command, ...args]);
+// The app in front as each call starts, in call order.
+(state.frontmostAtCalls ??= []).push(state.frontmost);
 // Atomic, so a test reading the state mid-run never sees half a file.
 const save = () => {
   writeFileSync(`${file}.${process.pid}`, JSON.stringify(state));
@@ -113,7 +119,9 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
     const saved = JSON.parse(input);
     state.clipboard = saved.text;
     state.restoredMarkers = saved.markers;
-    state.clipboardOther = false;
+    // Saved whole, every item comes back; otherwise only the text does.
+    if (Array.isArray(saved.items)) state.restoredItems = saved.items;
+    else state.clipboardOther = false;
   }
   process.stdout.write('{"ok":true}\n');
   save();
@@ -393,8 +401,12 @@ function waiting() {
 }
 
 function answer() {
-  if (command === 'clipboard-get') return { text: state.clipboard, markers: state.clipboardMarkers ?? [], other: Boolean(state.clipboardOther) };
-  if (command === 'probe') return { trusted: state.trusted, pid: 4242, version: state.version, frontmost: state.frontmost };
+  if (command === 'clipboard-get') return { text: state.clipboard, markers: state.clipboardMarkers ?? [], other: Boolean(state.clipboardOther), items: state.clipboardItems ?? null };
+  if (command === 'probe') {
+    // idleSeq: the idle seconds of successive probes, the last one repeated.
+    const idle = Array.isArray(state.idleSeq) && state.idleSeq.length > 0 ? (state.idleSeq.length > 1 ? state.idleSeq.shift() : state.idleSeq[0]) : 60;
+    return { trusted: state.trusted, pid: 4242, version: state.version, frontmost: state.frontmost, idle, locked: Boolean(state.locked), on_screen: state.onScreen ?? true };
+  }
   if (!state.trusted) return { error: 'not_trusted' };
   switch (command) {
     case 'snapshot': {
@@ -460,10 +472,16 @@ function answer() {
     case 'paste-input': {
       const input = pick(args[0], 'Message input');
       if (input.error) return { error: input.error };
+      if (state.frontmost !== 'com.google.antigravity') return { error: 'not_frontmost' };
       const value = state.paste ?? state.clipboard;
       if (input.node.rival) state.rivalComposer = value;
       else state.composer = value;
-      return { ok: true, value };
+      return { ok: true, landed: Boolean(value) };
+    }
+    case 'read-input': {
+      const input = pick(args[0], 'Message input');
+      if (input.error) return { error: input.error };
+      return { ok: true, value: input.node.rival ? state.rivalComposer : state.composer };
     }
     case 'clear-input': {
       const input = pick(args[0], 'Message input');

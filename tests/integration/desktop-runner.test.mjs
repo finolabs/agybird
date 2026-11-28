@@ -76,11 +76,63 @@ test('a read task runs in a new conversation of the workspace project and return
   const calls = context.fake().calls;
   assert.deepEqual(calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', 'ws']);
   const order = names(context);
-  for (const [before, after] of [['front', 'new-conversation'], ['new-conversation', 'paste-input'], ['paste-input', 'send'], ['send', 'restore']]) {
+  for (const [before, after] of [['front', 'new-conversation'], ['new-conversation', 'paste-input'], ['paste-input', 'restore'], ['restore', 'read-input'], ['read-input', 'send']]) {
     assert.ok(order.indexOf(before) < order.indexOf(after), `${before} before ${after}`);
   }
   assert.ok(!order.includes('answer') && !order.includes('stop'));
   assertCleanedUp(context);
+});
+
+test('the app is in front only from the switch to the paste: the read back and Send run behind the user\'s app', async () => {
+  const context = setup({ runningPolls: 1 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const { calls, frontmostAtCalls } = context.fake();
+  const frontAt = (name) => frontmostAtCalls[calls.findIndex((call) => call[0] === name)];
+  assert.equal(frontAt('paste-input'), 'com.google.antigravity');
+  assert.equal(frontAt('read-input'), 'com.example.host');
+  assert.equal(frontAt('send'), 'com.example.host');
+  assertCleanedUp(context);
+});
+
+test('the switch to the app waits until the keyboard and mouse have been idle for 3 s', async () => {
+  const context = setup({ runningPolls: 1, idleSeq: [0.2, 1.5, 2.9, 3.1] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const order = names(context);
+  // The preflight probe reads 0.2 s; the wait reads 1.5, 2.9, then 3.1 s and goes on.
+  assert.equal(order.slice(0, order.indexOf('front')).filter((name) => name === 'probe').length, 4);
+  assertCleanedUp(context);
+});
+
+test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {
+  const context = setup({ idleSeq: [0.1] });
+  context.env.AGYBIRD_DESKTOP_IDLE_WAIT_MS = '50';
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'user_active');
+  for (const name of ['front', 'clipboard-get', 'clipboard-set', 'new-conversation']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assertCleanedUp(context);
+});
+
+test('a locked screen or an app window off the Space shown blocks before the app is switched to', async () => {
+  for (const [state, reason] of [[{ locked: true }, 'screen_locked'], [{ onScreen: false }, 'not_on_screen']]) {
+    const context = setup(state);
+    const { envelope } = await run(context);
+    assert.equal(envelope.status, 'blocked');
+    assert.equal(envelope.evidence.blocked_reason, reason);
+    assert.ok(!names(context).includes('front'), `${reason}: no switch to the app`);
+    assertCleanedUp(context);
+  }
+});
+
+test('a clipboard saved whole is put back whole, with no loss reported', async () => {
+  const items = [{ 'public.html': 'PGI+aGk8L2I+', 'public.utf8-plain-text': 'aGk=' }];
+  const context = setup({ runningPolls: 1, clipboardOther: true, clipboardItems: items });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  assert.deepEqual(context.fake().restoredItems, items);
+  assert.ok(!envelope.warnings.some((warning) => /only its text/.test(warning)), envelope.warnings.join(' | '));
 });
 
 test('the prompt pasted is the delegated task, wrapped like the CLI runner\'s', async () => {
