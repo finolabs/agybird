@@ -10,6 +10,10 @@ ObjC.bindFunction('AXUIElementCopyAttributeValue', ['int', ['id', 'id', 'id*']])
 ObjC.bindFunction('AXUIElementSetAttributeValue', ['int', ['id', 'id', 'id']]);
 ObjC.bindFunction('AXUIElementPerformAction', ['int', ['id', 'id']]);
 ObjC.bindFunction('AXIsProcessTrusted', ['bool', []]);
+ObjC.import('CoreGraphics');
+ObjC.bindFunction('CGEventSourceSecondsSinceLastEventType', ['double', ['int', 'unsigned int']]);
+ObjC.bindFunction('CGSessionCopyCurrentDictionary', ['id', []]);
+ObjC.bindFunction('CGWindowListCopyWindowInfo', ['id', ['unsigned int', 'unsigned int']]);
 
 const BUNDLE_ID = 'com.google.antigravity';
 const MAX_NODES = 20000;
@@ -582,6 +586,37 @@ function focusInput(app, expected) {
   return input;
 }
 
+// kCGEventSourceStateHIDSystemState and kCGAnyInputEventType: the time since
+// the user last typed, clicked or moved the mouse.
+const HID_SYSTEM_STATE = 1;
+const ANY_INPUT_EVENT = 0xFFFFFFFF;
+// kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements: the
+// windows of the Space on screen, never those of other Spaces or minimized ones.
+const ON_SCREEN_WINDOWS = 1 | 16;
+
+// `idle` seconds since the last input, `locked` for a locked screen, and
+// `on_screen` for an app window on the Space shown, which a switch to the app
+// reaches without moving to another Space.
+function presence(app) {
+  const session = $.CGSessionCopyCurrentDictionary();
+  const locked = session && !session.isNil() ? session.objectForKey($('CGSSessionScreenIsLocked')) : null;
+  let onScreen = null;
+  if (app) {
+    const pid = Number(app.processIdentifier);
+    const windows = $.CGWindowListCopyWindowInfo(ON_SCREEN_WINDOWS, 0);
+    onScreen = false;
+    for (let index = 0; index < Number(windows.count) && !onScreen; index += 1) {
+      const window = windows.objectAtIndex(index);
+      onScreen = Number(window.objectForKey($('kCGWindowOwnerPID')).js) === pid && Number(window.objectForKey($('kCGWindowLayer')).js) === 0;
+    }
+  }
+  return {
+    idle: $.CGEventSourceSecondsSinceLastEventType(HID_SYSTEM_STATE, ANY_INPUT_EVENT),
+    locked: Boolean(locked && !locked.isNil() && locked.js),
+    on_screen: onScreen,
+  };
+}
+
 function readStdin() {
   const data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
   return $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
@@ -609,9 +644,36 @@ function writeText(value, markers, options) {
   for (const marker of markers) board.setStringForType($(''), $(marker));
 }
 
-// Only the plain-text flavour is saved and put back, with the nspasteboard.org
-// markers it carried; `other` says the clipboard also held something else (an
-// image, a file, rich text), which a restore loses.
+// A clipboard up to this size is saved whole, every item in every type it
+// carries; a larger one keeps only its text.
+const MAX_SAVED_BYTES = 16 * 1024 * 1024;
+
+// Every item of the clipboard as { type: base64 data }, or null past MAX_SAVED_BYTES.
+function boardItems(board) {
+  const items = board.pasteboardItems;
+  const out = [];
+  let bytes = 0;
+  if (!items || items.isNil()) return out;
+  for (let index = 0; index < Number(items.count); index += 1) {
+    const item = items.objectAtIndex(index);
+    const types = item.types;
+    const saved = {};
+    for (let at = 0; at < Number(types.count); at += 1) {
+      const type = text(types.objectAtIndex(at));
+      const data = item.dataForType($(type));
+      if (!data || data.isNil()) continue;
+      bytes += Number(data.length);
+      if (bytes > MAX_SAVED_BYTES) return null;
+      saved[type] = data.base64EncodedStringWithOptions(0).js;
+    }
+    out.push(saved);
+  }
+  return out;
+}
+
+// The text with the nspasteboard.org markers it carried, and, up to
+// MAX_SAVED_BYTES, every item whole (`items`). `other` says the clipboard also
+// held something else (an image, a file, rich text), which only `items` keeps.
 const CLIPBOARD = {
   'clipboard-get'() {
     const board = $.NSPasteboard.generalPasteboard;
@@ -621,6 +683,7 @@ const CLIPBOARD = {
       text: value && !value.isNil() ? value.js : null,
       markers: types.filter((type) => type.indexOf('org.nspasteboard.') === 0),
       other: types.some((type) => type.indexOf('org.nspasteboard.') !== 0 && TEXT_TYPES.indexOf(type) < 0),
+      items: boardItems(board),
     };
   },
   // The prompt: on this Mac only, marked transient and concealed.
@@ -628,9 +691,26 @@ const CLIPBOARD = {
     writeText(readStdin(), PROMPT_MARKERS, CURRENT_HOST_ONLY);
     return { ok: true };
   },
-  // What clipboard-get saved, as JSON on stdin: its text and its own markers.
+  // What clipboard-get saved, as JSON on stdin: every item whole when it saved
+  // them, else its text and its own markers.
   'clipboard-restore'() {
     const saved = JSON.parse(readStdin());
+    if (Array.isArray(saved.items) && saved.items.length > 0) {
+      const board = $.NSPasteboard.generalPasteboard;
+      board.prepareForNewContentsWithOptions(0);
+      const items = $.NSMutableArray.array;
+      for (const entry of saved.items) {
+        const item = $.NSPasteboardItem.alloc.init;
+        for (const type of Object.keys(entry)) {
+          const data = typeof entry[type] === 'string' ? $.NSData.alloc.initWithBase64EncodedStringOptions($(entry[type]), 0) : null;
+          if (!data || data.isNil() || !item.setDataForType(data, $(type))) throw new Error('restore_failed');
+        }
+        items.addObject(item);
+      }
+      // The board was emptied above: a failed write is reported, never taken as restored.
+      if (!board.writeObjects(items)) throw new Error('restore_failed');
+      return { ok: true };
+    }
     writeText(saved.text, (saved.markers || []).filter((type) => /^org\.nspasteboard\.[A-Za-z]+$/.test(type)), 0);
     return { ok: true };
   },
@@ -647,6 +727,7 @@ const COMMANDS = {
       pid: app ? app.processIdentifier : null,
       version: info ? text(info.objectForInfoDictionaryKey('CFBundleShortVersionString')) : null,
       frontmost: front ? text(front.bundleIdentifier) : null,
+      ...presence(app),
     };
   },
   // With the run's nonce, `own` says whether this same read shows the run's own message.
@@ -704,16 +785,29 @@ const COMMANDS = {
     const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
     return { ok: Boolean(front) && text(front.bundleIdentifier) === bundleId };
   },
+  // Needs the app in front, only until the paste lands: once the composer
+  // holds text the runner gives the front back and reads it with read-input.
   'paste-input'(app, expectedTitle) {
     const input = focusInput(app, expectedTitle);
     menu(app, 'Edit', 'Paste');
-    // The paste lands asynchronously: read until the text is non-blank and steady.
-    let value = '';
     for (let tries = 0; tries < 30; tries += 1) {
       delay(0.2);
+      if (text(get(input.element, 'AXValue')).trim()) return { ok: true, landed: true };
+    }
+    return { ok: true, landed: false };
+  },
+  // Reads the composer of the expected conversation, with the app in front or
+  // not, until its text is non-blank and steady; a long prompt takes seconds.
+  'read-input'(app, expectedTitle) {
+    const nodes = showing(app, expectedTitle);
+    const input = nodes[chooseComposer(nodes, expectedTitle, 'Message input')];
+    if (!input) throw new Error('not_found: Message input');
+    let value = '';
+    for (let tries = 0; tries < 30; tries += 1) {
       const next = inputText(input);
       if (next.trim() && next === value) break;
       value = next;
+      delay(0.2);
     }
     return { ok: true, value };
   },

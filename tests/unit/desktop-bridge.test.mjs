@@ -20,7 +20,7 @@ function fake(state = {}) {
 
 test('the wrapper returns each command\'s JSON line', async () => {
   const { env, state } = fake({ sent: true, runningPolls: 1, reply: 'READY' });
-  assert.deepEqual(await callBridge(['probe'], { env }), { trusted: true, pid: 4242, version: '2.35.2', frontmost: 'com.example.host' });
+  assert.deepEqual(await callBridge(['probe'], { env }), { trusted: true, pid: 4242, version: '2.35.2', frontmost: 'com.example.host', idle: 60, locked: false, on_screen: true });
   assert.equal((await callBridge(['snapshot'], { env })).running, true);
   const done = await callBridge(['snapshot'], { env });
   assert.deepEqual([done.running, done.reply, done.preset], [false, 'READY', 'Request Review']);
@@ -63,10 +63,19 @@ test('the AX script writes the prompt current-host-only and marked transient and
 
 test('the AX script sends no keystrokes and answers only option 1 or Skip', () => {
   const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
-  assert.doesNotMatch(source, /keystroke\(|key code|keyCode|CGEvent/i);
+  assert.doesNotMatch(source, /keystroke\(|key code|keyCode/i);
+  // CoreGraphics only reads the time since the last input; it never posts or creates an event.
+  assert.doesNotMatch(source, /CGEvent(Post|Create|Tap)|CGWarpMouse|CGDisplayMoveCursor/);
+  assert.match(source, /CGEventSourceSecondsSinceLastEventType/);
   assert.match(source, /const OPTION_1 = '1 Yes, allow this time';/);
   assert.doesNotMatch(source, /AXRadioButton', '[234] /);
   assert.doesNotMatch(source, /press\(find\([^)]*'AXPopUpButton'/, 'no selector, the permissions preset included, is ever changed');
+});
+
+test('the AX script reports a whole-clipboard restore whose native write fails', () => {
+  const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
+  assert.match(source, /if \(!board\.writeObjects\(items\)\) throw new Error\('restore_failed'\);/);
+  assert.match(source, /!item\.setDataForType\(data, \$\(type\)\)\) throw new Error\('restore_failed'\);/);
 });
 
 // Under osascript the bridge can hand NSArray.count over as a string, and "0" is
