@@ -93,6 +93,14 @@ test('a review that was refused an action but still gave its structured review s
   assert.deepEqual(late.permissionRequests, []);
   // A crash stays an error.
   assert.equal(classifyOutcome({ parsed, exitCode: 1, stderr: '', options }).status, 'error');
+  // An agent failure (exit 3) after a refusal offers no grant either.
+  const failed = classifyOutcome({ parsed, exitCode: 3, stderr: '', options });
+  assert.equal(failed.status, 'error');
+  assert.deepEqual(failed.permissionRequests, []);
+  assert.match(failed.warnings.join('\n'), /cannot be approved and resumed/);
+  // A refusal reported only as a denied status, with no error text, is stripped too.
+  const statusOnly = { ...parsed, toolCalls: [...parsed.toolCalls, { name: 'run_command', status: 'denied', arguments: { CommandLine: 'ls' } }] };
+  assert.equal(classifyOutcome({ parsed: statusOnly, exitCode: 0, stderr: '', options }).status, 'success');
 });
 
 test('a review refused an action before it gave a review is blocked with a rerun, not a grant', () => {

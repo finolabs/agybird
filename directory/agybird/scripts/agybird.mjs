@@ -1204,14 +1204,16 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
   if (exitCode === AGENT_FAILURE_EXIT_CODE && !printTimedOut) {
     warnings.push('agy exited with code 3: the agent or model API failed mid-turn; any response is partial.');
     addAgyErrorWarnings(warnings, agyError, options);
-    return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [], agyError };
+    // A review is never approved, so nothing it was refused is offered as a grant.
+    if (denied && options.review) warnings.push('Antigravity also refused an action the review tried; a review cannot be approved and resumed, so run it again.');
+    return { status: 'error', warnings, permissionRequests: denied && !options.review ? describePermissionRequests(parsed, stderr) : [], agyError };
   }
   if (denied && options.review) {
     // Nothing resumes a review, so nothing it was refused can be approved.
     // The prompt tells it not to run terminal commands; one that tried anyway
     // is judged as if the refused actions had not happened, by every check
     // below, and stands only when it then finished with its review whole.
-    const refusedTools = new Set(parsed.toolCalls.filter((tool) => typeof tool.error === 'string' && PERMISSION_DENIAL.test(tool.error)));
+    const refusedTools = new Set(parsed.toolCalls.filter((tool) => (typeof tool.error === 'string' && PERMISSION_DENIAL.test(tool.error)) || /denied/i.test(tool.status ?? '')));
     const rest = classifyOutcome({
       parsed: { ...parsed, warnings: [], toolCalls: parsed.toolCalls.filter((tool) => !refusedTools.has(tool)), deniedActions: [] },
       exitCode,
