@@ -296,6 +296,31 @@ test('a single pane still yields its composer and Send, inside it', () => {
   assert.throws(() => chooseComposer(bare('Antigravity', composerNodes()), 'Antigravity', 'Stop execution'), /usage/);
 });
 
+// A tree read that stopped at its node cap before the end, as walk() marks it.
+const cut = (nodes) => Object.assign(nodes, { truncated: true });
+
+test('a tree read cut off at the node cap is never trusted as the whole app', () => {
+  const full = () => bare(TITLE, pane(`Explain README.md.\n${MARK}`, { dialog: 'Allow running ls?' }));
+  const nodes = cut(full());
+  // What lies past the cut cannot be ruled out: a second conversation, a
+  // rival composer or Send, the Stop that says the turn still runs, the rest
+  // of the reply. So nothing is read, chosen or pressed on such a read.
+  for (const read of [() => title(nodes), () => running(nodes), () => reply(nodes), () => dialogs(nodes), () => requireOwn(nodes, TITLE, NONCE)]) assert.throws(read, /^Error: truncated/);
+  assert.throws(() => chooseAnswer(nodes, '1', 'Allow running ls?', TITLE, NONCE), /truncated/);
+  assert.throws(() => chooseAnswer(nodes, 'Skip', 'Allow running ls?', TITLE, NONCE), /truncated/);
+  assert.throws(() => chooseStop(nodes, TITLE, NONCE), /truncated/);
+  assert.throws(() => chooseCopy(nodes, TITLE, NONCE), /truncated/);
+  for (const control of CONTROLS) assert.throws(() => chooseComposer(cut(bare('Antigravity', composerNodes())), 'Antigravity', control), /truncated/);
+  assert.throws(() => namedConversation(cut(bare(TITLE, message(`Explain README.md.\n${MARK}`))), 'Antigravity', 'ws', NONCE), /truncated/);
+  // A turn whose Stop lies past the cut does not read as ended.
+  assert.throws(() => running(cut(bare(TITLE, pane(`Explain README.md.\n${MARK}`, { stop: false })))), /truncated/);
+  // The same trees read whole still decide as before.
+  const whole = full();
+  assert.equal(running(whole), true);
+  assert.equal(whole[chooseStop(whole, TITLE, NONCE)].label, 'Stop execution');
+  for (const control of CONTROLS) assert.equal(bare('Antigravity', composerNodes())[chooseComposer(bare('Antigravity', composerNodes()), 'Antigravity', control)].label, control);
+});
+
 test('the decisions region calls no accessibility API', () => {
   const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
   const region = source.slice(source.indexOf('// desktop-decisions:start'), source.indexOf('// desktop-decisions:end'));

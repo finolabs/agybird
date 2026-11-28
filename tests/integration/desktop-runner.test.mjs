@@ -721,8 +721,98 @@ test('an answer refused before any press is not spent and stops nothing', async 
   assert.equal(existsSync(lockFile(context)), false);
 });
 
+test('a tree read cut off at the node cap at paste time pastes, clears and sends nothing', async () => {
+  const context = setup({ truncatedIn: ['paste-input', 'clear-input', 'send'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /paste-input failed: truncated/.test(warning)), envelope.warnings.join(' | '));
+  const fake = context.fake();
+  assert.equal(fake.composer, undefined, 'nothing pasted');
+  assert.equal(fake.cleared, undefined, 'nothing cleared on a cut-off read');
+  assert.ok(!names(context).includes('send'));
+  assert.equal(fake.sent, undefined);
+  assertCleanedUp(context);
+});
+
+test('a cut-off read of the new conversation stops the run before the clipboard or the composer is touched', async () => {
+  const context = setup({ truncatedIn: ['snapshot'] });
+  const { envelope } = await run(context, ['--timeout', '300ms']);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /too large to read whole.*nothing was pasted or sent/.test(warning)), envelope.warnings.join(' | '));
+  for (const command of ['clipboard-set', 'paste-input', 'send', 'stop']) assert.ok(!names(context).includes(command), command);
+  assertCleanedUp(context);
+});
+
+test('a tree read cut off at the node cap at Send time is refused before any press', async () => {
+  const context = setup({ truncatedIn: ['send'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /send failed: truncated/.test(warning)), envelope.warnings.join(' | '));
+  const fake = context.fake();
+  assert.equal(fake.sent, undefined, 'nothing sent');
+  // A refusal before the press: the composer is cleared from a whole read, no Stop, no lock kept.
+  assert.equal(fake.cleared, true);
+  assert.ok(!names(context).includes('stop'));
+  assertCleanedUp(context);
+});
+
+test('cut-off reads after Send never end the run as success and never free the lock', async () => {
+  // The part read holds the run's message and part of a reply; Stop lies past the cut.
+  const context = setup({ stuck: true, reply: 'partial reply', truncatedPolls: 1_000, truncatedIn: ['stop'] });
+  const { envelope } = await run(context, ['--timeout', '300ms']);
+  assert.equal(envelope.status, 'error');
+  assert.equal(envelope.response, null);
+  assert.ok(!names(context).includes('copy-reply'));
+  assert.ok(envelope.warnings.some((warning) => /too large to read whole/.test(warning)), envelope.warnings.join(' | '));
+  assert.ok(envelope.warnings.some((warning) => /timed out/.test(warning)));
+  // Stop is pressed only from a whole read, so it was not, and the lock stays kept for the app.
+  assert.notEqual(context.fake().stopped, true);
+  assert.ok(envelope.warnings.some((warning) => /may still be going/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+});
+
+test('at the deadline after cut-off reads, Stop is pressed from a whole read and the lock is freed', async () => {
+  const context = setup({ stuck: true, reply: 'partial reply', truncatedPolls: 1_000 });
+  const { envelope } = await run(context, ['--timeout', '300ms']);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /timed out.*stopped in the app/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().stopped, true);
+  assertCleanedUp(context);
+});
+
+test('a run whose first reads are cut off keeps waiting and succeeds on a whole read', async () => {
+  const context = setup({ runningPolls: 1, truncatedPolls: 2, reply: 'READY' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.response, 'READY');
+  assert.ok(context.fake().calls.filter((call) => call[0] === 'snapshot').length >= 4);
+  assertCleanedUp(context);
+});
+
+test('an answer on a tree read cut off at the node cap presses nothing and stays approvable', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, truncatedIn: ['answer'] });
+  const ack = join(mkdtempSync(join(tmpdir(), 'agybird-dr-ack-')), 'job.answered-0');
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE, '--resume-ack', ack]);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /answer failed: truncated/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().answered, undefined);
+  assert.equal(existsSync(ack), false, 'a refusal before any press leaves the request approvable');
+  assert.ok(!names(context).includes('stop'));
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
 // A lock kept for an app task by a run that is gone (its pid is not running).
 const appLock = (context, expiresAt) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt, app: true, conversation: TITLE, marker: NONCE }));
+
+test('a cut-off read is never idle evidence that frees a kept app lock', async () => {
+  // The kept conversation still runs; its Stop lies past the cut.
+  const context = setup({ earlier: { title: TITLE, running: true, message: OWN }, truncatedIn: ['snapshot'] });
+  appLock(context, Date.now() - 1);
+  const { envelope } = await run(context);
+  assert.equal(envelope.evidence.blocked_reason, 'locked', envelope.warnings.join(' | '));
+  assert.ok(!names(context).includes('send'));
+  assert.equal(JSON.parse(readFileSync(lockFile(context), 'utf8')).app, true);
+});
 
 test('a kept app lock past its time still refuses a run while its conversation shows a run', async () => {
   const context = setup({ earlier: { title: TITLE, running: true, message: OWN } });

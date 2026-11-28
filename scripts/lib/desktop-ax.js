@@ -17,7 +17,8 @@ const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Age
 
 // desktop-decisions:start
 // Pure decisions over the flat node list a tree walk returns: { role, label,
-// depth } plus `value` where a test recorded one. Nothing here calls the
+// depth } plus `value` where a test recorded one, and `truncated` set on the
+// list when the walk stopped at its node cap. Nothing here calls the
 // accessibility API, so desktop-bridge.mjs loadAxDecisions() evaluates this
 // region alone and the unit tests run it on recorded node lists. osascript
 // loads this one file, so the region stays inside it rather than in a module
@@ -56,8 +57,12 @@ const isButton = (node, prefix) => node.role === 'AXButton' && node.label.starts
 // range [start, end) of its subtree, or null while none is titled. The window
 // holds an untitled web area beside the titled one. A second titled web area
 // (another conversation window or pane) throws: the tree then cannot say whose
-// a control is, so nothing is read or pressed.
+// a control is, so nothing is read or pressed. So does a read cut off at the
+// node cap: what lies past the cut (a second conversation, a rival composer or
+// Send, the Stop that says the turn still runs, the rest of the reply) cannot
+// be ruled out, and every decision below starts here.
 function conversationArea(nodes) {
+  if (nodes.truncated) throw new Error('truncated: the accessibility tree is too large to read whole');
   let area = null;
   for (let index = 0; index < nodes.length; index += 1) {
     if (nodes[index].role !== 'AXWebArea' || !nodes[index].label) continue;
@@ -306,8 +311,13 @@ function children(element) {
   return out;
 }
 
+// Stops at MAX_NODES, and then marks the list `truncated`, so no decision takes
+// the part read for the whole app (conversationArea).
 function walk(element, nodes, depth = 0) {
-  if (nodes.length >= MAX_NODES) return nodes;
+  if (nodes.length >= MAX_NODES) {
+    nodes.truncated = true;
+    return nodes;
+  }
   const node = { role: text(get(element, 'AXRole')), label: text(get(element, 'AXDescription')) || text(get(element, 'AXTitle')), depth, element };
   nodes.push(node);
   // The composer holds one node per line of a pasted prompt; only paste-input reads them.
@@ -391,10 +401,16 @@ function showing(app, expected) {
 const TITLE_WAIT_MS = 30000;
 
 // `running`, `dialog` and `reply` come from the conversation on screen only;
-// a second titled conversation, or one of them outside it, fails the read.
+// a second titled conversation, or one of them outside it, fails the read. A
+// read cut off at the node cap is marked `truncated` and shows no conversation:
+// no title, running state, dialog or reply, so the runner never takes it as a
+// turn that ended or as an app with no run.
 function snapshot(nodes) {
   const labels = {};
   for (const label of REQUIRED_LABELS) labels[label] = nodes.some((node) => node.label.startsWith(label));
+  if (nodes.truncated) {
+    return { labels, preset: current(nodes, 'Agent permissions preset selector'), model: current(nodes, 'Select model'), project: current(nodes, 'Select project'), truncated: true, title: null, running: null, sendable: false, dialog: null, reply: null };
+  }
   return {
     labels,
     preset: current(nodes, 'Agent permissions preset selector'),
@@ -506,7 +522,7 @@ const COMMANDS = {
   snapshot(app, nonce) {
     const nodes = tree(app);
     const shot = snapshot(nodes);
-    if (nonce !== undefined) shot.own = ownConversation(nodes, nonce, staticText);
+    if (nonce !== undefined) shot.own = !shot.truncated && ownConversation(nodes, nonce, staticText);
     return shot;
   },
   'new-conversation'(app, project) {
@@ -579,6 +595,9 @@ const COMMANDS = {
       while (Date.now() < until) {
         delay(0.25);
         const now = tree(app);
+        // A cut-off read can neither show the run's message nor rule out
+        // another conversation, so the wait goes on.
+        if (now.truncated) continue;
         const named = namedConversation(now, expectedTitle, project, nonce, staticText);
         if (named && named.title) return { ok: true, title: named.title };
         if (named && named.refused) return { ok: true, title: null, refused: named.refused };

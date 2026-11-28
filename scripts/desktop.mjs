@@ -262,6 +262,9 @@ function takeResume(argv) {
 
 // A new conversation's web area reads "Antigravity" until the app titles it.
 const UNTITLED = 'Antigravity';
+// A snapshot marked `truncated` was read from a tree cut off at desktop-ax.js
+// MAX_NODES: it shows no conversation, and nothing is decided on it.
+const PARTIAL_TREE = "The Antigravity app's accessibility tree is too large to read whole (past 20,000 nodes)";
 
 // Links in the composer are separate nodes, so whitespace around them differs;
 // every other character must read back in order.
@@ -418,7 +421,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let ended = null;
     if (abandoned) {
       const shown = await bridge(['snapshot', abandoned.marker]);
-      if (shown.title === abandoned.conversation && shown.own === true && !shown.running && !shown.dialog) ended = abandoned;
+      // A cut-off read is no evidence: the run may lie past the cut.
+      if (shown.truncated !== true && shown.title === abandoned.conversation && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
     }
     lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
     lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
@@ -429,6 +433,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
     if (resume.question !== null) {
       const waiting = await bridge(['snapshot', marker]);
+      if (waiting.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot check the conversation that asked; nothing was pressed. Answer the prompt in the app.`);
       if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
       if (waiting.own !== true) throw new Error(`The Antigravity app shows a conversation titled ${JSON.stringify(resume.title)} whose text does not include the asking run's own message, so the run cannot tell it is the one that asked; nothing was pressed. Answer the prompt in the app.`);
       if (!waiting.dialog || permissionRequest(waiting.dialog).question_full !== resume.question) {
@@ -457,7 +462,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // nothing, so its record is withdrawn; a timeout, a crash, a cancel or
         // a failed press may have pressed it, so the app may be running and the
         // answer stays spent, said to be uncertain.
-        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|not_own|question_changed|several_dialogs|several_conversations|outside_conversation|not_trusted)/.test(error.message)) {
+        if (!(error instanceof Cancelled) && / failed: (?:refused|usage|not_found|other_conversation|not_own|question_changed|several_dialogs|several_conversations|outside_conversation|truncated|not_trusted)/.test(error.message)) {
           withdraw(resume);
         } else {
           sent = true;
@@ -476,6 +481,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       await bridge(['front']);
       await bridge(['new-conversation', project]);
       const opened = await bridge(['snapshot']);
+      if (opened.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot tell its composer from another; nothing was pasted or sent.`);
       checkLabels(opened);
       if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
       evidence.preset = opened.preset;
@@ -507,7 +513,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         pressed = await bridge(['send', UNTITLED, project, marker], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         // Refused before the press; a timeout or a crash may have pressed it.
-        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|several_conversations|outside_conversation|several_controls|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
+        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|several_conversations|outside_conversation|several_controls|truncated|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read
@@ -532,8 +538,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // if the app had not titled it by then) and showing the run's own message
     // in that same read; any other title, or the title without that message,
     // ends the run unread. Returns false when no title could be read this
-    // time, so the poll is skipped.
+    // time, or the read was cut off at the node cap, so the poll is skipped:
+    // a cut-off read is never a turn that ended, and the run waits on to its
+    // deadline, where Stop is pressed only from a whole read.
     const follow = (state) => {
+      if (state.truncated) {
+        const partial = `${PARTIAL_TREE}, so a read could not show whether the task had ended; the run waited for a whole read.`;
+        if (!warnings.includes(partial)) warnings.push(partial);
+        return false;
+      }
       if (state.title === null) return false;
       if (state.title !== expected()) throw new OtherConversation(state.title, { late: conversation === null });
       if (state.own !== true) throw new OtherConversation(state.title, { unmarked: true });

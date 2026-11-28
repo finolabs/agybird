@@ -37,7 +37,11 @@
 // and Stop), secondComposerIn (the commands during which an untitled pane, an
 // unlabelled web area before the run's conversation, holds its own Message
 // input and Send message; what reaches it is recorded as rivalComposer,
-// rivalCleared and rivalSent), onSend ({ path, content }: a file the "agent" writes when the
+// rivalCleared and rivalSent), truncatedIn (the commands during which the
+// tree read stops at the node cap: everything from the first Stop execution
+// on, or whatever follows the window's end, lies past the cut),
+// truncatedPolls (snapshots after send or answer read cut off that way),
+// onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -180,8 +184,9 @@ function composer(rival) {
 // the user's message, one text node per line, the conversation's controls,
 // while one waits each dialog as the app renders it, then its composer. During the commands
 // `secondPaneIn` names, once sent, a second conversation window shows the
-// same dialog and controls.
-function screenNodes(withDialogs) {
+// same dialog and controls. A read `cut` off at the node cap (truncatedIn) keeps
+// the part before the cut and is marked `truncated`, as walk() marks it.
+function screenNodes(withDialogs, cut = Boolean(state.truncatedIn?.includes(command))) {
   const text = conversationText();
   const nodes = [
     { depth: 0, role: 'AXWindow', label: 'Antigravity' },
@@ -208,7 +213,36 @@ function screenNodes(withDialogs) {
       ...dialogNodes(withDialogs),
     );
   }
+  if (cut) {
+    const stop = nodes.findIndex((node) => node.role === 'AXButton' && node.label === 'Stop execution');
+    if (stop >= 0) nodes.splice(stop);
+    nodes.truncated = true;
+  }
   return nodes;
+}
+
+// A snapshot of a read cut off at the node cap: what the shipped decisions
+// make of the part read, as desktop-ax.js snapshot() reads it, or, as they
+// refuse a cut-off read, a snapshot marked truncated that shows no
+// conversation.
+function cutSnapshot(nonce) {
+  const nodes = screenNodes(true, true);
+  const base = { labels: Object.fromEntries(LABELS.map((label) => [label, label !== state.missingLabel])), preset: state.preset, model: state.model, project: state.project };
+  try {
+    const found = decisions.dialogs(nodes)[0];
+    return {
+      ...base,
+      title: decisions.title(nodes),
+      running: decisions.running(nodes),
+      sendable: false,
+      dialog: found ? { question: found.question, options: [...found.options] } : null,
+      reply: decisions.reply(nodes),
+      ...(nonce === undefined ? {} : { own: decisions.ownConversation(nodes, nonce) }),
+    };
+  } catch (error) {
+    if (!/^truncated/.test(error.message)) return { error: error.message };
+    return { ...base, truncated: true, title: null, running: null, sendable: false, dialog: null, reply: null, ...(nonce === undefined ? {} : { own: false }) };
+  }
 }
 
 // The composer or Send the shipped decision picks in the window, or an error.
@@ -234,6 +268,9 @@ function answer() {
     case 'snapshot': {
       if (state.sent && state.failSnapshotAfterSend) return { error: 'snapshot_failed' };
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
+      const cutRead = Boolean(state.truncatedIn?.includes('snapshot')) || (Boolean(state.sent) && state.truncatedPolls > 0);
+      if (state.sent && state.truncatedPolls > 0) state.truncatedPolls -= 1;
+      if (cutRead) return cutSnapshot(args[0]);
       // Read before the count drops, as the app shows it during this read.
       const shownTitle = title();
       let own;
