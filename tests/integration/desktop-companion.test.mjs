@@ -235,6 +235,12 @@ test('a signal to a foreground desktop task gives the runner its grace to stop t
   child.stdin.end();
   const exited = new Promise((done) => child.on('close', (code, signal) => done({ code, signal })));
   await waitForCall(context, 'send');
+  // The send call is recorded as it starts; a signal before it lands would cut
+  // it off with nothing sent, so the signal comes once the app has the task.
+  for (let waited = 0; context.fake().sent !== true; waited += 50) {
+    assert.ok(waited < 15_000, 'the task was never sent');
+    await new Promise((done) => setTimeout(done, 50));
+  }
   child.kill('SIGTERM');
   const { code } = await exited;
   assert.equal(code, 143);
@@ -354,3 +360,38 @@ test('setup still reports when the transport config holds an unknown value', asy
   assert.equal(report.transportSource, 'invalid');
   assert.ok(report.problems.some((problem) => /gui/.test(problem)));
 });
+
+// finolabs/agybird#62: archiving finished desktop conversations.
+test('setup --archive-finished on makes a finished desktop task archive its conversation', async () => {
+  const context = workspace({ reply: 'done' });
+  context.choose('desktop');
+  const setup = await context.companion(['setup', '--archive-finished', 'on']);
+  assert.match(setup.stdout, /Archive finished desktop conversations: on/);
+  assert.equal(JSON.parse(readFileSync(join(context.env.AGYBIRD_JOBS_DIR, 'config.json'), 'utf8')).archiveFinished, true);
+  const { envelope } = json(await context.companion(['task', '--json', 'Say hi']));
+  assert.equal(envelope.evidence.archived, true, JSON.stringify(envelope.warnings));
+  assert.deepEqual(context.fake().archived, ['Fake Task|ws']);
+  assert.notEqual((await context.companion(['setup', '--archive-finished', 'maybe'])).code, 0);
+});
+
+test('archive archives the conversations of finished desktop jobs, once', async () => {
+  const context = workspace({ reply: 'done' });
+  context.choose('desktop');
+  json(await context.companion(['task', '--json', 'Say hi']));
+  assert.equal(context.fake().archived, undefined, 'off by default');
+  const first = json(await context.companion(['archive', '--json']));
+  assert.equal(first.candidates, 1);
+  assert.deepEqual(first.archived, ['Fake Task - ws - Antigravity']);
+  // Marked archived in its stored result: not offered again.
+  const again = json(await context.companion(['archive', '--json']));
+  assert.equal(again.candidates, 0);
+  assert.notEqual((await context.companion(['archive', 'job-x'])).code, 0, 'no arguments');
+});
+
+test('archive leaves a desktop job that timed out before its reply was read', async () => {
+  const context = workspace({ stuck: true });
+  context.choose('desktop');
+  json(await context.companion(['task', '--timeout', '1s', '--json', 'Run forever']));
+  assert.equal(json(await context.companion(['archive', '--json'])).candidates, 0);
+});
+
