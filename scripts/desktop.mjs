@@ -71,8 +71,10 @@ const IDLE_POLL_MS = 500;
 const SETTLE_MS = 15_000;
 // Desktop runs that may be between their start and their result at once (Fio, 28/11/2026).
 const MAX_RUNS = 5;
-// How long a run waits for the app to take it back for its result, at most
-// until its deadline; in a cancel's grace, attach() fits CANCEL_BUDGET_MS.
+// How long a starting run waits for a run acting in phases to give the app
+// back. A run that already sent its task waits for the app until its own
+// deadline instead (a run of 0.4.8 or earlier holds it for its whole turn);
+// in a cancel's grace, attach() fits CANCEL_BUDGET_MS.
 const ATTACH_WAIT_MS = 120_000;
 
 // The sidebar lists a conversation by its own name: the window title
@@ -483,14 +485,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Takes the app back for the result and opens the run's conversation. In a
   // cancel's grace (`cancel`), cleanup's own uninterrupted calls are used and
   // the whole of it ends PRESS_TIMEOUT_MS before CANCEL_BUDGET_MS from the
-  // signal, so Stop still fits. Otherwise the wait for the lock ends at the
-  // run's deadline, and a cancel interrupts it. Once the lock is taken the run
+  // signal, so Stop still fits. Otherwise the wait for the lock lasts until the
+  // run's deadline, whoever holds it, and a cancel interrupts it. Once the lock is taken the run
   // holds the app again (detached is false): if what follows fails, the run's
   // way out presses Stop in its own conversation only, or keeps the lock, and
   // never waits on this lock again.
   const attach = async ({ cancel = false } = {}) => {
     const via = cancel ? call : bridge;
-    const until = cancel ? (cancelledAt ?? Date.now()) + CANCEL_BUDGET_MS - PRESS_TIMEOUT_MS : Math.min(Date.now() + ATTACH_WAIT_MS, runDeadline);
+    const until = cancel ? (cancelledAt ?? Date.now()) + CANCEL_BUDGET_MS - PRESS_TIMEOUT_MS : runDeadline;
     const limit = (ms) => {
       if (!cancel) return ms === undefined ? undefined : { timeoutMs: ms };
       const left = until - Date.now();

@@ -1167,6 +1167,19 @@ test('once its title settles, a run waits on its sidebar row with the app lock r
   assertCleanedUp(context);
 });
 
+test('a run whose app another run took meanwhile waits for it, then reads its own result', async () => {
+  const context = settled({ runningPolls: 8, reply: 'READY' });
+  const { done } = start(context);
+  while (sidebarReads(context) < 2 || existsSync(lockFile(context))) await new Promise((resolve) => setTimeout(resolve, 20));
+  // A run of an older version takes the free app and holds it for its turn.
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)']);
+  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000 }));
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.response, 'READY');
+  assertCleanedUp(context);
+});
+
 test('a sixth desktop run is refused before it touches the app', async () => {
   const context = setup();
   const runs = join(context.stateDir, 'desktop-runs');
