@@ -29,9 +29,9 @@ A desktop run starts in any repository or worktree on this Mac without the user 
 The app lock (`~/.agybird/desktop.lock`) is held only while a run acts on the app. Three phases:
 
 - B1. **Start, under the lock:** the idle wait, the clipboard, the switch to the app, the new conversation and its project, the paste, giving the front and the clipboard back, the read back, Send, and binding the run's conversation by title and marker. The lock is held until the title has settled: the 2.36 rename after Send (or 15 s with no rename). Then it is released.
-- B2. **Wait, with no lock:** the runner reads its row in the sidebar (title and project, F3) every poll. `In Progress` keeps waiting. `Blocked` and `Idle` go to B3. A row missing from the sidebar for 3 polls in a row ends the run `error` without pressing anything.
+- B2. **Wait, with no lock:** the runner reads its row in the sidebar (title and project, F3) every poll. `In Progress` keeps waiting. `Blocked` and `Idle` go to B3. A row missing from the sidebar (or a read that fails) for 3 polls in a row ends the run `error`; Stop is then pressed only in the run's own conversation, checked by title and marker, as on any other error. Only the one `Sidebar` group is read, so a conversation's text shaped like a row or a heading is never taken for one.
 - B3. **Result, under the lock:** the runner opens its conversation from the sidebar (F4), checks the title and its own marker in the same read as today, and only then reads: a dialog (`needs_permission`, or `blocked: agent_question` of C3), or the reply through Copy. The lock is released at once. Stop on timeout or cancel, and an approved answer, run under the lock the same way.
-- B4. At most 5 runs are between B1 and the end of B3 at once; a sixth ends `blocked: too_many_runs` before touching the app. Each live run has its own record (`~/.agybird/desktop-runs/<marker>.json`: pid, project, title, deadline), replacing the `app: true` lock holder; a record whose process is gone is resolved as today's kept lock is: by evidence (B3's read showing the run's conversation with no run going) or by the user.
+- B4. At most 5 runs are between B1 and the end of B3 at once; a sixth ends `blocked: too_many_runs` before touching the app. Each live run has its own record (`~/.agybird/desktop-runs/<marker>.json`: pid, marker, project, title, deadline, and from Send on `app`, that the app may run its task), written whole through a rename. A record whose process is gone and that has no `app` is removed; one with `app` counts among the five until the sidebar shows its conversation alone under `Idle`, or the user removes it. A run that holds the app when it cannot press Stop keeps the lock as today; one that waits with the app free keeps its record instead. Projects are created under the lock, after the count.
 - B5. The switch of the conversation on screen in B3 does not wait for the user (decision 4), but the app is never brought to the front for it.
 
 ### Fixes from the spike
@@ -39,7 +39,7 @@ The app lock (`~/.agybird/desktop.lock`) is held only while a run acts on the ap
 - C1. A `front` that leaves the app behind ends the run before the conversation opens: `error` "Antigravity did not come to the front", nothing pasted (F7).
 - C2. A paste refused before it pastes (`not_frontmost`, `not_found`, `other_conversation`, `truncated`) counts as not pasted: no "left unsent" warning, no clearing (F7).
 - C3. A dialog that is an agent question, not a permission prompt (its option 1 is not "1 Yes, allow this time"), ends the run `blocked: agent_question` with the question and its options in `evidence.agent_question`; it is never answered by the permission flow (F6). A blocked reason, not a new envelope status, keeps the public statuses unchanged.
-- C4. A turn ends only when the sidebar shows the run's row under `Idle` and the conversation read in B3 shows a reply with no run going; an interim message while the row is `In Progress` is never returned (F5).
+- C4. A turn ends only when the sidebar shows no row of the run's title `In Progress` and the conversation read in B3 shows a reply with no run going; an interim message while the row is `In Progress` is never returned (F5). A failed sidebar read, or no row, decides nothing.
 
 ## Out of scope
 
@@ -52,8 +52,9 @@ The app lock (`~/.agybird/desktop.lock`) is held only while a run acts on the ap
 | Risk | Held by |
 | --- | --- |
 | Two runs' conversations share a title in one project | B3 reads the marker in the same read as the title; a namesake is never read or pressed, and the runner tries the next row with that title before ending `error`. |
-| The sidebar's grouping changes (Display Options, a later version) | No `In Progress`/`Blocked`/`Idle` heading in a read ends the run `blocked: sidebar_unreadable` before Send, and after Send falls back to today's on-screen polling under the lock. |
-| A run killed in B2 leaves its task going | Its record stays; the next run that sees the record's process gone resolves it as today's kept lock. |
+| The sidebar's grouping changes (Display Options, a later version) | No `In Progress`/`Blocked`/`Idle` heading in the sidebar keeps the run on screen under the lock, deciding the turn by today's on-screen polling (no `sidebar_unreadable` stop: the app works without the groups, only without parallel runs). |
+| A namesake (same title, same project) is `In Progress` | The run's turn ends only when no row of its title is `In Progress`, so the namesake delays it, at worst to the timeout; it never returns an interim message. |
+| A run killed in B2 leaves its task going | Its record stays with `app`; it counts among the five until the sidebar shows the conversation alone under `Idle`, or the user removes it. |
 | Created projects pile up | Only one per folder; `project_created` in the evidence says which. Cleanup stays the user's (out of scope). |
 
 ## Proof
