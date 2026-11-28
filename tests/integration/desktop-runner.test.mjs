@@ -456,8 +456,10 @@ test('a cancel during the clipboard restore before Send clears the composer, pre
 });
 
 test('a cancel during a slow restore after the paste leaves the prompt unsent instead of overrunning the grace', { skip: process.platform === 'win32' }, async () => {
-  // The restore under way when the signal comes takes 5.8 s; clearing could take 14 s more, past the 18 s budget.
-  const context = setup({ delays: { 'clipboard-restore': 2_900, restore: 2_900 } });
+  // The restore under way when the signal comes takes about 5 s (each step well
+  // inside its 3 s timeout, even on a slow runner); clearing could take 14 s
+  // more, past the 18 s budget.
+  const context = setup({ delays: { 'clipboard-restore': 2_400, restore: 2_400 } });
   const { child, done } = start(context);
   await waitFor(context, 'clipboard-restore');
   const started = Date.now();
