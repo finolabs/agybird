@@ -16,7 +16,7 @@ export function loadAxDecisions(source = readFileSync(AX_SCRIPT_PATH, 'utf8')) {
   const start = source.indexOf('// desktop-decisions:start');
   const end = source.indexOf('// desktop-decisions:end');
   if (start < 0 || end < start) throw new Error('desktop-ax.js has no desktop-decisions region');
-  return runInNewContext(`${source.slice(start, end)}\n;({ UNTITLED, OPTION_1, flatten, title, marker, ownConversation, requireOwn, namedConversation, dialogs, chooseAnswer, running, chooseStop, chooseCopy, chooseComposer, reply, chooseNewConversation, choosePicker, requireLocal, chooseProjectSearch, chooseProjectItem, sidebarRows, sidebarState })`, {}, { filename: AX_SCRIPT_PATH });
+  return runInNewContext(`${source.slice(start, end)}\n;({ UNTITLED, OPTION_1, flatten, title, marker, ownConversation, requireOwn, namedConversation, dialogs, chooseAnswer, running, chooseStop, chooseCopy, chooseComposer, reply, chooseNewConversation, choosePicker, requireLocal, chooseProjectSearch, chooseProjectItem, sidebarRows, sidebarState, archiveButton })`, {}, { filename: AX_SCRIPT_PATH });
 }
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ANSWERS = new Set(['1', 'Skip']);

@@ -1,10 +1,10 @@
 ---
 description: Check that the Antigravity CLI is installed and signed in, switch the Agybird review gate, and choose the transport
-argument-hint: '[--enable-review-gate|--disable-review-gate] [--transport cli|desktop [--here]]'
+argument-hint: '[--enable-review-gate|--disable-review-gate] [--transport cli|desktop [--here]] [--archive-finished on|off]'
 disable-model-invocation: true
 ---
 
-Run this with the Bash tool, adding the user's flags after `setup` only if each is exactly `--enable-review-gate`, `--disable-review-gate`, `--transport cli`, `--transport desktop` or `--here` (only together with `--transport`). Pass nothing else.
+Run this with the Bash tool, adding the user's flags after `setup` only if each is exactly `--enable-review-gate`, `--disable-review-gate`, `--transport cli`, `--transport desktop`, `--here` (only together with `--transport`), `--archive-finished on` or `--archive-finished off`. Pass nothing else.
 
 ```bash
 command node "${CLAUDE_PLUGIN_ROOT}/scripts/companion.mjs" setup
