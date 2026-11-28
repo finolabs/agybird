@@ -173,6 +173,12 @@ test('a user who takes the front back before the paste is waited for, and the pa
   assert.equal(names(context).filter((name) => name === 'paste-input').length, 2);
   assert.equal(context.fake().clipboard, 'user clipboard');
   assert.equal(names(context).filter((name) => name === 'new-conversation').length, 1, 'the same new conversation');
+  // The conversation was checked again before the second paste, and the front was left to the user.
+  const order = names(context);
+  const second = order.lastIndexOf('paste-input');
+  assert.ok(order.slice(order.indexOf('paste-input'), second).includes('snapshot'));
+  assert.ok(order.slice(order.indexOf('paste-input'), second).includes('read-input'));
+  assert.ok(!order.slice(order.indexOf('paste-input'), second).includes('restore'), 'the front stays with the user');
 });
 
 test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {

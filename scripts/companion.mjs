@@ -103,7 +103,8 @@ export function parseFlags(argv, spec) {
       positional.push(...argv.slice(index + 1));
       break;
     }
-    if (argument === '--help' || argument === '-h') throw new HelpRequested(spec);
+    // Only before the free text: `-h` inside a task's words is the task's.
+    if ((argument === '--help' || argument === '-h') && positional.length === 0) throw new HelpRequested(spec);
     if (!argument.startsWith('--')) {
       positional.push(argument);
       continue;
@@ -1115,7 +1116,7 @@ async function stopGate(env) {
 }
 
 async function commandHook(argv, env) {
-  if (argv[0] !== 'stop') throw new Error('Usage: hook stop');
+  if (argv.length !== 1 || argv[0] !== 'stop') throw new Error('Usage: hook stop (run by the host on Stop; it takes no options)');
   await stopGate(env);
 }
 

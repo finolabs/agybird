@@ -618,10 +618,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // minimized, hidden or full screen), stops the run before anything moves.
   // Saving the clipboard takes time, so the user is checked again after it,
   // right before the switch, and the wait goes on if they came back.
+  // One budget for every wait of the run's start, the paste retries
+  // included, so the start never outlives the lock's pre-Send margin.
+  let idleUntil = null;
   const waitForIdleUser = async () => {
     const waitMs = Number(env.AGYBIRD_DESKTOP_IDLE_WAIT_MS) >= 0 && env.AGYBIRD_DESKTOP_IDLE_WAIT_MS !== undefined ? Number(env.AGYBIRD_DESKTOP_IDLE_WAIT_MS) : IDLE_WAIT_MS;
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : IDLE_POLL_MS;
-    const until = Date.now() + waitMs;
+    idleUntil ??= Date.now() + waitMs;
+    const until = idleUntil;
     const refuse = (now) => {
       if (now.locked) throw new Blocked('screen_locked', 'The screen is locked; unlock it and retry. Nothing was pasted or sent.');
       if (now.on_screen === false) throw new Blocked('not_on_screen', 'The Antigravity window is not on the Space on screen (it is on another Space, minimized, hidden or full screen), and switching to it would move the screen; bring it to this Space and retry. Nothing was pasted or sent.');
@@ -842,12 +846,19 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         if (resolved.created && / failed: not_found: project /.test(error.message)) throw new Blocked('project_not_listed', `The Antigravity app does not list the new project ${JSON.stringify(project)} yet; nothing was pasted or sent. Retry, or open the folder as a project in the app.`);
         throw error;
       }
-      const opened = await bridge(['snapshot']);
-      if (opened.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot tell its composer from another; nothing was pasted or sent.`);
-      checkLabels(opened);
-      if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
-      // 2.36 can run the agent elsewhere than this Mac, where the working tree is checked.
-      if (opened.location !== null && opened.location !== undefined && opened.location !== 'This Computer') throw new Error(`The new conversation would run the agent on ${JSON.stringify(opened.location)}, not This Computer; nothing was pasted or sent.`);
+      // The new conversation as it must be before a paste: whole, in the
+      // project, running the agent on this Mac; read again before a retry,
+      // since the user had the Mac meanwhile.
+      const checkOpened = async () => {
+        const opened = await bridge(['snapshot']);
+        if (opened.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot tell its composer from another; nothing was pasted or sent.`);
+        checkLabels(opened);
+        if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
+        // 2.36 can run the agent elsewhere than this Mac, where the working tree is checked.
+        if (opened.location !== null && opened.location !== undefined && opened.location !== 'This Computer') throw new Error(`The new conversation would run the agent on ${JSON.stringify(opened.location)}, not This Computer; nothing was pasted or sent.`);
+        return opened;
+      };
+      const opened = await checkOpened();
       evidence.preset = opened.preset;
       warnings.push(...presetWarnings(opened.preset));
 
@@ -868,12 +879,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           if (refused) pasted = false;
           if (!refused || !/ failed: not_frontmost/.test(error.message) || attempt >= PASTE_ATTEMPTS) throw error;
         }
-        await restore();
+        // The user took the front themselves: only the clipboard goes back,
+        // the front stays where they put it.
+        await restoreClipboard();
+        saved = null;
         const again = await waitForIdleUser();
         userFront = again.frontmost;
         saved = { clipboard: again.clipboard };
         const back = await bridge(['front']);
         if (back.ok !== true) throw new Error('Antigravity did not come back to the front for the paste; nothing was pasted or sent.');
+        const reopened = await checkOpened();
+        if (reopened.title !== UNTITLED) throw new Error(`The Antigravity app no longer shows the new conversation (it shows ${JSON.stringify(reopened.title)}); nothing was pasted or sent.`);
+        if (reopened.preset !== evidence.preset) throw new Error(`The app's permissions preset changed while the run waited (${JSON.stringify(evidence.preset)} to ${JSON.stringify(reopened.preset)}); nothing was pasted or sent.`);
+        const typed = await bridge(['read-input', UNTITLED]);
+        if (normalized(typed.value) !== '') throw new Error('The new conversation\'s input is no longer empty (was the app in use?); nothing was pasted or sent.');
       }
       // The composer holds the prompt now: the clipboard and the front go back
       // to the user at once, and the rest (the read back, Send) runs with the
