@@ -404,6 +404,40 @@ function chooseProjectItem(nodes, project, read) {
   if (found.length > 1) throw new Error(`several_controls: project ${project}`);
   return found[0];
 }
+// The conversations the 2.36 sidebar lists, each with the status heading it
+// sits under: `In Progress` (the agent works), `Blocked` (it waits for the
+// user) or `Idle`. A row is a link titled with the conversation's title whose
+// row group also shows the project's name. Rows under no status heading
+// (pinned ones) have a null status.
+const SIDEBAR_STATUSES = ['In Progress', 'Blocked', 'Idle'];
+function sidebarRows(nodes, read) {
+  const textOf = read || readNode;
+  const rows = [];
+  let status = null;
+  nodes.forEach((node, index) => {
+    if (node.role === 'AXHeading') {
+      if (SIDEBAR_STATUSES.indexOf(node.label) >= 0) status = node.label;
+      else if (/Conversations$/.test(node.label)) status = null;
+      return;
+    }
+    if (node.role !== 'AXLink' || !node.label) return;
+    const row = parentOf(nodes, index);
+    if (row < 0) return;
+    const texts = [];
+    for (let at = row + 1; at < subtreeEnd(nodes, row); at += 1) if (nodes[at].role === 'AXStaticText') texts.push(String(textOf(nodes[at])).trim());
+    if (texts.length >= 2 && texts[0] === node.label) rows.push({ index, title: node.label, project: texts[1], status });
+  });
+  return rows;
+}
+
+// The sidebar rows of `title` in `project`, with whether the read showed any
+// status heading at all (a sidebar grouped some other way shows none).
+function sidebarState(nodes, title, project, read) {
+  const grouped = nodes.some((node) => node.role === 'AXHeading' && SIDEBAR_STATUSES.indexOf(node.label) >= 0);
+  const rows = sidebarRows(nodes, read).filter((row) => row.title === title && row.project === project);
+  return { grouped, rows };
+}
+
 // desktop-decisions:end
 
 function get(element, name) {
@@ -886,6 +920,27 @@ const COMMANDS = {
     if (board.changeCount === before) throw new Error('copy_unchanged');
     const value = board.stringForType($.NSPasteboardTypeString);
     return { ok: true, text: value && !value.isNil() ? value.js : null };
+  },
+  // The run's rows in the sidebar, read with the app behind and the view unchanged.
+  'sidebar-state'(app, title, project) {
+    if (!title || !project) throw new Error('usage: sidebar-state <title> <project>');
+    const nodes = tree(app);
+    if (nodes.truncated) throw new Error('truncated');
+    const shown = sidebarState(nodes, title, project, staticText);
+    return { grouped: shown.grouped, statuses: shown.rows.map((row) => row.status) };
+  },
+  // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
+  // the view changes, the front does not.
+  'open-row'(app, title, project, n) {
+    if (!title || !project) throw new Error('usage: open-row <title> <project> <n>');
+    const nodes = tree(app);
+    if (nodes.truncated) throw new Error('truncated');
+    const rows = sidebarState(nodes, title, project, staticText).rows;
+    const row = rows[Number(n) || 0];
+    if (!row) throw new Error(`not_found: sidebar row ${title}`);
+    press(nodes[row.index], 'sidebar row');
+    delay(0.6);
+    return { ok: true, rows: rows.length };
   },
   stop(app, expectedTitle, nonce) {
     const nodes = tree(app);

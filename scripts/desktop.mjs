@@ -62,6 +62,42 @@ const CANCEL_BUDGET_MS = 18_000;
 const IDLE_SECONDS = 3;
 const IDLE_WAIT_MS = 120_000;
 const IDLE_POLL_MS = 500;
+// After Send the run keeps the app this long, or until the app renames its
+// conversation, reading it on screen; it then waits on its sidebar row with the
+// app free for other runs, and takes the app back only to read the result.
+const SETTLE_MS = 15_000;
+// Desktop runs that may be between their start and their result at once (Fio, 28/11/2026).
+const MAX_RUNS = 5;
+// How long a run waits for the app to take it back for its result.
+const ATTACH_WAIT_MS = 120_000;
+// Within a cancel's grace, the wait for the app before Stop.
+const ATTACH_CANCEL_MS = 6_000;
+
+// The sidebar lists a conversation by its own name: the window title
+// "<name> - <project> - Antigravity" without its last two parts.
+function rowTitle(windowTitle, project) {
+  const suffix = ` - ${project} - Antigravity`;
+  return windowTitle.endsWith(suffix) ? windowTitle.slice(0, -suffix.length) : windowTitle;
+}
+
+// The live runs' records: one file per run, named by its marker. A record
+// whose process is gone does not count.
+function liveRuns(directory, self) {
+  let entries = [];
+  try {
+    entries = readdirSync(directory).filter((entry) => entry.endsWith('.json'));
+  } catch {
+    return 0;
+  }
+  return entries.filter((entry) => {
+    try {
+      const { pid } = JSON.parse(readFileSync(join(directory, entry), 'utf8'));
+      return pid !== self && Number.isInteger(pid) && pid > 0 && processIsRunning(pid);
+    } catch {
+      return false;
+    }
+  }).length;
+}
 
 function processIsRunning(pid) {
   try {
@@ -365,6 +401,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   let turnOver = false;
   // Set when the app may still run the task but Stop could not be pressed.
   let holdLock = false;
+  // Set once the run waits on its sidebar row with the app lock released.
+  let detached = false;
+  let lockFile = null;
+  let runRecord = null;
+  let projectName = null;
   let lockExpiresAt = null;
   let finished = false;
   // The title of the run's own conversation, as the Send call read it right
@@ -378,6 +419,39 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const expected = () => conversation ?? UNTITLED;
   const markApp = () => {
     if (lockPath) markLockForApp(lockPath, lockExpiresAt, conversation, marker);
+  };
+  // Gives the app to other runs while the agent works.
+  const detach = () => {
+    if (!lockPath || holdLock) return;
+    releaseLock(lockPath);
+    lockPath = null;
+    detached = true;
+  };
+  // Takes the app back and opens the run's conversation from its sidebar row,
+  // checked by title and the run's own marker in the same read. `via` is the
+  // bridge call to use: cleanup's own calls are never interrupted.
+  const attach = async (waitMs, via) => {
+    const until = Date.now() + waitMs;
+    for (;;) {
+      try {
+        lockPath = acquireLock(lockFile, lockExpiresAt);
+        break;
+      } catch (error) {
+        if (!(error instanceof Blocked) || Date.now() >= until) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    markApp();
+    const { statuses } = await via(['sidebar-state', rowTitle(conversation, projectName), projectName]);
+    for (let n = 0; n < statuses.length; n += 1) {
+      await via(['open-row', rowTitle(conversation, projectName), projectName, String(n)], { timeoutMs: PRESS_TIMEOUT_MS });
+      const shown = await via(['snapshot', marker]);
+      if (shown.truncated !== true && shown.title === conversation && shown.own === true) {
+        detached = false;
+        return;
+      }
+    }
+    throw new Error(`The run's conversation ${JSON.stringify(conversation)} could not be opened from the sidebar; nothing was pressed in it.`);
   };
   // The answer's record, created before its step starts and never written
   // through an existing file or link. One that cannot be created, or that
@@ -481,6 +555,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // A lock kept for the app (holdLock) was marked before the press and stays.
   const cleanup = async () => {
     await restore();
+    if (runRecord) rmSync(runRecord, { force: true });
+    runRecord = null;
     if (lockPath && !holdLock) releaseLock(lockPath);
     lockPath = null;
   };
@@ -523,7 +599,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       evidence.project_created = true;
       evidence.project = project;
     }
-    const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
+    projectName = project;
+    const stateDir = env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird');
+    lockFile = join(stateDir, 'desktop.lock');
     // A lock an earlier run kept for the app is freed only by evidence that its
     // task ended: the app showing that run's conversation with no run going.
     // Its conversation is the one titled as it recorded and showing its run's marker.
@@ -537,7 +615,33 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (shown.truncated !== true && shown.title !== null && shown.title !== UNTITLED && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
     }
     lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
-    lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
+    // A lock held by another live run that has a run record is held only while
+    // that run acts (seconds): this run waits for it. Any other holder blocks.
+    const runsDir = join(stateDir, 'desktop-runs');
+    const phased = () => {
+      const holder = readLock(lockFile);
+      if (!holder || !Number.isInteger(holder.pid) || !processIsRunning(holder.pid)) return false;
+      try {
+        return readdirSync(runsDir).some((entry) => JSON.parse(readFileSync(join(runsDir, entry), 'utf8')).pid === holder.pid);
+      } catch {
+        return false;
+      }
+    };
+    const startUntil = Date.now() + ATTACH_WAIT_MS;
+    for (;;) {
+      try {
+        lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
+        break;
+      } catch (error) {
+        if (!(error instanceof Blocked) || Date.now() >= startUntil || !phased()) throw error;
+        await sleep(250);
+      }
+    }
+    // Counted under the app lock, so two runs never both take the last place.
+    if (liveRuns(runsDir, process.pid) >= MAX_RUNS) throw new Blocked('too_many_runs', `${MAX_RUNS} desktop runs are already going; retry once one finishes. Nothing was pasted or sent.`);
+    mkdirSync(runsDir, { recursive: true, mode: 0o700 });
+    runRecord = join(runsDir, `${marker}.json`);
+    writeFileSync(runRecord, JSON.stringify({ pid: process.pid, marker, project, expiresAt: lockExpiresAt }), { mode: 0o600 });
     const before = workTree(options.cwd);
     // The reply already on screen when the turn starts; a resumed conversation has one.
     let baselineReply = null;
@@ -672,6 +776,25 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // time, or the read was cut off at the node cap, so the poll is skipped:
     // a cut-off read is never a turn that ended, and the run waits on to its
     // deadline, where Stop is pressed only from a whole read.
+    let renamed = false;
+    const settleMs = env.AGYBIRD_DESKTOP_SETTLE_MS !== undefined && Number(env.AGYBIRD_DESKTOP_SETTLE_MS) >= 0 ? Number(env.AGYBIRD_DESKTOP_SETTLE_MS) : SETTLE_MS;
+    const settleUntil = Date.now() + settleMs;
+    // The run's sidebar status: In Progress, Blocked, Idle, or null when the
+    // sidebar shows no status groups or no row of the run's.
+    const sidebarStatus = async () => {
+      if (conversation === null) return null;
+      let side;
+      try {
+        side = await bridge(['sidebar-state', rowTitle(conversation, project), project]);
+      } catch (error) {
+        if (error instanceof Cancelled) throw error;
+        return null;
+      }
+      if (!side.grouped || side.statuses.length === 0) return null;
+      for (const status of ['Blocked', 'In Progress', 'Idle']) if (side.statuses.includes(status)) return status;
+      return null;
+    };
+    let misses = 0;
     const follow = (state) => {
       if (state.truncated) {
         const partial = `${PARTIAL_TREE}, so a read could not show whether the task had ended; the run waited for a whole read.`;
@@ -683,6 +806,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // conversation is followed to its new title, in the same project, only
       // in a read that shows the run's own message under it.
       if (conversation !== null && state.title !== conversation && state.own === true && isProjectTitle(state.title, project)) {
+        renamed = true;
         conversation = state.title;
         evidence.conversation_title = conversation;
         markApp();
@@ -706,6 +830,20 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let sawRunning = false;
     for (;;) {
       await sleep(pollMs);
+      // Once the title has settled, the app is given to other runs while the
+      // agent works, when the sidebar shows the run's row under a status.
+      if (!detached && lockPath && !holdLock && conversation !== null && (renamed || Date.now() >= settleUntil) && (await sidebarStatus()) === 'In Progress') detach();
+      if (detached) {
+        const status = await sidebarStatus();
+        if (status === 'In Progress' || (status === null && misses < 2)) {
+          misses = status === null ? misses + 1 : 0;
+          if (Date.now() >= deadline) throw new TimedOut(options.timeout);
+          continue;
+        }
+        misses = 0;
+        // Blocked, Idle, or a row the sidebar no longer shows: read it on screen.
+        await attach(ATTACH_WAIT_MS, bridge);
+      }
       state = await bridge(['snapshot', marker]);
       if (!follow(state)) {
         if (Date.now() >= deadline) throw new TimedOut(options.timeout);
@@ -730,7 +868,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       }
       if (state.running) sawRunning = true;
       // A turn has ended once it was seen running, or once a new reply replaced the one on screen.
-      if (!state.running && state.reply !== null && (sawRunning || state.reply !== baselineReply)) break;
+      if (!state.running && state.reply !== null && (sawRunning || state.reply !== baselineReply)) {
+        // A turn has ended only once the sidebar no longer shows it In
+        // Progress: an interim message while a command runs is not the reply.
+        if ((await sidebarStatus()) !== 'In Progress') break;
+        sawRunning = true;
+      }
       if (Date.now() >= deadline) throw new TimedOut(options.timeout);
     }
     turnOver = true;
@@ -782,7 +925,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const running = sent && !turnOver;
     let stopped = false;
     if (running) markApp();
-    if (running && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
+    // A run waiting with the app free takes it back, briefly, to press Stop.
+    if (running && detached && !(caught instanceof OtherConversation)) await attach(ATTACH_CANCEL_MS, call).catch(() => warnings.push('The app could not be taken back from other runs in time to press Stop.'));
+    if (running && !detached && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
     if (running && !stopped) {
       // The lock, marked for the app before the press, stays until evidence frees it.
       holdLock = Boolean(lockPath);

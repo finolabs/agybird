@@ -475,3 +475,45 @@ test('the project menu is searched and pressed only in the untitled new conversa
   assert.throws(() => chooseProjectSearch(titled), /other_conversation/);
   assert.throws(() => chooseProjectItem(titled, 'agybird'), /other_conversation/);
 });
+
+// The 2.36 sidebar as the spike read it (docs/verification/2026-11-28-desktop-spike-projects-sidebar.md, F3).
+function sidebarNodes() {
+  const row = (title, project, depth = 24) => [
+    { depth, role: 'AXGroup', label: '' },
+    { depth: depth + 3, role: 'AXLink', label: title },
+    { depth: depth + 3, role: 'AXGroup', label: '' },
+    { depth: depth + 4, role: 'AXStaticText', label: '', value: title },
+    { depth: depth + 4, role: 'AXStaticText', label: '', value: project },
+    { depth: depth + 3, role: 'AXGroup', label: '' },
+    { depth: depth + 4, role: 'AXButton', label: 'Archive conversation' },
+  ];
+  return [
+    { depth: 0, role: 'AXWindow', label: 'Antigravity' },
+    { depth: 25, role: 'AXHeading', label: 'Pinned Conversations' },
+    ...row('Review Notes', 'studio'),
+    { depth: 25, role: 'AXHeading', label: 'Conversations' },
+    { depth: 27, role: 'AXHeading', label: 'In Progress' },
+    ...row('Code Review', 'huly-skill'),
+    { depth: 27, role: 'AXHeading', label: 'Blocked' },
+    ...row('Code Review', 'agybird'),
+    { depth: 27, role: 'AXHeading', label: 'Idle' },
+    ...row('Code Review', 'agybird'),
+    ...row('Other Task', 'agybird'),
+  ];
+}
+
+test('the sidebar reads each row under its status heading, matched by title and project', () => {
+  const { sidebarRows, sidebarState } = loadAxDecisions();
+  const rows = sidebarRows(sidebarNodes());
+  assert.deepEqual(JSON.parse(JSON.stringify(rows.map((row) => [row.title, row.project, row.status]))), [
+    ['Review Notes', 'studio', null],
+    ['Code Review', 'huly-skill', 'In Progress'],
+    ['Code Review', 'agybird', 'Blocked'],
+    ['Code Review', 'agybird', 'Idle'],
+    ['Other Task', 'agybird', 'Idle'],
+  ]);
+  const shown = sidebarState(sidebarNodes(), 'Code Review', 'agybird');
+  assert.equal(shown.grouped, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(shown.rows.map((row) => row.status))), ['Blocked', 'Idle'], 'a namesake in another project is not the run\'s');
+  assert.deepEqual(sidebarState(sidebarNodes().filter((node) => !/^(In Progress|Blocked|Idle)$/.test(node.label)), 'Other Task', 'agybird').grouped, false);
+});

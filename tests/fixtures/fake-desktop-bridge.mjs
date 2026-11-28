@@ -561,6 +561,32 @@ function answer() {
       if (state.copyNoop) return { error: 'copy_unchanged' };
       state.clipboard = state.reply;
       return { ok: true, text: state.reply };
+    // The 2.36 sidebar row of the run's conversation, under its status. Each
+    // read counts as a poll of a running task. sidebarUngrouped: no status
+    // groups; sidebarLag: reads that still show In Progress after the turn
+    // ended; sidebarMissing: the row is not listed.
+    case 'sidebar-state': {
+      (state.sidebarReads ??= []).push(state.frontmost);
+      if (state.sidebarUngrouped) return { grouped: false, statuses: [] };
+      // The sidebar lists the conversation by its name, without " - <project> - Antigravity".
+      if (state.sidebarMissing || !state.sent || `${args[0]} - ${args[1]} - Antigravity` !== title() || args[1] !== state.project) return { grouped: true, statuses: [] };
+      if (waiting()) return { grouped: true, statuses: ['Blocked'] };
+      if (state.stuck) return { grouped: true, statuses: ['In Progress'] };
+      if (state.runningPolls > 0) {
+        state.runningPolls -= 1;
+        return { grouped: true, statuses: ['In Progress'] };
+      }
+      if (state.sidebarLag > 0) {
+        state.sidebarLag -= 1;
+        return { grouped: true, statuses: ['In Progress'] };
+      }
+      return { grouped: true, statuses: ['Idle'] };
+    }
+    case 'open-row':
+      if (state.openRowFails) return { error: 'not_found: sidebar row' };
+      (state.opened ??= 0);
+      state.opened += 1;
+      return { ok: true, rows: 1 };
     case 'stop':
       try {
         decisions.chooseStop(screenNodes(false), args[0], args[1]);

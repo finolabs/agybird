@@ -1142,3 +1142,88 @@ test('on 2.36 a marker in a sidebar title neither follows a rename into another 
   appLock(kept, Date.now() + 60 * 60_000);
   assert.equal((await run(kept)).envelope.evidence.blocked_reason, 'locked');
 });
+
+// Runs that wait with the app free (docs/specs/desktop-sessions.md, B1–B5, C4).
+const sidebarReads = (context) => names(context).filter((name) => name === 'sidebar-state').length;
+const settled = (state) => {
+  const context = setup(state);
+  context.env.AGYBIRD_DESKTOP_SETTLE_MS = '0';
+  return context;
+};
+
+test('once its title settles, a run waits on its sidebar row with the app lock released', async () => {
+  const context = settled({ runningPolls: 6, reply: 'READY', delays: { 'sidebar-state': 120 } });
+  const { done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(existsSync(lockFile(context)), false, 'no lock while the agent works');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.response, 'READY');
+  const order = names(context);
+  assert.ok(order.indexOf('open-row') > order.indexOf('send'), 'the conversation was opened from the sidebar for the result');
+  assert.ok(order.indexOf('copy-reply') > order.indexOf('open-row'));
+  assertCleanedUp(context);
+});
+
+test('a sixth desktop run is refused before it touches the app', async () => {
+  const context = setup();
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  for (let n = 0; n < 5; n += 1) writeFileSync(join(runs, `run${n}.json`), JSON.stringify({ pid: process.pid, marker: `run${n}` }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'too_many_runs');
+  for (const name of ['front', 'clipboard-get', 'new-conversation']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a run record of a process that is gone does not count, and a run removes its own', async () => {
+  const context = setup({ runningPolls: 1 });
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  for (let n = 0; n < 5; n += 1) writeFileSync(join(runs, `gone${n}.json`), JSON.stringify({ pid: 999999, marker: `gone${n}` }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(readdirSync(runs).length, 5, 'its own record is gone');
+});
+
+test('an interim message while the sidebar still shows the turn In Progress is never returned', async () => {
+  const context = setup({ runningPolls: 0, sidebarLag: 3, reply: 'FINAL' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const order = names(context);
+  assert.ok(order.slice(0, order.indexOf('copy-reply')).filter((name) => name === 'sidebar-state').length >= 4, 'waited for the sidebar to show it Idle');
+});
+
+test('a run cancelled while it waits takes the app back and presses Stop in its own conversation', { skip: process.platform === 'win32' }, async () => {
+  const context = settled({ stuck: true });
+  const { child, done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(order.lastIndexOf('open-row') < order.lastIndexOf('stop'), 'opened, then Stop');
+  assert.equal(context.fake().stopped, true);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a sidebar with no status groups keeps the run on screen with the app lock held', async () => {
+  const context = settled({ runningPolls: 3, sidebarUngrouped: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.ok(!names(context).includes('open-row'));
+});
+
+test('a run that finds the app lock held by a live run with a run record waits for it', async () => {
+  const context = setup({ runningPolls: 1 });
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)']);
+  writeFileSync(join(runs, 'other.json'), JSON.stringify({ pid: holder.pid, marker: 'other' }));
+  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000 }));
+  const started = Date.now();
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.ok(Date.now() - started >= 1_000, 'it waited for the other run');
+});
