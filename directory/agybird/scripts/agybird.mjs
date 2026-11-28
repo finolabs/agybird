@@ -112,6 +112,10 @@ export function validateRequest(options) {
   if (!['read', 'write'].includes(options.mode)) {
     throw new Error(`Invalid mode: ${options.mode}`);
   }
+  // A review run is never resumed: only a read that records no session may be one.
+  if (options.review && (options.mode !== 'read' || !options.noRecord)) {
+    throw new Error('--review applies only to a read-only run with --no-record');
+  }
   if (options.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(options.effort)) {
     throw new Error(`Invalid effort: ${options.effort}`);
   }
@@ -1202,25 +1206,41 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
     addAgyErrorWarnings(warnings, agyError, options);
     return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [], agyError };
   }
-  if (denied && options.review && exitCode === 0 && typeof parsed.response === 'string' && parsed.response.trim()) {
-    // The prompt tells a review not to run terminal commands; one that tried
-    // anyway was refused and still finished its review from the diff and the
-    // file tools. Nothing resumes a review, so nothing can be approved: the
-    // review stands, and the refused actions are named.
-    const refused = describePermissionRequests(parsed, stderr).map((request) => `\`${request.tool}\`${request.target ? ` on ${JSON.stringify(request.target)}` : ''}`);
-    warnings.push(`Antigravity refused ${refused.length === 1 ? 'an action' : `${refused.length} actions`} the review tried (${refused.join('; ')}); the review finished without ${refused.length === 1 ? 'it' : 'them'}, from the diff and the file tools.`);
-    return { status: 'success', warnings, permissionRequests: [], agyError };
+  if (denied && options.review) {
+    // Nothing resumes a review, so nothing it was refused can be approved.
+    // The prompt tells it not to run terminal commands; one that tried anyway
+    // is judged as if the refused actions had not happened, by every check
+    // below, and stands only when it then finished with its review whole.
+    const refusedTools = new Set(parsed.toolCalls.filter((tool) => typeof tool.error === 'string' && PERMISSION_DENIAL.test(tool.error)));
+    const rest = classifyOutcome({
+      parsed: { ...parsed, warnings: [], toolCalls: parsed.toolCalls.filter((tool) => !refusedTools.has(tool)), deniedActions: [] },
+      exitCode,
+      stderr: String(stderr ?? '').split('\n').filter((line) => !PERMISSION_DENIAL.test(line)).join('\n'),
+      deadlineReached,
+      options: { ...options, review: false },
+    });
+    const named = describePermissionRequests(parsed, stderr).map((request) => {
+      const tool = String(request.tool ?? '').replace(/[^\w.:-]/g, '').slice(0, 60) || 'a tool';
+      return request.target ? `${tool} on ${JSON.stringify(request.target.slice(0, 120))}` : tool;
+    });
+    const what = named.length > 0 ? `${named.length === 1 ? 'an action' : `${named.length} actions`} the review tried (${named.join('; ')})` : 'an action the review tried';
+    const review = options.jsonSchema ? parsed.structuredOutput !== null && parsed.structuredOutput !== undefined : typeof parsed.response === 'string' && parsed.response.trim() !== '';
+    if (rest.status === 'success' && review) {
+      warnings.push(`Antigravity refused ${what}; the review finished without it, from the diff and the file tools.`);
+      return { status: 'success', warnings: [...warnings, ...rest.warnings], permissionRequests: [], agyError };
+    }
+    if (rest.status !== 'success') {
+      warnings.push(`Antigravity refused ${what}.`);
+      return { ...rest, warnings: [...warnings, ...rest.warnings], permissionRequests: [] };
+    }
+    warnings.push(`Antigravity refused ${what} before it gave its review; a review cannot be approved and resumed, so run it again (the prompt tells it to read files with the file tools only).`);
+    return { status: 'blocked', warnings, permissionRequests: [], agyError };
   }
   if (denied) {
     const permissionRequests = describePermissionRequests(parsed, stderr);
     const grantable = permissionRequests.filter((request) => request.grantable);
     for (const request of grantable) {
       warnings.push(`Antigravity denied \`${request.tool}\` on ${JSON.stringify(request.target)}; allow-rule \`${request.suggested_rule}\` under permissions.allow in ${request.settings_path} would authorize it.`);
-    }
-    if (options.review) {
-      // A review is never resumed, so a rule could not be applied to it: run it again.
-      warnings.push('Antigravity refused an action the review tried before it gave a review; a review cannot be approved and resumed, so run it again (the prompt tells it to read files with the file tools only).');
-      return { status: 'blocked', warnings, permissionRequests, agyError };
     }
     if (grantable.length === 0) {
       warnings.push('Antigravity permission policy blocked at least one requested action and no allow-rule can be suggested for it.');
