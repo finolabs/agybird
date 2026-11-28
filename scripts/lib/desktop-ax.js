@@ -954,13 +954,10 @@ const COMMANDS = {
     const row = rows[Number(n) || 0];
     if (!row) throw new Error(`not_found: sidebar row ${name}`);
     press(nodes[row.index], 'sidebar row');
-    // The view switch lands asynchronously: wait until the window shows the
-    // row's conversation, or 3 s; the runner checks the title and marker itself.
-    for (const until = Date.now() + 3000; Date.now() < until;) {
-      delay(0.2);
-      const shown = title(tree(app));
-      if (shown && shown.indexOf(`${name} - ${project} - `) === 0) break;
-    }
+    // The view switch lands asynchronously; the runner reads the window again
+    // until it shows the row's conversation (each read of the tree takes about
+    // a second on a large app, so none is made here).
+    delay(0.3);
     return { ok: true, rows: rows.length };
   },
   stop(app, expectedTitle, nonce) {

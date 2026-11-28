@@ -1247,6 +1247,23 @@ test('a run cancelled while it waits takes the app back and presses Stop in its 
   assert.equal(existsSync(lockFile(context)), false);
 });
 
+test('a conversation opened from the sidebar is read again until the view has switched', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, runningPolls: 1, reply: 'done', shownElsewhere: 'Other Chat', openRowLag: 2 });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(context.fake().opened, 1, 'one press, then reads');
+});
+
+test('a kept app lock is freed when the sidebar shows its conversation alone and Idle', async () => {
+  const context = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  const busy = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['In Progress'] } });
+  writeFileSync(lockFile(busy), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE }));
+  assert.equal((await run(busy)).envelope.evidence.blocked_reason, 'locked');
+});
+
 test('a run whose row leaves the sidebar while it waits ends after 3 reads, and the lock does not stay', async () => {
   const context = settled({ stuck: true, sidebarMissingAfter: 2 });
   const { envelope } = await run(context);

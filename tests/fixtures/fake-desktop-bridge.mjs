@@ -416,6 +416,13 @@ function answer() {
   if (!state.trusted) return { error: 'not_trusted' };
   switch (command) {
     case 'snapshot': {
+      // openRowLag: reads after open-row that still show the other conversation.
+      if (state.viewLag !== undefined) {
+        if (state.viewLag === 0) {
+          state.shownElsewhere = null;
+          delete state.viewLag;
+        } else state.viewLag -= 1;
+      }
       if (state.sent && state.failSnapshotAfterSend) return { error: 'snapshot_failed' };
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
       const cutRead = Boolean(state.truncatedIn?.includes('snapshot')) || (Boolean(state.sent) && state.truncatedPolls > 0);
@@ -601,7 +608,8 @@ function answer() {
       if (state.openRowFails) return { error: 'not_found: sidebar row' };
       (state.opened ??= 0);
       state.opened += 1;
-      state.shownElsewhere = null;
+      if (state.openRowLag > 0 && state.shownElsewhere) state.viewLag = state.openRowLag;
+      else state.shownElsewhere = null;
       return { ok: true, rows: 1 };
     case 'stop':
       try {

@@ -76,6 +76,9 @@ const MAX_RUNS = 5;
 // deadline instead (a run of 0.4.8 or earlier holds it for its whole turn);
 // in a cancel's grace, attach() fits CANCEL_BUDGET_MS.
 const ATTACH_WAIT_MS = 120_000;
+// Reads of the window after a sidebar row is opened, and the wait between them.
+const OPEN_READS = 4;
+const OPEN_READ_GAP_MS = 500;
 
 // The sidebar lists a conversation by its own name: the window title
 // "<name> - <project> - Antigravity" without its last two parts.
@@ -477,8 +480,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (statuses.length === 0) return false;
     for (let n = 0; n < statuses.length; n += 1) {
       await via(['open-row', name, projectName, String(n)], limit(PRESS_TIMEOUT_MS));
-      const shown = await via(['snapshot', marker], limit());
-      if (shown.truncated !== true && shown.title === conversation && shown.own === true) return true;
+      // The view switches a moment after the press: read again while the
+      // window still shows another title, up to OPEN_READS reads.
+      for (let read = 0; read < OPEN_READS; read += 1) {
+        const shown = await via(['snapshot', marker], limit());
+        if (shown.truncated !== true && shown.title === conversation && shown.own === true) return true;
+        if (shown.title === conversation) break;
+        // In a cancel's grace `limit` bounds the wait; otherwise the next read
+        // through `bridge` throws once the run is cancelled.
+        await new Promise((resolve) => setTimeout(resolve, limit(OPEN_READ_GAP_MS)?.timeoutMs ?? OPEN_READ_GAP_MS));
+      }
     }
     throw new Error(`The run's conversation ${JSON.stringify(conversation)} could not be opened from the sidebar; nothing was pressed in it.`);
   };
@@ -674,6 +685,18 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // may have renamed the conversation since the lock recorded it (2.36),
       // so a titled conversation showing the run's own message is its own.
       if (shown.truncated !== true && shown.title !== null && shown.title !== UNTITLED && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
+      // Or the sidebar shows that conversation alone and Idle, with the app
+      // showing another one (the title names its project last).
+      const named = /^(.+) - ([^]+?) - Antigravity$/.exec(abandoned.conversation);
+      if (!ended && named) {
+        let side = null;
+        try {
+          side = await bridge(['sidebar-state', named[1], named[2]]);
+        } catch (error) {
+          if (error instanceof Cancelled) throw error;
+        }
+        if (side?.grouped === true && side.statuses?.length === 1 && side.statuses[0] === 'Idle') ended = abandoned;
+      }
     }
     lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
     // A lock held by another live run that acts in phases is held only while
