@@ -68,3 +68,18 @@ test('the AX script sends no keystrokes and answers only option 1 or Skip', () =
   assert.doesNotMatch(source, /AXRadioButton', '[234] /);
   assert.doesNotMatch(source, /press\(find\([^)]*'AXPopUpButton'/, 'no selector, the permissions preset included, is ever changed');
 });
+
+// Under osascript the bridge can hand NSArray.count over as a string, and "0" is
+// truthy, so an empty list read as `if (list.count)` looks non-empty: probe threw
+// on an app that was not running, and restore relaunched an app the user quit.
+test('the AX script never tests an NSArray count for truth without Number()', () => {
+  const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
+  const uses = [...source.matchAll(/[^\n]*\.count\b[^\n]*/g)].map((match) => match[0].trim()).filter((line) => !line.startsWith('//'));
+  assert.ok(uses.length > 0);
+  for (const line of uses) {
+    // A count is compared with `<` in a loop (numeric coercion) or read through Number().
+    assert.ok(/index < [\w.]+\.count\b/.test(line) || /Number\(.*\.count\)/.test(line) || /changeCount/.test(line), line);
+  }
+  assert.match(source, /Number\(apps\.count\) > 0 \? apps\.objectAtIndex\(0\) : null/);
+  assert.match(source, /if \(!\(Number\(runningApps\(bundleId\)\.count\) > 0\)\) return \{ ok: false \};/);
+});
