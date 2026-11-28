@@ -340,9 +340,15 @@ function inputText(input) {
   return lines.length ? lines.join('\n') : text(get(input.element, 'AXValue'));
 }
 
+// The bridge can hand NSArray.count over as a string, and "0" is truthy, so
+// every count is read through Number().
+function runningApps(bundleId) {
+  return $.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleId);
+}
+
 function runningApp() {
-  const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(BUNDLE_ID);
-  return apps.count ? apps.objectAtIndex(0) : null;
+  const apps = runningApps(BUNDLE_ID);
+  return Number(apps.count) > 0 ? apps.objectAtIndex(0) : null;
 }
 
 function application() {
@@ -544,7 +550,7 @@ const COMMANDS = {
     const shell = Application.currentApplication();
     shell.includeStandardAdditions = true;
     // Only an app still running is brought back; open -b would relaunch one the user quit.
-    if (!$.NSRunningApplication.runningApplicationsWithBundleIdentifier(bundleId).count) return { ok: false };
+    if (!(Number(runningApps(bundleId).count) > 0)) return { ok: false };
     shell.doShellScript(`/usr/bin/open -b ${bundleId}`);
     delay(0.3);
     const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
