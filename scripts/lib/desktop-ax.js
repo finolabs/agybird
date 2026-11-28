@@ -94,6 +94,21 @@ function withinConversation(nodes, test, what) {
   return found;
 }
 
+// The index just past the reply that the `Agent said` heading at nodes[heading]
+// opens: the nodes after it at its own depth, up to the next heading, the
+// response actions, a control or the end of the parent. 2.35 renders the reply
+// as one group; 2.36 as several (the time worked, the text, lists).
+function replyEnd(nodes, heading, limit) {
+  const depth = nodes[heading].depth;
+  let next = subtreeEnd(nodes, heading);
+  while (next < limit && nodes[next].depth === depth) {
+    const entry = nodes[next];
+    if (entry.role === 'AXHeading' || (entry.role === 'AXGroup' && entry.label === 'Response actions') || CONTROLS.indexOf(entry.role) >= 0) break;
+    next = subtreeEnd(nodes, next);
+  }
+  return next;
+}
+
 // The last line of every prompt a run sends, naming that run: `nonce` is
 // random hex the runner draws for it. A missing or malformed nonce throws, so
 // no check is ever skipped for want of one.
@@ -119,10 +134,7 @@ function ownConversation(nodes, nonce, read) {
   for (let at = area.start + 1; at < end; at += 1) {
     const node = nodes[at];
     if (node.role === 'AXHeading' && node.label === 'Agent said') {
-      // The reply is the group right after the heading, at its depth.
-      let next = subtreeEnd(nodes, at);
-      if (next < end && nodes[next].depth === node.depth && nodes[next].role === 'AXGroup') next = subtreeEnd(nodes, next);
-      at = next - 1;
+      at = replyEnd(nodes, at, end) - 1;
     } else if (node.role === 'AXStaticText') {
       texts.push(node);
     }
@@ -225,14 +237,18 @@ function chooseAnswer(nodes, option, question, expected, nonce, read) {
   return [{ index: prompt.option1, what: 'option 1' }, { index: prompt.submit, what: 'Submit' }];
 }
 
-const isStop = (node) => isButton(node, 'Stop execution');
+// 2.35 shows Stop execution while a turn runs; 2.36 shows Cancel (⌃C) in the
+// composer, and its turn under an `Agent working` heading.
+const isStop = (node) => isButton(node, 'Stop execution') || isButton(node, 'Cancel (');
+const isWorking = (node) => node.role === 'AXHeading' && node.label === 'Agent working';
 
-// Whether the conversation on screen shows Stop execution, so a run is going.
+// Whether the conversation on screen shows a turn going.
 function running(nodes) {
-  return withinConversation(nodes, isStop, 'Stop execution').length > 0;
+  return withinConversation(nodes, isStop, 'Stop execution').length > 0 || withinConversation(nodes, isWorking, 'Agent working').length > 0;
 }
 
-// The Stop execution button to press in the run's own conversation.
+// The Stop execution (2.35) or Cancel (2.36) button to press in the run's own
+// conversation.
 function chooseStop(nodes, expected, nonce, read) {
   requireOwn(nodes, expected, nonce, read);
   const found = withinConversation(nodes, isStop, 'Stop execution');
@@ -270,22 +286,107 @@ function chooseComposer(nodes, expected, control) {
   return found.length ? found[0] : -1;
 }
 
-// The last reply in the conversation on screen: the group right after the last
-// `Agent said` heading, at the heading's own depth; the response actions that
-// follow are a separate group.
+// The last reply in the conversation on screen: the groups after the last
+// `Agent said` heading, at the heading's own depth, up to the response actions
+// that follow (replyEnd); null until the first of them is a group.
 function reply(nodes, read) {
   const textOf = read || readNode;
   const headings = withinConversation(nodes, (node) => node.role === 'AXHeading' && node.label === 'Agent said', 'Agent said');
   if (headings.length === 0) return null;
   const heading = headings[headings.length - 1];
   const depth = nodes[heading].depth;
-  const start = nodes.findIndex((node, index) => index > heading && node.depth <= depth);
-  if (start < 0 || nodes[start].depth < depth || nodes[start].role !== 'AXGroup') return null;
+  const start = subtreeEnd(nodes, heading);
+  if (start >= nodes.length || nodes[start].depth !== depth || nodes[start].role !== 'AXGroup') return null;
+  const end = replyEnd(nodes, heading, nodes.length);
   const lines = [];
-  for (let index = start + 1; index < nodes.length && nodes[index].depth > depth; index += 1) {
+  for (let index = start; index < end; index += 1) {
     if (nodes[index].role === 'AXStaticText') lines.push(textOf(nodes[index]));
   }
   return lines.join('\n');
+}
+
+// How a new conversation opens. 2.35 lists each project in the sidebar, its
+// name button followed by its own `New Conversation in Project` link:
+// { layout: 'sidebar', index } of that link. 2.36 has one `New Conversation`
+// link and picks the project in the new conversation's composer: { layout:
+// 'picker', index } of that link, which must be the only one.
+function chooseNewConversation(nodes, project) {
+  if (!project) throw new Error('usage: new-conversation <project>');
+  if (nodes.truncated) throw new Error('truncated: the accessibility tree is too large to read whole');
+  if (nodes.some((node) => node.role === 'AXLink' && node.label === 'New Conversation in Project')) {
+    const start = nodes.findIndex((node) => node.role === 'AXButton' && node.label === project);
+    if (start < 0) throw new Error(`not_found: project ${project}`);
+    const link = nodes.findIndex((node, index) => index > start && node.role === 'AXLink' && node.label === 'New Conversation in Project');
+    if (link < 0) throw new Error('not_found: New Conversation in Project');
+    return { layout: 'sidebar', index: link };
+  }
+  const links = [];
+  nodes.forEach((node, index) => {
+    if (node.role === 'AXLink' && node.label === 'New Conversation') links.push(index);
+  });
+  if (links.length === 0) throw new Error('not_found: New Conversation');
+  if (links.length > 1) throw new Error('several_controls: New Conversation');
+  return { layout: 'picker', index: links[0] };
+}
+
+// A pop-up of the new (untitled) conversation's composer, `<prefix>, current:
+// <value>`, as { index, current }: the only one in the tree, inside that
+// conversation.
+function choosePicker(nodes, prefix) {
+  const label = `${prefix}, current: `;
+  if (title(nodes) !== UNTITLED) throw new Error('other_conversation');
+  const found = withinConversation(nodes, (node) => node.role === 'AXPopUpButton' && node.label.startsWith(label), prefix);
+  if (found.length === 0) throw new Error(`not_found: ${prefix}`);
+  if (found.length > 1) throw new Error(`several_controls: ${prefix}`);
+  return { index: found[0], current: nodes[found[0]].label.slice(label.length) };
+}
+
+// The new conversation's agent must run on this Mac, where its working tree is
+// the one the run checks; anything else fails closed.
+const LOCAL = 'This Computer';
+function requireLocal(nodes) {
+  const where = choosePicker(nodes, 'Where the agent runs').current;
+  if (where !== LOCAL) throw new Error(`not_local: the agent runs on ${where}, not ${LOCAL}`);
+}
+
+// The open project picker of the new conversation: the one menu labelled
+// `Select project, current: …`, as the range [start, end) of its subtree.
+function projectMenu(nodes) {
+  const found = withinConversation(nodes, (node) => node.role === 'AXMenu' && node.label.startsWith('Select project, current: '), 'project picker');
+  if (found.length === 0) throw new Error('not_found: project picker');
+  if (found.length > 1) throw new Error('several_controls: project picker');
+  return { start: found[0], end: subtreeEnd(nodes, found[0]) };
+}
+
+// The picker's Search Projects field.
+function chooseProjectSearch(nodes) {
+  const menu = projectMenu(nodes);
+  const found = [];
+  for (let at = menu.start + 1; at < menu.end; at += 1) if (nodes[at].role === 'AXTextField' && nodes[at].label === 'Search Projects') found.push(at);
+  if (found.length !== 1) throw new Error(found.length ? 'several_controls: Search Projects' : 'not_found: Search Projects');
+  return found[0];
+}
+
+// The picker's item for `project`: a menu item labelled `<project> Project
+// Settings` whose own text, outside its buttons, is exactly `project`. Near
+// names (agybird-wt-agy for agybird) never match; two exact ones refuse.
+function chooseProjectItem(nodes, project, read) {
+  const textOf = read || readNode;
+  const menu = projectMenu(nodes);
+  const found = [];
+  for (let at = menu.start + 1; at < menu.end; at += 1) {
+    if (nodes[at].role !== 'AXMenuItem' || nodes[at].label !== `${project} Project Settings`) continue;
+    const end = subtreeEnd(nodes, at);
+    const parts = [];
+    for (let inner = at + 1; inner < end; inner += 1) {
+      if (CONTROLS.indexOf(nodes[inner].role) >= 0) inner = subtreeEnd(nodes, inner) - 1;
+      else if (nodes[inner].role === 'AXStaticText') parts.push(String(textOf(nodes[inner])));
+    }
+    if (flatten(parts.join(' ')) === project) found.push(at);
+  }
+  if (found.length === 0) throw new Error(`not_found: project ${project}`);
+  if (found.length > 1) throw new Error(`several_controls: project ${project}`);
+  return found[0];
 }
 // desktop-decisions:end
 
@@ -403,6 +504,22 @@ function showing(app, expected) {
   throw new Error('other_conversation');
 }
 
+// What `pick` returns from a tree read, once the app has rendered a step: the
+// read is retried for a few seconds while `pick` throws, then its last error
+// is thrown. A read cut off at the node cap throws in every decision.
+function settled(app, pick) {
+  let failure = null;
+  for (let tries = 0; tries < 15; tries += 1) {
+    if (tries > 0) delay(0.2);
+    try {
+      return pick(tree(app));
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
 // How long Send waits for the app to title the new conversation.
 const TITLE_WAIT_MS = 30000;
 
@@ -415,13 +532,15 @@ function snapshot(nodes) {
   const labels = {};
   for (const label of REQUIRED_LABELS) labels[label] = nodes.some((node) => node.label.startsWith(label));
   if (nodes.truncated) {
-    return { labels, preset: current(nodes, 'Agent permissions preset selector'), model: current(nodes, 'Select model'), project: current(nodes, 'Select project'), truncated: true, title: null, running: null, sendable: false, dialog: null, reply: null };
+    return { labels, preset: current(nodes, 'Agent permissions preset selector'), model: current(nodes, 'Select model'), project: current(nodes, 'Select project'), location: current(nodes, 'Where the agent runs'), truncated: true, title: null, running: null, sendable: false, dialog: null, reply: null };
   }
   return {
     labels,
     preset: current(nodes, 'Agent permissions preset selector'),
     model: current(nodes, 'Select model'),
     project: current(nodes, 'Select project'),
+    // 2.36 only; null on 2.35, which has no such picker.
+    location: current(nodes, 'Where the agent runs'),
     title: title(nodes),
     running: running(nodes),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
@@ -531,13 +650,36 @@ const COMMANDS = {
     if (nonce !== undefined) shot.own = !shot.truncated && ownConversation(nodes, nonce, staticText);
     return shot;
   },
+  // 2.35: the project's own sidebar link. 2.36: the New Conversation link,
+  // then, unless the new conversation is already in the project, its project
+  // picker: open it, filter it to the name, press the item named exactly that,
+  // and read the picker back. The agent must run on This Computer before and
+  // after. Where it runs, the branch, the model and the preset are never
+  // changed; any mismatch throws, and nothing is pasted or sent.
   'new-conversation'(app, project) {
-    if (!project) throw new Error('usage: new-conversation <project>');
-    const nodes = tree(app);
-    const start = nodes.findIndex((node) => node.role === 'AXButton' && node.label === project);
-    if (start < 0) throw new Error(`not_found: project ${project}`);
-    // Each project's own link follows its name button in the sidebar.
-    press(nodes.slice(start + 1).find((node) => node.role === 'AXLink' && node.label === 'New Conversation in Project'), 'New Conversation in Project');
+    const shown = tree(app);
+    const opened = chooseNewConversation(shown, project);
+    if (opened.layout === 'sidebar') {
+      press(shown[opened.index], 'New Conversation in Project');
+      return { ok: true };
+    }
+    press(shown[opened.index], 'New Conversation');
+    let picker = settled(app, (nodes) => {
+      requireLocal(nodes);
+      return { nodes, picker: choosePicker(nodes, 'Select project') };
+    });
+    if (picker.picker.current !== project) {
+      press(picker.nodes[picker.picker.index], 'Select project');
+      const field = settled(app, (nodes) => nodes[chooseProjectSearch(nodes)]);
+      if ($.AXUIElementSetAttributeValue(field.element, $('AXValue'), $(project)) !== 0) throw new Error('set_failed: Search Projects');
+      press(settled(app, (nodes) => nodes[chooseProjectItem(nodes, project, staticText)]), `project ${project}`);
+      picker = settled(app, (nodes) => {
+        const now = choosePicker(nodes, 'Select project');
+        if (now.current !== project) throw new Error(`project_unchanged: the new conversation shows project ${now.current}`);
+        return { nodes, picker: now };
+      });
+    }
+    requireLocal(picker.nodes);
     return { ok: true };
   },
   front(app) {

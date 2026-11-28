@@ -2,7 +2,7 @@
 // preflight blocks on, and how a snapshot becomes an envelope.
 
 export const REQUIRED_LABELS = ['Message input', 'Select project', 'Select model', 'Agent permissions preset selector'];
-export const TESTED_VERSION = /^2\.35\./;
+export const TESTED_VERSION = /^2\.3[56]\./;
 const UNATTENDED_PRESETS = new Set(['Auto', 'Turbo']);
 const MAX_FIELD = 300;
 // The longest question shown whole, and so the longest that can be approved
@@ -39,7 +39,7 @@ export function checkProbe(probe, { platform, allowVersion }) {
   if (!probe.pid) throw new Blocked('app_missing', 'The Antigravity app is not running; open it and sign in, then retry.');
   if (!probe.trusted) throw new Blocked('not_trusted', 'Accessibility is not granted to the app that runs Agybird. Grant it in System Settings > Privacy & Security > Accessibility, then start a new session.');
   if (!allowVersion && !TESTED_VERSION.test(probe.version ?? '')) {
-    throw new Blocked('unsupported_version', `Antigravity ${probe.version ?? '(unknown version)'} is outside the tested 2.35.x range; set AGYBIRD_DESKTOP_ALLOW_VERSION=1 to run anyway.`);
+    throw new Blocked('unsupported_version', `Antigravity ${probe.version ?? '(unknown version)'} is outside the tested 2.35.x and 2.36.x range; set AGYBIRD_DESKTOP_ALLOW_VERSION=1 to run anyway.`);
   }
 }
 

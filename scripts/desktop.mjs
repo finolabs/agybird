@@ -262,6 +262,8 @@ function takeResume(argv) {
 
 // A new conversation's web area reads "Antigravity" until the app titles it.
 const UNTITLED = 'Antigravity';
+// A titled conversation of `project`: "<title> - <project> - Antigravity".
+const isProjectTitle = (title, project) => String(title).length > ` - ${project} - ${UNTITLED}`.length && String(title).endsWith(` - ${project} - ${UNTITLED}`);
 // A snapshot marked `truncated` was read from a tree cut off at desktop-ax.js
 // MAX_NODES: it shows no conversation, and nothing is decided on it.
 const PARTIAL_TREE = "The Antigravity app's accessibility tree is too large to read whole (past 20,000 nodes)";
@@ -421,8 +423,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     let ended = null;
     if (abandoned) {
       const shown = await bridge(['snapshot', abandoned.marker]);
-      // A cut-off read is no evidence: the run may lie past the cut.
-      if (shown.truncated !== true && shown.title === abandoned.conversation && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
+      // A cut-off read is no evidence: the run may lie past the cut. The app
+      // may have renamed the conversation since the lock recorded it (2.36),
+      // so a titled conversation showing the run's own message is its own.
+      if (shown.truncated !== true && shown.title !== null && shown.title !== UNTITLED && shown.own === true && shown.running === false && !shown.dialog) ended = abandoned;
     }
     lockExpiresAt = Date.now() + timeoutToMilliseconds(options.timeout) + LOCK_MARGIN_MS;
     lockPath = acquireLock(lockFile, lockExpiresAt, { ended });
@@ -484,6 +488,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       if (opened.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot tell its composer from another; nothing was pasted or sent.`);
       checkLabels(opened);
       if (opened.project !== project) throw new Error(`The new conversation opened in project ${JSON.stringify(opened.project)}, not ${JSON.stringify(project)}.`);
+      // 2.36 can run the agent elsewhere than this Mac, where the working tree is checked.
+      if (opened.location !== null && opened.location !== undefined && opened.location !== 'This Computer') throw new Error(`The new conversation would run the agent on ${JSON.stringify(opened.location)}, not This Computer; nothing was pasted or sent.`);
       evidence.preset = opened.preset;
       warnings.push(...presetWarnings(opened.preset));
 
@@ -523,7 +529,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // and sent meanwhile lacks the marker.
       if (pressed.refused) throw new OtherConversation(pressed.refused, { unbound: true });
       if (pressed.title) {
-        if (!String(pressed.title).endsWith(` - ${project} - ${UNTITLED}`)) throw new OtherConversation(pressed.title);
+        if (!isProjectTitle(pressed.title, project)) throw new OtherConversation(pressed.title);
         conversation = pressed.title;
         evidence.conversation_title = conversation;
         evidence.conversation_marker = marker;
@@ -548,6 +554,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         return false;
       }
       if (state.title === null) return false;
+      // 2.36 renames a conversation a few seconds after Send: a bound
+      // conversation is followed to its new title, in the same project, only
+      // in a read that shows the run's own message under it.
+      if (conversation !== null && state.title !== conversation && state.own === true && isProjectTitle(state.title, project)) {
+        conversation = state.title;
+        evidence.conversation_title = conversation;
+        markApp();
+      }
       if (state.title !== expected()) throw new OtherConversation(state.title, { late: conversation === null });
       if (state.own !== true) throw new OtherConversation(state.title, { unmarked: true });
       return true;
