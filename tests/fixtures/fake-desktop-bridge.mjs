@@ -34,7 +34,10 @@
 // execution cannot be pressed), answerThenCrash (the answer is pressed, then
 // the bridge exits with an error), secondPaneIn (the commands during which,
 // once sent, a second conversation window shows the same dialog, reply, Copy
-// and Stop), onSend ({ path, content }: a file the "agent" writes when the
+// and Stop), secondComposerIn (the commands during which an untitled pane, an
+// unlabelled web area before the run's conversation, holds its own Message
+// input and Send message; what reaches it is recorded as rivalComposer,
+// rivalCleared and rivalSent), onSend ({ path, content }: a file the "agent" writes when the
 // prompt is sent), delays ({ command: ms }), exit (exit code), raw (printed
 // instead of JSON), hang (never answers).
 
@@ -131,10 +134,6 @@ function begin() {
   state.lagLeft = state.lag;
 }
 
-function shown(expected) {
-  return expected === undefined || expected === title();
-}
-
 // The conversations the sidebar lists: the existing ones and, once the app has
 // titled it, the run's own.
 function listed() {
@@ -169,9 +168,17 @@ function dialogNodes(withDialogs) {
   ]);
 }
 
+// The composer and Send of a conversation pane; `rival` marks a second pane's.
+function composer(rival) {
+  return [
+    { depth: 2, role: 'AXTextArea', label: 'Message input', ...(rival ? { rival } : {}) },
+    { depth: 2, role: 'AXButton', label: 'Send message', ...(rival ? { rival } : {}) },
+  ];
+}
+
 // The accessibility nodes of the window: the sidebar, its titled web area with
-// the user's message, one text node per line, the conversation's controls and,
-// while one waits, each dialog as the app renders it. During the commands
+// the user's message, one text node per line, the conversation's controls,
+// while one waits each dialog as the app renders it, then its composer. During the commands
 // `secondPaneIn` names, once sent, a second conversation window shows the
 // same dialog and controls.
 function screenNodes(withDialogs) {
@@ -186,7 +193,11 @@ function screenNodes(withDialogs) {
     ...(text ? [{ depth: 2, role: 'AXGroup', label: '' }, ...text.split('\n').map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value }))] : []),
     ...controls(),
     ...dialogNodes(withDialogs),
+    ...composer(false),
   ];
+  if (state.secondComposerIn?.includes(command)) {
+    nodes.unshift({ depth: 0, role: 'AXWindow', label: 'Antigravity' }, { depth: 1, role: 'AXWebArea', label: '' }, ...composer(true));
+  }
   if (state.sent && state.secondPaneIn?.includes(command)) {
     nodes.push(
       { depth: 0, role: 'AXWindow', label: 'Antigravity' },
@@ -198,6 +209,17 @@ function screenNodes(withDialogs) {
     );
   }
   return nodes;
+}
+
+// The composer or Send the shipped decision picks in the window, or an error.
+function pick(expected, control) {
+  try {
+    const nodes = screenNodes(false);
+    const index = decisions.chooseComposer(nodes, expected, control);
+    return index < 0 ? { error: `not_found: ${control}` } : { node: nodes[index] };
+  } catch (error) {
+    return { error: error.message };
+  }
 }
 
 function waiting() {
@@ -257,14 +279,21 @@ function answer() {
     case 'restore':
       state.frontmost = args[0];
       return { ok: true };
-    case 'paste-input':
-      if (!shown(args[0])) return { error: 'other_conversation' };
-      state.composer = state.paste ?? state.clipboard;
-      return { ok: true, value: state.composer };
-    case 'clear-input':
-      if (!shown(args[0])) return { error: 'other_conversation' };
-      state.cleared = true;
+    case 'paste-input': {
+      const input = pick(args[0], 'Message input');
+      if (input.error) return { error: input.error };
+      const value = state.paste ?? state.clipboard;
+      if (input.node.rival) state.rivalComposer = value;
+      else state.composer = value;
+      return { ok: true, value };
+    }
+    case 'clear-input': {
+      const input = pick(args[0], 'Message input');
+      if (input.error) return { error: input.error };
+      if (input.node.rival) state.rivalCleared = true;
+      else state.cleared = true;
       return { ok: true };
+    }
     case 'send': {
       const [expectedTitle, project, nonce] = args;
       if (!project) return { error: 'usage: send <expected title> <project> <run marker>' };
@@ -273,7 +302,12 @@ function answer() {
       } catch (error) {
         return { error: error.message };
       }
-      if (!shown(expectedTitle)) return { error: 'other_conversation' };
+      const button = pick(expectedTitle, 'Send message');
+      if (button.error) return { error: button.error };
+      if (button.node.rival) {
+        state.rivalSent = state.rivalComposer ?? '';
+        return { ok: true, title: null };
+      }
       // The composer's text becomes the conversation's message.
       state.message = state.composer;
       begin();

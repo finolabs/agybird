@@ -8,7 +8,7 @@ import test from 'node:test';
 import { AX_SCRIPT_PATH, loadAxDecisions } from '../../scripts/lib/desktop-bridge.mjs';
 import { permissionRequest } from '../../scripts/lib/desktop-state.mjs';
 
-const { chooseAnswer, chooseCopy, chooseStop, dialogs, namedConversation, reply, requireOwn, running, title } = loadAxDecisions();
+const { chooseAnswer, chooseComposer, chooseCopy, chooseStop, dialogs, namedConversation, reply, requireOwn, running, title } = loadAxDecisions();
 const TITLE = 'Fake Task - ws - Antigravity';
 const OPTIONS = ['1 Yes, allow this time', "2 Yes, and always allow 'curl' in this conversation", "3 Yes, and always allow 'curl'", '4 No (tell the agent what to do instead)'];
 
@@ -250,6 +250,50 @@ test('a single conversation pane still yields its dialog, Stop, Copy and reply, 
   // Stop and Copy check the conversation as an answer does.
   assert.throws(() => chooseStop(nodes, 'Other Chat - ws - Antigravity', NONCE), /other_conversation/);
   assert.throws(() => chooseCopy(bare(TITLE, pane('Something else.')), TITLE, NONCE), /not_own/);
+});
+
+// The composer and Send of a pane, as the app renders them below the conversation.
+const composerNodes = (depth = 2) => [node(depth, 'AXTextArea', 'Message input'), node(depth, 'AXButton', 'Send message')];
+const CONTROLS = ['Message input', 'Send message'];
+
+test('with two panes holding composers, the composer and Send are taken from neither', () => {
+  // The run's new, untitled conversation, and an unlabelled pane before it with its own composer.
+  const untitledRival = [
+    node(0, 'AXWindow', 'Antigravity'),
+    node(1, 'AXWebArea', ''),
+    ...composerNodes(),
+    node(1, 'AXWebArea', 'Antigravity'),
+    ...composerNodes(),
+  ];
+  for (const control of CONTROLS) assert.throws(() => chooseComposer(untitledRival, 'Antigravity', control), new RegExp(`outside_conversation: ${control}`));
+  // Once titled, a second titled pane with a composer refuses both as well.
+  const titled = twoPanes([...message(`Explain README.md.\n${MARK}`), ...composerNodes()], [...message('Another task.'), ...composerNodes()]);
+  for (const control of CONTROLS) assert.throws(() => chooseComposer(titled, TITLE, control), /several_conversations/);
+});
+
+test('the run\'s composer or Send outside the conversation web area is refused', () => {
+  // The only composer sits in the window beside the web area, not inside it.
+  const beside = [node(0, 'AXWindow', 'Antigravity'), node(1, 'AXWebArea', ''), node(1, 'AXWebArea', 'Antigravity'), node(2, 'AXGroup'), ...composerNodes(1)];
+  for (const control of CONTROLS) assert.throws(() => chooseComposer(beside, 'Antigravity', control), new RegExp(`outside_conversation: ${control}`));
+  // Two inside the one conversation cannot say which is the run's either.
+  const doubled = bare('Antigravity', composerNodes(), composerNodes());
+  for (const control of CONTROLS) assert.throws(() => chooseComposer(doubled, 'Antigravity', control), new RegExp(`several_controls: ${control}`));
+});
+
+test('a single pane still yields its composer and Send, inside it', () => {
+  for (const shownTitle of ['Antigravity', TITLE]) {
+    const nodes = bare(shownTitle, shownTitle === TITLE ? message(`Explain README.md.\n${MARK}`) : [], composerNodes());
+    const start = nodes.findIndex((entry) => entry.role === 'AXWebArea' && entry.label === shownTitle);
+    for (const control of CONTROLS) {
+      const index = chooseComposer(nodes, shownTitle, control);
+      assert.equal(nodes[index].label, control);
+      assert.ok(index > start);
+    }
+    // Another conversation on screen refuses both; none there yet is -1, so Send can wait for it.
+    assert.throws(() => chooseComposer(nodes, 'Other Chat - ws - Antigravity', 'Message input'), /other_conversation/);
+  }
+  assert.equal(chooseComposer(bare('Antigravity', [node(2, 'AXTextArea', 'Message input')]), 'Antigravity', 'Send message'), -1);
+  assert.throws(() => chooseComposer(bare('Antigravity', composerNodes()), 'Antigravity', 'Stop execution'), /usage/);
 });
 
 test('the decisions region calls no accessibility API', () => {

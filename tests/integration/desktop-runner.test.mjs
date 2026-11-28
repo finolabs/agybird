@@ -661,6 +661,34 @@ test('with a second conversation window, Copy is not pressed and the on-screen r
   assertCleanedUp(context);
 });
 
+test('with an untitled pane holding its own composer at paste time, nothing is pasted, cleared or sent', async () => {
+  const context = setup({ secondComposerIn: ['paste-input', 'clear-input', 'send'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /paste-input failed: outside_conversation: Message input/.test(warning)), envelope.warnings.join(' | '));
+  const fake = context.fake();
+  assert.equal(fake.rivalComposer, undefined, 'nothing pasted into the other pane');
+  assert.equal(fake.composer, undefined);
+  assert.equal(fake.rivalCleared, undefined, 'nothing cleared in the other pane');
+  assert.ok(!names(context).includes('send'));
+  assert.equal(fake.sent, undefined);
+  assertCleanedUp(context);
+});
+
+test('with an untitled pane holding its own composer at Send time, Send is refused before any press', async () => {
+  const context = setup({ secondComposerIn: ['send'] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /send failed: outside_conversation: Send message/.test(warning)), envelope.warnings.join(' | '));
+  const fake = context.fake();
+  assert.equal(fake.rivalSent, undefined, 'nothing sent from the other pane');
+  assert.equal(fake.sent, undefined);
+  // A refusal before the press: the run's own composer is cleared, no Stop, no lock kept.
+  assert.equal(fake.cleared, true);
+  assert.ok(!names(context).includes('stop'));
+  assertCleanedUp(context);
+});
+
 test('a second conversation window seen while polling ends the run unread', async () => {
   const context = setup({ stuck: true, secondPaneIn: ['snapshot'] });
   const { envelope } = await run(context);

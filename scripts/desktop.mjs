@@ -507,7 +507,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         pressed = await bridge(['send', UNTITLED, project, marker], { timeoutMs: SEND_TIMEOUT_MS });
       } catch (error) {
         // Refused before the press; a timeout or a crash may have pressed it.
-        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|several_conversations|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
+        if (!(error instanceof Cancelled) && / failed: (?:not_found|other_conversation|several_conversations|outside_conversation|several_controls|press_failed|not_trusted|usage)/.test(error.message)) sent = false;
         throw error;
       }
       // The identity of the run's conversation is the title the Send call read

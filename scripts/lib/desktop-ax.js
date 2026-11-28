@@ -247,6 +247,24 @@ function chooseCopy(nodes, expected, nonce, read) {
   throw new Error('not_found: Copy');
 }
 
+const COMPOSER = { 'Message input': 'AXTextArea', 'Send message': 'AXButton' };
+
+// The composer (`Message input`) or `Send message` of the conversation titled
+// `expected`, as an index, or -1 while there is none (Send shows only once the
+// composer holds text). Before Send the run's conversation is the new one,
+// titled "Antigravity" and without the run's marker yet, so its scope is the
+// single titled web area with that title. The control must be the only one of
+// its kind in the whole tree and lie inside that web area: one anywhere else
+// (an untitled pane's composer, say) or a second inside throws, so nothing is
+// pasted, cleared or sent.
+function chooseComposer(nodes, expected, control) {
+  if (!COMPOSER[control] || !expected) throw new Error('usage: chooseComposer <nodes> <expected title> <Message input|Send message>');
+  if (title(nodes) !== expected) throw new Error('other_conversation');
+  const found = withinConversation(nodes, (node) => node.role === COMPOSER[control] && node.label.startsWith(control), control);
+  if (found.length > 1) throw new Error(`several_controls: ${control}`);
+  return found.length ? found[0] : -1;
+}
+
 // The last reply in the conversation on screen: the group right after the last
 // `Agent said` heading, at the heading's own depth; the response actions that
 // follow are a separate group.
@@ -408,7 +426,9 @@ function isFrontmost() {
 }
 
 function focusInput(app, expected) {
-  const input = find(showing(app, expected), 'AXTextArea', 'Message input');
+  const nodes = showing(app, expected);
+  // Only the composer of the conversation on screen (chooseComposer).
+  const input = nodes[chooseComposer(nodes, expected, 'Message input')];
   if (!input) throw new Error('not_found: Message input');
   if (!isFrontmost()) throw new Error('not_frontmost');
   $.AXUIElementSetAttributeValue(input.element, $('AXFocused'), $.NSNumber.numberWithBool(true));
@@ -546,7 +566,9 @@ const COMMANDS = {
     let button = null;
     for (let tries = 0; tries < 10 && !button; tries += 1) {
       if (tries > 0) delay(0.2);
-      button = find(showing(app, expectedTitle), 'AXButton', 'Send message');
+      const nodes = showing(app, expectedTitle);
+      // Only the Send of the conversation on screen (chooseComposer).
+      button = nodes[chooseComposer(nodes, expectedTitle, 'Send message')] || null;
     }
     press(button, 'Send message');
     const until = Date.now() + TITLE_WAIT_MS;
