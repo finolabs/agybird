@@ -65,6 +65,8 @@ const CANCEL_BUDGET_MS = 18_000;
 const IDLE_SECONDS = 3;
 const IDLE_WAIT_MS = 120_000;
 const IDLE_POLL_MS = 500;
+// Pastes tried when the user takes the front back before one lands.
+const PASTE_ATTEMPTS = 3;
 // After Send the run keeps the app this long, or until the app renames its
 // conversation, reading it on screen; it then waits on its sidebar row with the
 // app free for other runs, and takes the app back only to read the result.
@@ -849,16 +851,29 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       evidence.preset = opened.preset;
       warnings.push(...presetWarnings(opened.preset));
 
-      clipboardHeld = true;
-      await bridge(['clipboard-set'], { input: prompt });
-      pasted = true;
-      // Paste, clear and Send act only while the app shows the untitled new conversation.
-      try {
-        await bridge(['paste-input', UNTITLED], { timeoutMs: 30_000 });
-      } catch (error) {
-        // Refused before Edit > Paste: the composer holds nothing of the run's.
-        if (!(error instanceof Cancelled) && / failed: (?:not_frontmost|not_found|other_conversation|several_conversations|outside_conversation|several_controls|truncated|not_trusted|usage)/.test(error.message)) pasted = false;
-        throw error;
+      // Paste, clear and Send act only while the app shows the untitled new
+      // conversation. A user who took the front back before the paste lost
+      // nothing: the clipboard and the front go back to them, and the run waits
+      // for them to be idle again, then pastes again, PASTE_ATTEMPTS times in all.
+      for (let attempt = 1; ; attempt += 1) {
+        clipboardHeld = true;
+        await bridge(['clipboard-set'], { input: prompt });
+        pasted = true;
+        try {
+          await bridge(['paste-input', UNTITLED], { timeoutMs: 30_000 });
+          break;
+        } catch (error) {
+          // Refused before Edit > Paste: the composer holds nothing of the run's.
+          const refused = !(error instanceof Cancelled) && / failed: (?:not_frontmost|not_found|other_conversation|several_conversations|outside_conversation|several_controls|truncated|not_trusted|usage)/.test(error.message);
+          if (refused) pasted = false;
+          if (!refused || !/ failed: not_frontmost/.test(error.message) || attempt >= PASTE_ATTEMPTS) throw error;
+        }
+        await restore();
+        const again = await waitForIdleUser();
+        userFront = again.frontmost;
+        saved = { clipboard: again.clipboard };
+        const back = await bridge(['front']);
+        if (back.ok !== true) throw new Error('Antigravity did not come back to the front for the paste; nothing was pasted or sent.');
       }
       // The composer holds the prompt now: the clipboard and the front go back
       // to the user at once, and the rest (the read back, Send) runs with the

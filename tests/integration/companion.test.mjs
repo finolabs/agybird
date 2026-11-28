@@ -142,3 +142,12 @@ test('slash-command arguments arrive as one string and are split', async () => {
   const result = json(await runCompanion(['status --json']));
   assert.deepEqual(result.jobs, []);
 });
+
+test('--help on a command prints its options and exits 0', async () => {
+  const run = await runCompanion(['review', '--help']);
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /^usage: companion\.mjs review \[options\] \[text\]/);
+  assert.match(run.stdout, /--base <value>/);
+  assert.equal(run.stderr, '');
+});
+

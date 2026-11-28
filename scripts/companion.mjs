@@ -86,6 +86,14 @@ export function splitArguments(argv) {
 }
 
 // Generic flag parser: `spec` maps a flag to 'flag', 'value' or 'list'.
+// `--help` (or `-h`) on any command prints the options that command takes.
+class HelpRequested extends Error {
+  constructor(spec) {
+    super('help');
+    this.options = Object.entries(spec).map(([flag, kind]) => (kind === 'flag' ? flag : `${flag} <${kind === 'list' ? 'value, repeatable' : 'value'}>`));
+  }
+}
+
 export function parseFlags(argv, spec) {
   const options = {};
   const positional = [];
@@ -95,6 +103,7 @@ export function parseFlags(argv, spec) {
       positional.push(...argv.slice(index + 1));
       break;
     }
+    if (argument === '--help' || argument === '-h') throw new HelpRequested(spec);
     if (!argument.startsWith('--')) {
       positional.push(argument);
       continue;
@@ -1146,6 +1155,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   try {
     await handler(splitArguments(rest), env);
   } catch (error) {
+    if (error instanceof HelpRequested) {
+      process.stdout.write(`usage: companion.mjs ${command} [options]${['task', 'review', 'adversarial-review', 'image'].includes(command) ? ' [text]' : ''}\n${error.options.map((option) => `  ${option}`).join('\n')}\nSee the Agybird README for what each command does.\n`);
+      return;
+    }
     process.stderr.write(`agybird: ${error.message}\n`);
     process.exitCode = 1;
   }
