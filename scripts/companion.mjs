@@ -191,6 +191,10 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
   const args = runnerCommand(workspace, request);
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
+  // agybird:desktop-start
+  // Opt-in (setup --archive-finished on): a desktop run archives its conversation once it ends.
+  if (request.transport === 'desktop' && readGlobalConfig(env).archiveFinished === true) childEnv.AGYBIRD_DESKTOP_ARCHIVE = '1';
+  // agybird:desktop-end
   return new Promise((resolvePromise, reject) => {
     // On POSIX the runner leads its own process group, so cancel can stop it and
     // agy together without touching this process or the caller's session.
@@ -924,17 +928,20 @@ async function commandSetup(argv, env) {
     // agybird:desktop-start
     '--transport': 'value',
     '--here': 'flag',
+    '--archive-finished': 'value',
     // agybird:desktop-end
   });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
   const cwd = options.cwd ?? process.cwd();
   // agybird:desktop-start
   if (options.here && !options.transport) throw new Error('--here applies only with --transport.');
+  if (options.archiveFinished !== undefined && !['on', 'off'].includes(options.archiveFinished)) throw new Error('--archive-finished is on or off.');
   if (options.transport) {
     assertTransportSupported(checkTransport(options.transport, '--transport'));
     if (options.here) writeConfig(cwd, env, { transport: options.transport });
     else writeGlobalConfig(env, { transport: options.transport });
   }
+  if (options.archiveFinished !== undefined) writeGlobalConfig(env, { archiveFinished: options.archiveFinished === 'on' });
   // agybird:desktop-end
   const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
@@ -942,6 +949,7 @@ async function commandSetup(argv, env) {
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
   const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
   // agybird:desktop-start
+  report.archiveFinished = readGlobalConfig(env).archiveFinished === true;
   try {
     ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
   } catch (error) {
@@ -972,6 +980,7 @@ async function commandSetup(argv, env) {
     gateAvailable ? `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}` : 'Review gate: not included in this edition',
     // agybird:desktop-start
     `Transport: ${report.transport} (${report.transportSource})`,
+    `Archive finished desktop conversations: ${report.archiveFinished ? 'on' : 'off'}`,
     // agybird:desktop-end
     ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
@@ -1118,6 +1127,65 @@ async function commandRunJob(argv, env) {
   await executeJob(directory, job, env);
 }
 
+// agybird:desktop-start
+// Archives, in the Antigravity app, the conversations of this workspace's
+// desktop jobs that completed with their reply read (success, or an error
+// after the reply), each only when its sidebar row is alone and Idle; a
+// cancelled, timed-out or blocked job is never archived. An archived job is
+// marked in its stored result, so it is not offered again. Jobs and results
+// stay in the job store.
+async function commandArchive(argv, env) {
+  const { options, positional } = parseFlags(argv, { ...COMMON });
+  if (positional.length > 0) throw new Error('archive takes no arguments; it archives every finished desktop job of this repository.');
+  const cwd = options.cwd ?? process.cwd();
+  const directory = storeFor(cwd, env);
+  const items = [];
+  const jobsOf = new Map();
+  for (const job of listJobs(directory)) {
+    if (job.request?.transport !== 'desktop' || job.status !== 'completed') continue;
+    let result;
+    try {
+      result = readStoredResult(directory, job.id);
+    } catch {
+      continue;
+    }
+    const title = result?.evidence?.conversation_title;
+    const read = result?.status === 'success' || (result?.status === 'error' && typeof result.response === 'string');
+    if (!read || typeof title !== 'string' || result.evidence.archived === true) continue;
+    // Older runs recorded no project; the runner takes the workspace's own then.
+    const project = typeof result.evidence.project === 'string' ? result.evidence.project : null;
+    const key = `${title}|${project}`;
+    if (!jobsOf.has(key)) {
+      jobsOf.set(key, []);
+      items.push({ title, project });
+    }
+    jobsOf.get(key).push(job.id);
+  }
+  let report = { archived: [], skipped: [] };
+  if (items.length > 0) {
+    const child = spawnSync(process.execPath, [DESKTOP_RUNNER_PATH, '--archive-finished', '--cwd', cwd], { cwd, env, input: JSON.stringify(items), encoding: 'utf8', shell: false, windowsHide: true, timeout: 4 * 60_000, killSignal: 'SIGTERM' });
+    report = lastJsonLine(child.stdout ?? '') ?? { status: 'error', error: (child.error?.message || child.stderr || 'the desktop runner gave no result').trim() };
+    if (report.status !== 'success') throw new Error(report.error ?? 'archiving failed');
+    for (const { title, project } of report.archived) {
+      const ids = jobsOf.get(`${title}|${project}`) ?? jobsOf.get(`${title}|null`) ?? [];
+      for (const id of ids) {
+        try {
+          const stored = readStoredResult(directory, id);
+          stored.evidence = { ...stored.evidence, archived: true };
+          writeFileSync(resultPath(directory, id), `${JSON.stringify(stored)}\n`, { mode: 0o600 });
+        } catch {
+          // the job is offered again next time, and its row is gone from the sidebar by then
+        }
+      }
+    }
+  }
+  const text = [
+    `Archived ${report.archived.length} of ${items.length} finished desktop conversations in the Antigravity app.`,
+    ...report.skipped.map((entry) => `Left ${JSON.stringify(entry.title)}: ${entry.reason}`),
+  ].join('\n');
+  output(options, { candidates: items.length, ...report, archived: report.archived.map((entry) => entry.title) }, text);
+}
+// agybird:desktop-end
 export const COMMANDS = {
   status: commandStatus,
   result: commandResult,
@@ -1127,6 +1195,9 @@ export const COMMANDS = {
   permissions: commandPermissions,
   ...(GATE_AVAILABLE ? { hook: commandHook } : {}),
   setup: commandSetup,
+  // agybird:desktop-start
+  archive: commandArchive,
+  // agybird:desktop-end
   // agybird:image-start
   image: commandImage,
   // agybird:image-end
