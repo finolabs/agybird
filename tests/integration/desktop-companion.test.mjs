@@ -235,6 +235,12 @@ test('a signal to a foreground desktop task gives the runner its grace to stop t
   child.stdin.end();
   const exited = new Promise((done) => child.on('close', (code, signal) => done({ code, signal })));
   await waitForCall(context, 'send');
+  // The send call is recorded as it starts; a signal before it lands would cut
+  // it off with nothing sent, so the signal comes once the app has the task.
+  for (let waited = 0; context.fake().sent !== true; waited += 50) {
+    assert.ok(waited < 15_000, 'the task was never sent');
+    await new Promise((done) => setTimeout(done, 50));
+  }
   child.kill('SIGTERM');
   const { code } = await exited;
   assert.equal(code, 143);
