@@ -1,15 +1,13 @@
 name: CI
 
 # Pull requests run one job (Ubuntu, Node 22); main runs every supported
-# system and Node version, so a platform-only failure shows on merge.
+# system and Node version, so a platform-only failure shows on merge. The
+# branch rules require the one `CI gate` check, which reports on every run
+# whatever the matrix holds.
 on:
   push:
     branches: [main]
   pull_request:
-    paths-ignore:
-      - 'docs/specs/**'
-      - 'docs/verification/**'
-      - 'docs/history/**'
 
 permissions:
   contents: read
@@ -35,3 +33,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+
+  gate:
+    name: CI gate
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every test job passed
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success

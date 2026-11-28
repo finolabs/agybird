@@ -26,9 +26,21 @@ test('CI covers supported systems and Node versions on main, one job on a pull r
   assert.match(workflow, /fromJSON\('\["ubuntu-latest", "macos-latest", "windows-latest"\]'\)/);
   assert.match(workflow, /fromJSON\('\[20, 22\]'\)/);
   assert.match(workflow, /pull_request' && fromJSON\('\["ubuntu-latest"\]'\)/);
+  assert.match(workflow, /pull_request' && fromJSON\('\[22\]'\)/);
+  // A newer push cancels a pull request's run, never main's.
+  assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+  // Every pull request runs, so the required check always reports.
+  assert.doesNotMatch(workflow, /paths-ignore|paths:/);
   assert.match(workflow, /branches: \[main\]/);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run check/);
+});
+
+test('one gate check reports the whole matrix, so the branch rules require only it', () => {
+  const workflow = read('.github/workflows/ci.yml');
+  assert.match(workflow, /^  gate:\r?\n    name: CI gate\r?\n    needs: test\r?\n    if: always\(\)\r?$/m);
+  assert.match(workflow, /RESULT: \$\{\{ needs\.test\.result \}\}/);
+  assert.match(workflow, /run: test "\$RESULT" = success/);
 });
 
 test('release workflow validates tags before a least-privilege release', () => {
