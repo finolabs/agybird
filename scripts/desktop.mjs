@@ -45,8 +45,10 @@ const SEND_TIMEOUT_MS = 45_000;
 // The bridge calls of cleanup are bounded, so that all a signalled run may
 // still make fit the 20 s the companion gives it before it kills the run: a
 // decline and Stop (5 s each), then the clipboard and the front app (3 s
-// each), 16 s at most; clearing the composer (3 + 5 s) replaces Stop. The lock
-// already says the app may run before any of them (markLockForApp).
+// each), 16 s at most. Clearing the composer replaces Stop: a probe, the
+// switch and the clear (3 + 3 + 5 s), then the clipboard and the front app
+// (3 + 3 s), 17 s at most. The lock already says the app may run before any
+// of them (markLockForApp).
 const PRESS_TIMEOUT_MS = 5_000;
 const RESTORE_TIMEOUT_MS = 3_000;
 // The app comes to the front only once the user has left the keyboard and
@@ -357,7 +359,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const putClipboardBack = async (clipboard) => {
     const lost = 'The clipboard held more than text (an image, a file or rich text) and was too large to save whole; only its text was put back.';
     if (clipboard.other && !Array.isArray(clipboard.items) && !warnings.includes(lost)) warnings.push(lost);
-    await call(['clipboard-restore'], { input: JSON.stringify({ text: clipboard.text ?? null, markers: clipboard.markers ?? [], items: clipboard.items ?? null }), timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => warnings.push('The clipboard could not be restored.'));
+    const restored = await call(['clipboard-restore'], { input: JSON.stringify({ text: clipboard.text ?? null, markers: clipboard.markers ?? [], items: clipboard.items ?? null }), timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => null);
+    if (restored?.ok !== true) warnings.push('The clipboard could not be restored.');
   };
   // The clipboard holds the prompt from clipboard-set until the paste is read back.
   let clipboardHeld = false;
@@ -377,29 +380,49 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     saved = null;
     await giveFrontBack();
   };
-  // Clearing needs the app in front, which the user may have changed meanwhile.
+  // A probe that lets the app come to the front now: the user idle for
+  // IDLE_SECONDS, the screen unlocked and the app's window on the Space shown.
+  const quiet = (now) => !now.locked && now.on_screen !== false && !(Number(now.idle) < IDLE_SECONDS);
+  // Clearing needs the app in front, so it happens only when one bounded probe
+  // finds the user quiet again; otherwise the unsent prompt is left for them.
   const clearInput = async () => {
+    const now = await call(['probe'], { timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => null);
+    if (!now || !quiet(now)) {
+      warnings.push('The prompt was left unsent in the Antigravity app input, because the Mac was in use, the screen was locked or the app was off the Space shown; clear it there before sending anything.');
+      return;
+    }
     try {
       await call(['front'], { timeoutMs: RESTORE_TIMEOUT_MS });
       await call(['clear-input', UNTITLED], { timeoutMs: PRESS_TIMEOUT_MS });
     } catch {
       warnings.push('The prompt may still be in the Antigravity app input; clear it there before sending anything.');
     }
-    await giveFrontBack();
+    // While the run still holds the clipboard, restore() gives the front back.
+    if (!saved) await giveFrontBack();
   };
   // Waits until the user has left the keyboard and mouse alone for
   // IDLE_SECONDS, so the switch to the app takes nothing they are typing. A
   // locked screen, or an app with no window on the Space shown (another Space,
   // minimized, hidden or full screen), stops the run before anything moves.
+  // Saving the clipboard takes time, so the user is checked again after it,
+  // right before the switch, and the wait goes on if they came back.
   const waitForIdleUser = async () => {
     const waitMs = Number(env.AGYBIRD_DESKTOP_IDLE_WAIT_MS) >= 0 && env.AGYBIRD_DESKTOP_IDLE_WAIT_MS !== undefined ? Number(env.AGYBIRD_DESKTOP_IDLE_WAIT_MS) : IDLE_WAIT_MS;
     const pollMs = Number(env.AGYBIRD_DESKTOP_POLL_MS) > 0 ? Number(env.AGYBIRD_DESKTOP_POLL_MS) : IDLE_POLL_MS;
     const until = Date.now() + waitMs;
-    for (;;) {
-      const now = await bridge(['probe']);
+    const refuse = (now) => {
       if (now.locked) throw new Blocked('screen_locked', 'The screen is locked; unlock it and retry. Nothing was pasted or sent.');
       if (now.on_screen === false) throw new Blocked('not_on_screen', 'The Antigravity window is not on the Space on screen (it is on another Space, minimized, hidden or full screen), and switching to it would move the screen; bring it to this Space and retry. Nothing was pasted or sent.');
-      if (!(Number(now.idle) < IDLE_SECONDS)) return now;
+    };
+    for (;;) {
+      const now = await bridge(['probe']);
+      refuse(now);
+      if (quiet(now)) {
+        const clipboard = await bridge(['clipboard-get']);
+        const again = await bridge(['probe']);
+        refuse(again);
+        if (quiet(again)) return { frontmost: again.frontmost, clipboard };
+      }
       if (Date.now() >= until) throw new Blocked('user_active', `The keyboard or mouse stayed in use for ${Math.round(waitMs / 1000)} s, so the run did not take the front from the user; retry when the Mac is idle. Nothing was pasted or sent.`);
       await sleep(pollMs);
     }
@@ -507,9 +530,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       sent = true;
       evidence.answered = resume.answer;
     } else {
-      const idle = await waitForIdleUser();
-      userFront = idle.frontmost;
-      saved = { clipboard: await bridge(['clipboard-get']) };
+      const ready = await waitForIdleUser();
+      userFront = ready.frontmost;
+      saved = { clipboard: ready.clipboard };
       // Frontmost before the conversation opens: a composer created while the app
       // is in the background re-mounts when it comes forward and drops the paste.
       await bridge(['front']);

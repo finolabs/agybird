@@ -702,11 +702,14 @@ const CLIPBOARD = {
       for (const entry of saved.items) {
         const item = $.NSPasteboardItem.alloc.init;
         for (const type of Object.keys(entry)) {
-          if (typeof entry[type] === 'string') item.setDataForType($.NSData.alloc.initWithBase64EncodedStringOptions($(entry[type]), 0), $(type));
+          const data = typeof entry[type] === 'string' ? $.NSData.alloc.initWithBase64EncodedStringOptions($(entry[type]), 0) : null;
+          if (!data || data.isNil() || !item.setDataForType(data, $(type))) throw new Error('restore_failed');
         }
         items.addObject(item);
       }
-      return { ok: Boolean(board.writeObjects(items)) };
+      // The board was emptied above: a failed write is reported, never taken as restored.
+      if (!board.writeObjects(items)) throw new Error('restore_failed');
+      return { ok: true };
     }
     writeText(saved.text, (saved.markers || []).filter((type) => /^org\.nspasteboard\.[A-Za-z]+$/.test(type)), 0);
     return { ok: true };

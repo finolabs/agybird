@@ -72,6 +72,12 @@ test('the AX script sends no keystrokes and answers only option 1 or Skip', () =
   assert.doesNotMatch(source, /press\(find\([^)]*'AXPopUpButton'/, 'no selector, the permissions preset included, is ever changed');
 });
 
+test('the AX script reports a whole-clipboard restore whose native write fails', () => {
+  const source = readFileSync(AX_SCRIPT_PATH, 'utf8');
+  assert.match(source, /if \(!board\.writeObjects\(items\)\) throw new Error\('restore_failed'\);/);
+  assert.match(source, /!item\.setDataForType\(data, \$\(type\)\)\) throw new Error\('restore_failed'\);/);
+});
+
 // Under osascript the bridge can hand NSArray.count over as a string, and "0" is
 // truthy, so an empty list read as `if (list.count)` looks non-empty: probe threw
 // on an app that was not running, and restore relaunched an app the user quit.

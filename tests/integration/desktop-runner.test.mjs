@@ -100,9 +100,40 @@ test('the switch to the app waits until the keyboard and mouse have been idle fo
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success');
   const order = names(context);
-  // The preflight probe reads 0.2 s; the wait reads 1.5, 2.9, then 3.1 s and goes on.
-  assert.equal(order.slice(0, order.indexOf('front')).filter((name) => name === 'probe').length, 4);
+  // The preflight probe reads 0.2 s; the wait reads 1.5, 2.9, then 3.1 s, saves
+  // the clipboard and reads 3.1 s once more before the switch.
+  assert.equal(order.slice(0, order.indexOf('front')).filter((name) => name === 'probe').length, 5);
   assertCleanedUp(context);
+});
+
+test('a user back at the keyboard while the clipboard is saved is waited for again before the switch', async () => {
+  // Preflight, then idle, the clipboard saved, busy again at the check before the switch, then idle twice.
+  const context = setup({ runningPolls: 1, idleSeq: [60, 60, 0.1, 60, 60] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const order = names(context);
+  const beforeFront = order.slice(0, order.indexOf('front'));
+  assert.equal(beforeFront.filter((name) => name === 'clipboard-get').length, 2, 'the clipboard saved again after the wait');
+  assert.equal(beforeFront.at(-1), 'probe', 'the last call before the switch checks the user');
+  assertCleanedUp(context);
+});
+
+test('a mismatched paste is left unsent, not cleared, when the user is back at the Mac', async () => {
+  // Preflight, wait and check before the switch idle; busy from the probe before clearing on.
+  const context = setup({ paste: 'something else', idleSeq: [60, 60, 60, 0.1] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(!order.includes('clear-input') && !order.includes('send'));
+  assert.equal(order.filter((name) => name === 'front').length, 1, 'the app was not brought forward again');
+  assert.ok(envelope.warnings.some((warning) => /left unsent/.test(warning)), envelope.warnings.join(' | '));
+  assertCleanedUp(context);
+});
+
+test('a clipboard restore whose write fails is reported, never taken as restored', async () => {
+  const context = setup({ runningPolls: 1, clipboardItems: [{ 'public.utf8-plain-text': 'aGk=' }], restoreFails: true });
+  const { envelope } = await run(context);
+  assert.ok(envelope.warnings.some((warning) => /clipboard could not be restored/.test(warning)), envelope.warnings.join(' | '));
 });
 
 test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {

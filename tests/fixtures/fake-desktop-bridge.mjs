@@ -48,7 +48,8 @@
 // instead of JSON), hang (never answers), idleSeq (the idle seconds successive
 // probes report, the last repeated; default 60), locked (the screen is
 // locked), onScreen (an app window is on the Space shown; default true),
-// clipboardItems (every item of the clipboard, as clipboard-get saves it whole).
+// clipboardItems (every item of the clipboard, as clipboard-get saves it whole),
+// restoreFails (clipboard-restore answers ok false).
 // Each call records the app in front as it starts in frontmostAtCalls.
 //
 // A version of 2.36.x shows the 2.36 layout: one New Conversation link in the
@@ -123,7 +124,8 @@ else if (command === 'clipboard-set' || command === 'clipboard-restore') {
     if (Array.isArray(saved.items)) state.restoredItems = saved.items;
     else state.clipboardOther = false;
   }
-  process.stdout.write('{"ok":true}\n');
+  // restoreFails: the restore reports ok false, as the bridge did before it threw on a failed write.
+  process.stdout.write(command === 'clipboard-restore' && state.restoreFails ? '{"ok":false}\n' : '{"ok":true}\n');
   save();
 } else {
   process.stdout.write(`${JSON.stringify(answer())}\n`);
