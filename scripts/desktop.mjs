@@ -477,16 +477,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // message may only lack the older messages the app has not loaded (it shows
   // the last 50 steps): they are loaded, up to LOAD_OLDER_MAX times, and the
   // conversation read again. Anything else is returned as read.
-  const loadOwn = async (state, expectedTitle, via = bridge, limit = (ms) => (ms === undefined ? undefined : { timeoutMs: ms })) => {
+  // `budget` is shared by the reads of one conversation, so it is pressed at
+  // most LOAD_OLDER_MAX times in all, and not again once all is shown.
+  const loadOwn = async (state, expectedTitle, via = bridge, limit = () => undefined, budget = { left: LOAD_OLDER_MAX }) => {
     let shown = state;
-    for (let n = 0; n < LOAD_OLDER_MAX && shown.truncated !== true && shown.title === expectedTitle && shown.own !== true; n += 1) {
+    while (budget.left > 0 && shown.truncated !== true && shown.title === expectedTitle && shown.own !== true) {
+      budget.left -= 1;
       let loaded = null;
       try {
-        loaded = await via(['load-older', expectedTitle], limit(PRESS_TIMEOUT_MS));
+        loaded = await via(['load-older', expectedTitle], limit());
       } catch (error) {
         if (error instanceof Cancelled) throw error;
       }
-      if (loaded?.pressed !== true) break;
+      if (loaded?.pressed !== true) {
+        budget.left = 0;
+        break;
+      }
       shown = await via(['snapshot', marker], limit());
     }
     return shown;
@@ -500,12 +506,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     if (statuses.length === 0) return false;
     for (let n = 0; n < statuses.length; n += 1) {
       await via(['open-row', name, projectName, String(n)], limit(PRESS_TIMEOUT_MS));
+      const budget = { left: LOAD_OLDER_MAX };
       // The view switches a moment after the press: read again while the
       // window still shows another title, up to OPEN_READS reads.
       // A namesake still on screen from the row before reads the same title
       // without the marker, so every read up to OPEN_READS is made.
       for (let read = 0; read < OPEN_READS; read += 1) {
-        const shown = await loadOwn(await via(['snapshot', marker], limit()), conversation, via, limit);
+        const shown = await loadOwn(await via(['snapshot', marker], limit()), conversation, via, limit, budget);
         if (shown.truncated !== true && shown.title === conversation && shown.own === true) return true;
         if (read + 1 === OPEN_READS) break;
         // In a cancel's grace `limit` bounds the wait; otherwise a cancel wakes it.
@@ -706,16 +713,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const abandoned = abandonedAppLock(lockFile);
     let ended = null;
     if (abandoned) {
-      let shown = await bridge(['snapshot', abandoned.marker]);
-      // Its message may lie before the last 50 steps the app shows.
-      for (let n = 0; n < LOAD_OLDER_MAX && shown.truncated !== true && shown.title === abandoned.conversation && shown.own !== true; n += 1) {
-        const loaded = await bridge(['load-older', abandoned.conversation], { timeoutMs: PRESS_TIMEOUT_MS }).catch((error) => {
-          if (error instanceof Cancelled) throw error;
-          return null;
-        });
-        if (loaded?.pressed !== true) break;
-        shown = await bridge(['snapshot', abandoned.marker]);
-      }
+      // Read only: nothing is pressed before this run holds the lock.
+      const shown = await bridge(['snapshot', abandoned.marker]);
       // A cut-off read is no evidence: the run may lie past the cut. The app
       // may have renamed the conversation since the lock recorded it (2.36),
       // so a titled conversation showing the run's own message is its own.
@@ -724,7 +723,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // kept one's title nor its run's message, which would be stronger
       // evidence either way), the sidebar lists the kept conversation alone
       // and Idle in the project the lock recorded.
-      const elsewhere = shown.truncated !== true && shown.title !== null && shown.title !== abandoned.conversation && shown.own !== true;
+      // The kept conversation itself on screen with its own message not
+      // loaded (a long one shows its last 50 steps) counts only while it shows
+      // no run and no prompt.
+      const elsewhere = shown.truncated !== true && shown.title !== null && (shown.title !== abandoned.conversation ? shown.own !== true : shown.running === false && !shown.dialog);
       const project = typeof abandoned.project === 'string' && abandoned.project ? abandoned.project : null;
       if (!ended && elsewhere && project && isProjectTitle(abandoned.conversation, project)) {
         let side = null;
@@ -809,10 +811,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // is opened from the sidebar first (B3), checked by title and marker.
       // A sidebar that lists no row of it leaves the view as it is.
       conversation = resume.title;
-      await openOwnRow(bridge, (ms) => (ms === undefined ? undefined : { timeoutMs: ms })).catch((error) => {
+      const opened = await openOwnRow(bridge, (ms) => (ms === undefined ? undefined : { timeoutMs: ms })).catch((error) => {
         if (error instanceof Cancelled) throw error;
+        return null;
       });
-      const waiting = await loadOwn(await bridge(['snapshot', marker]), resume.title);
+      // A sidebar that listed no row of it leaves the view as it is, and its older messages may need loading.
+      const shownNow = await bridge(['snapshot', marker]);
+      const waiting = opened === false ? await loadOwn(shownNow, resume.title) : shownNow;
       if (waiting.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot check the conversation that asked; nothing was pressed. Answer the prompt in the app.`);
       if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
       if (waiting.own !== true) throw new Error(`The Antigravity app shows a conversation titled ${JSON.stringify(resume.title)} whose text does not include the asking run's own message, so the run cannot tell it is the one that asked; nothing was pressed. Answer the prompt in the app.`);
@@ -1119,7 +1124,22 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     // once it holds the lock again (even if opening the row failed), Stop is
     // tried in its own conversation only, checked by title and marker.
     if (running && detached && !(caught instanceof OtherConversation)) await attach({ cancel: true }).catch(() => warnings.push('The app could not be taken back from other runs in time to press Stop.'));
-    if (running && !detached && !(caught instanceof OtherConversation)) stopped = await call(['stop', expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
+    if (running && !detached && !(caught instanceof OtherConversation)) {
+      // A long turn may hide the run's own message behind Load older messages:
+      // load it first, within what the cancel's grace leaves before Stop.
+      const until = (cancelledAt ?? Date.now()) + CANCEL_BUDGET_MS - PRESS_TIMEOUT_MS;
+      const left = () => {
+        const ms = until - Date.now();
+        if (ms < 500) throw new Error('no time left to load older messages');
+        return { timeoutMs: Math.min(RESTORE_TIMEOUT_MS, ms) };
+      };
+      try {
+        await loadOwn(await call(['snapshot', marker], left()), expected(), call, left);
+      } catch {
+        // Stop below still checks the run's own message itself.
+      }
+      stopped = await call(['stop', expected(), marker], { timeoutMs: PRESS_TIMEOUT_MS }).then(() => true, () => false);
+    }
     if (running && !stopped) {
       // The lock, marked for the app before the press, stays until evidence
       // frees it; a run that no longer holds it keeps its run record instead.

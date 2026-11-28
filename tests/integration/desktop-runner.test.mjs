@@ -1348,3 +1348,33 @@ test('a run whose own message the app has not loaded loads older messages before
   for (const context of [onScreen, detached]) assertCleanedUp(context);
 });
 
+test('older messages are loaded at most 8 times per conversation opened, and a run that never finds its message reads nothing', async () => {
+  const context = settled({ runningPolls: 3, reply: 'READY', olderHidden: 40 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(!names(context).includes('copy-reply'));
+  // At most 8 while opening the row, and 8 more before Stop.
+  assert.ok(context.fake().olderPresses <= 16, `${context.fake().olderPresses} presses`);
+});
+
+test('a cancel on screen loads older messages before it presses Stop in its own conversation', { skip: process.platform === 'win32' }, async () => {
+  const context = setup({ stuck: true, olderHidden: 2 });
+  const { child, done } = start(context);
+  while (!names(context).includes('send') || context.fake().sent !== true) await new Promise((resolve) => setTimeout(resolve, 20));
+  // The run reads its own message on screen first, as a long turn would hide it later.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  context.fake();
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().stopped, true, envelope.warnings.join(' | '));
+});
+
+test('a kept lock whose long conversation is on screen idle is freed by the sidebar, with nothing pressed', async () => {
+  const context = setup({ runningPolls: 1, earlier: { title: 'Gone Task - ws - Antigravity', running: false, message: OWN }, olderHidden: 99, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE, project: 'ws' }));
+  const { envelope } = await run(context);
+  assert.ok(names(context).indexOf('load-older') < 0 || names(context).indexOf('load-older') > names(context).indexOf('send'), 'no press before the lock');
+  assert.notEqual(envelope.evidence.blocked_reason, 'locked', envelope.warnings.join(' | '));
+});
+

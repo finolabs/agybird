@@ -465,6 +465,9 @@ function olderButton(nodes, expected) {
     const node = nodes[at];
     if (node.role === 'AXGroup' && node.label === 'Sidebar') {
       at = subtreeEnd(nodes, at) - 1;
+    } else if (node.role === 'AXHeading' && node.label === 'Agent said') {
+      // The agent's replies can render buttons of their own.
+      at = replyEnd(nodes, at, area.end) - 1;
     } else if (node.role === 'AXButton' && /^Load older messages\b/.test(node.label)) {
       found.push(at);
     }
@@ -964,8 +967,6 @@ const COMMANDS = {
     const shown = sidebarState(nodes, title, project, staticText);
     return { grouped: shown.grouped, statuses: shown.rows.map((row) => row.status) };
   },
-  // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
-  // the view changes, the front does not.
   // Loads the older messages of the conversation titled `expected` once, with
   // the app behind; { pressed: false } when it already shows them all.
   'load-older'(app, expected) {
@@ -977,6 +978,8 @@ const COMMANDS = {
     delay(0.8);
     return { pressed: true };
   },
+  // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
+  // the view changes, the front does not.
   'open-row'(app, name, project, n) {
     if (!name || !project) throw new Error('usage: open-row <title> <project> <n>');
     const nodes = tree(app);

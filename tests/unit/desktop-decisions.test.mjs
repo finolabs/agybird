@@ -557,6 +557,10 @@ test('the Load older messages button is taken only in the conversation named, ou
   assert.equal(olderButton(nodes, TITLE), 4);
   assert.equal(olderButton(nodes.filter((_, index) => index !== 4), TITLE), -1, 'the sidebar one is not the conversation\'s');
   assert.throws(() => olderButton(nodes, 'Other - ws - Antigravity'), /other_conversation/);
+  // A button the agent's reply renders is not the conversation's.
+  const replied = [...nodes.filter((_, index) => index !== 4), { depth: 2, role: 'AXHeading', label: 'Agent said' }, { depth: 3, role: 'AXButton', label: 'Load older messages, showing 1 of 9' }];
+  assert.equal(olderButton(replied, TITLE), -1);
+  assert.throws(() => olderButton(Object.assign([...nodes], { truncated: true }), TITLE), /truncated/);
   assert.throws(() => olderButton([...nodes, { depth: 2, role: 'AXButton', label: 'Load older messages, showing 2 of 3' }], TITLE), /several_controls/);
 });
 
