@@ -196,7 +196,7 @@ test('approving a CLI job stays on the CLI when desktop is chosen meanwhile', as
 });
 
 test('cancel leaves a desktop run time to stop the app and put the clipboard back', { skip: process.platform === 'win32' }, async () => {
-  const context = workspace({ stuck: true, delays: { stop: 4_000 } });
+  const context = workspace({ stuck: true, delays: { stop: 3_000 } });
   const started = json(await context.companion(['task', '--via', 'desktop', '--background', '--json', 'Run forever']));
   for (let waited = 0; !context.sent(); waited += 100) {
     assert.ok(waited < 15_000, 'the job never sent its prompt');
@@ -230,7 +230,7 @@ test('cancel during a long paste clears the composer, restores the clipboard and
 });
 
 test('a signal to a foreground desktop task gives the runner its grace to stop the app and restore', { skip: process.platform === 'win32' }, async () => {
-  const context = workspace({ stuck: true, delays: { stop: 4_000 } });
+  const context = workspace({ stuck: true, delays: { stop: 3_000 } });
   const child = spawn(process.execPath, [COMPANION, 'task', '--via', 'desktop', '--json', 'Run forever'], { cwd: context.cwd, env: context.env, stdio: ['pipe', 'ignore', 'ignore'] });
   child.stdin.end();
   const exited = new Promise((done) => child.on('close', (code, signal) => done({ code, signal })));
