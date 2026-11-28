@@ -440,6 +440,8 @@ function answer() {
       } catch (error) {
         return { error: error.message };
       }
+      // olderHidden: presses of Load older messages before the run's own message shows.
+      if (state.olderHidden > 0 && state.sent && own !== undefined) own = false;
       if (state.untitledLeft > 0) state.untitledLeft -= 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
@@ -603,6 +605,14 @@ function answer() {
         return { grouped: true, statuses: ['In Progress'] };
       }
       return { grouped: true, statuses: ['Idle'] };
+    }
+    case 'load-older': {
+      if (args[0] !== title()) return { error: 'other_conversation' };
+      (state.olderPresses ??= 0);
+      if (!(state.olderHidden > 0)) return { ok: true, pressed: false };
+      state.olderHidden -= 1;
+      state.olderPresses += 1;
+      return { ok: true, pressed: true };
     }
     case 'open-row':
       if (state.openRowFails) return { error: 'not_found: sidebar row' };

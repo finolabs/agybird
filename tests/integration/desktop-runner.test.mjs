@@ -1332,3 +1332,19 @@ test('a run that finds the app lock held by a live run acting in phases waits fo
   assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
   assert.ok(Date.now() - started >= 1_000, 'it waited for the other run');
 });
+
+// A long turn: the app shows only its last 50 steps, and the run's own message
+// lies before them until "Load older messages" is pressed.
+test('a run whose own message the app has not loaded loads older messages before it reads or presses', async () => {
+  const onScreen = setup({ runningPolls: 2, reply: 'READY', olderHidden: 2 });
+  const first = await run(onScreen);
+  assert.equal(first.envelope.status, 'success', first.envelope.warnings.join(' | '));
+  assert.equal(onScreen.fake().olderPresses, 2);
+  const detached = settled({ runningPolls: 4, reply: 'READY', olderHidden: 3 });
+  const second = await run(detached);
+  assert.equal(second.envelope.status, 'success', second.envelope.warnings.join(' | '));
+  assert.ok(names(detached).includes('open-row'));
+  assert.equal(detached.fake().olderPresses, 3);
+  for (const context of [onScreen, detached]) assertCleanedUp(context);
+});
+

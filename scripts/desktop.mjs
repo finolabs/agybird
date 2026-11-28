@@ -76,6 +76,8 @@ const MAX_RUNS = 5;
 // deadline instead (a run of 0.4.8 or earlier holds it for its whole turn);
 // in a cancel's grace, attach() fits CANCEL_BUDGET_MS.
 const ATTACH_WAIT_MS = 120_000;
+// Presses of the app's "Load older messages" while looking for the run's own message.
+const LOAD_OLDER_MAX = 8;
 // Reads of the window after a sidebar row is opened, and the wait between them.
 const OPEN_READS = 4;
 const OPEN_READ_GAP_MS = 500;
@@ -471,6 +473,24 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     lockPath = null;
     detached = true;
   };
+  // A read of the run's conversation that shows its title but not its own
+  // message may only lack the older messages the app has not loaded (it shows
+  // the last 50 steps): they are loaded, up to LOAD_OLDER_MAX times, and the
+  // conversation read again. Anything else is returned as read.
+  const loadOwn = async (state, expectedTitle, via = bridge, limit = (ms) => (ms === undefined ? undefined : { timeoutMs: ms })) => {
+    let shown = state;
+    for (let n = 0; n < LOAD_OLDER_MAX && shown.truncated !== true && shown.title === expectedTitle && shown.own !== true; n += 1) {
+      let loaded = null;
+      try {
+        loaded = await via(['load-older', expectedTitle], limit(PRESS_TIMEOUT_MS));
+      } catch (error) {
+        if (error instanceof Cancelled) throw error;
+      }
+      if (loaded?.pressed !== true) break;
+      shown = await via(['snapshot', marker], limit());
+    }
+    return shown;
+  };
   // Opens the run's conversation from its sidebar row, checked by title and the
   // run's own marker in the same read; a namesake row is skipped. False when
   // the sidebar lists no row of it. `limit(ms)` gives each call's options.
@@ -485,7 +505,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       // A namesake still on screen from the row before reads the same title
       // without the marker, so every read up to OPEN_READS is made.
       for (let read = 0; read < OPEN_READS; read += 1) {
-        const shown = await via(['snapshot', marker], limit());
+        const shown = await loadOwn(await via(['snapshot', marker], limit()), conversation, via, limit);
         if (shown.truncated !== true && shown.title === conversation && shown.own === true) return true;
         if (read + 1 === OPEN_READS) break;
         // In a cancel's grace `limit` bounds the wait; otherwise a cancel wakes it.
@@ -686,7 +706,16 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     const abandoned = abandonedAppLock(lockFile);
     let ended = null;
     if (abandoned) {
-      const shown = await bridge(['snapshot', abandoned.marker]);
+      let shown = await bridge(['snapshot', abandoned.marker]);
+      // Its message may lie before the last 50 steps the app shows.
+      for (let n = 0; n < LOAD_OLDER_MAX && shown.truncated !== true && shown.title === abandoned.conversation && shown.own !== true; n += 1) {
+        const loaded = await bridge(['load-older', abandoned.conversation], { timeoutMs: PRESS_TIMEOUT_MS }).catch((error) => {
+          if (error instanceof Cancelled) throw error;
+          return null;
+        });
+        if (loaded?.pressed !== true) break;
+        shown = await bridge(['snapshot', abandoned.marker]);
+      }
       // A cut-off read is no evidence: the run may lie past the cut. The app
       // may have renamed the conversation since the lock recorded it (2.36),
       // so a titled conversation showing the run's own message is its own.
@@ -783,7 +812,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       await openOwnRow(bridge, (ms) => (ms === undefined ? undefined : { timeoutMs: ms })).catch((error) => {
         if (error instanceof Cancelled) throw error;
       });
-      const waiting = await bridge(['snapshot', marker]);
+      const waiting = await loadOwn(await bridge(['snapshot', marker]), resume.title);
       if (waiting.truncated) throw new Error(`${PARTIAL_TREE}, so the run cannot check the conversation that asked; nothing was pressed. Answer the prompt in the app.`);
       if (waiting.title !== resume.title) throw new Error(`The Antigravity app shows ${JSON.stringify(waiting.title)}, not the conversation that asked (${JSON.stringify(resume.title)}); open that conversation in the app and approve again, or answer it there.`);
       if (waiting.own !== true) throw new Error(`The Antigravity app shows a conversation titled ${JSON.stringify(resume.title)} whose text does not include the asking run's own message, so the run cannot tell it is the one that asked; nothing was pressed. Answer the prompt in the app.`);
@@ -996,7 +1025,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         // Blocked, Idle, or a sidebar no longer grouped: read it on screen.
         await attach();
       }
-      state = await bridge(['snapshot', marker]);
+      state = await loadOwn(await bridge(['snapshot', marker]), expected());
       if (!follow(state)) {
         if (Date.now() >= deadline) throw new TimedOut(options.timeout);
         continue;

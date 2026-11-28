@@ -453,6 +453,26 @@ function sidebarState(nodes, title, project, read) {
   return { grouped, rows };
 }
 
+// The app shows a long conversation's last 50 steps and a "Load older
+// messages, showing N of M" button above them; the run's own message, with its
+// marker, may lie before them. The button of the conversation titled
+// `expected`, outside the sidebar; -1 when every message is shown.
+function olderButton(nodes, expected) {
+  const area = conversationArea(nodes);
+  if (!area || title(nodes) !== expected) throw new Error('other_conversation');
+  const found = [];
+  for (let at = area.start + 1; at < area.end; at += 1) {
+    const node = nodes[at];
+    if (node.role === 'AXGroup' && node.label === 'Sidebar') {
+      at = subtreeEnd(nodes, at) - 1;
+    } else if (node.role === 'AXButton' && /^Load older messages\b/.test(node.label)) {
+      found.push(at);
+    }
+  }
+  if (found.length > 1) throw new Error('several_controls: Load older messages');
+  return found.length ? found[0] : -1;
+}
+
 // desktop-decisions:end
 
 function get(element, name) {
@@ -946,6 +966,17 @@ const COMMANDS = {
   },
   // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
   // the view changes, the front does not.
+  // Loads the older messages of the conversation titled `expected` once, with
+  // the app behind; { pressed: false } when it already shows them all.
+  'load-older'(app, expected) {
+    if (!expected) throw new Error('usage: load-older <expected title>');
+    const nodes = tree(app);
+    const at = olderButton(nodes, expected);
+    if (at < 0) return { pressed: false };
+    press(nodes[at], 'Load older messages');
+    delay(0.8);
+    return { pressed: true };
+  },
   'open-row'(app, name, project, n) {
     if (!name || !project) throw new Error('usage: open-row <title> <project> <n>');
     const nodes = tree(app);

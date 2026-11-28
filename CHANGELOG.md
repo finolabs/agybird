@@ -4,6 +4,7 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+- A desktop run whose turn ran past the 50 steps the app shows at once now presses the conversation's `Load older messages` (with the app behind) to find its own message, instead of failing to tell its conversation from another and keeping the app lock.
 - The desktop transport creates the Antigravity project a folder lacks, as the CLI transport does, instead of ending `blocked: no_project`: named after the folder, `<repo>-<worktree>` for a linked worktree (the app cannot run a worktree inside its main checkout's project), with `-2` and so on while a name is taken. A project the app does not list ends `blocked: project_not_listed`.
 - Desktop runs no longer wait for each other while their agents work: up to five go at once. A run holds the app only while it acts (open, paste, Send, until the conversation's title settles; then its result), and in between watches its own sidebar row (In Progress, Blocked, Idle) with the app free; a sixth ends `blocked: too_many_runs`. A run that finds the app held by such a run waits for it.
 - A desktop run's turn ends only once the app's sidebar no longer shows it In Progress, so an interim message while a command runs (for example "Running sleep 30") is no longer returned as the reply.
