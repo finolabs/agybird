@@ -65,7 +65,8 @@ test('the desktop transport is documented as opt-in, with its permissions and wh
   const privacy = read('PRIVACY.md');
   assert.match(privacy, /desktop transport/i);
   assert.match(privacy, /clipboard/i);
-  assert.match(read('CHANGELOG.md').split('## 0.')[0], /desktop transport/i);
+  // Anywhere in the changelog: a release moves the entry out of Unreleased.
+  assert.match(read('CHANGELOG.md'), /desktop transport/i);
 });
 
 test('the desktop reference says a second pane during Copy returns the verified on-screen reply with a warning', () => {
