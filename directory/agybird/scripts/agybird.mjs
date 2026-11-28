@@ -41,6 +41,8 @@ const FLAG_OPTIONS = new Map([
   ['--new-session', 'newSession'],
   ['--no-record', 'noRecord'],
   ['--swarm', 'swarm'],
+  // Set by the companion's reviews: a run nothing resumes, so nothing it was refused can be approved.
+  ['--review', 'review'],
 ]);
 
 export function parseArgs(argv) {
@@ -52,6 +54,7 @@ export function parseArgs(argv) {
     newSession: false,
     noRecord: false,
     swarm: false,
+    review: false,
     timeout: '10m',
   };
 
@@ -108,6 +111,10 @@ export function validateRequest(options) {
   }
   if (!['read', 'write'].includes(options.mode)) {
     throw new Error(`Invalid mode: ${options.mode}`);
+  }
+  // A review run is never resumed: only a read that records no session may be one.
+  if (options.review && (options.mode !== 'read' || !options.noRecord)) {
+    throw new Error('--review applies only to a read-only run with --no-record');
   }
   if (options.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(options.effort)) {
     throw new Error(`Invalid effort: ${options.effort}`);
@@ -1197,7 +1204,39 @@ export function classifyOutcome({ parsed, exitCode, stderr, deadlineReached = fa
   if (exitCode === AGENT_FAILURE_EXIT_CODE && !printTimedOut) {
     warnings.push('agy exited with code 3: the agent or model API failed mid-turn; any response is partial.');
     addAgyErrorWarnings(warnings, agyError, options);
-    return { status: 'error', warnings, permissionRequests: denied ? describePermissionRequests(parsed, stderr) : [], agyError };
+    // A review is never approved, so nothing it was refused is offered as a grant.
+    if (denied && options.review) warnings.push('Antigravity also refused an action the review tried; a review cannot be approved and resumed, so run it again.');
+    return { status: 'error', warnings, permissionRequests: denied && !options.review ? describePermissionRequests(parsed, stderr) : [], agyError };
+  }
+  if (denied && options.review) {
+    // Nothing resumes a review, so nothing it was refused can be approved.
+    // The prompt tells it not to run terminal commands; one that tried anyway
+    // is judged as if the refused actions had not happened, by every check
+    // below, and stands only when it then finished with its review whole.
+    const refusedTools = new Set(parsed.toolCalls.filter((tool) => (typeof tool.error === 'string' && PERMISSION_DENIAL.test(tool.error)) || /denied/i.test(tool.status ?? '')));
+    const rest = classifyOutcome({
+      parsed: { ...parsed, warnings: [], toolCalls: parsed.toolCalls.filter((tool) => !refusedTools.has(tool)), deniedActions: [] },
+      exitCode,
+      stderr: String(stderr ?? '').split('\n').filter((line) => !PERMISSION_DENIAL.test(line)).join('\n'),
+      deadlineReached,
+      options: { ...options, review: false },
+    });
+    const named = describePermissionRequests(parsed, stderr).map((request) => {
+      const tool = String(request.tool ?? '').replace(/[^\w.:-]/g, '').slice(0, 60) || 'a tool';
+      return request.target ? `${tool} on ${JSON.stringify(request.target.slice(0, 120))}` : tool;
+    });
+    const what = named.length > 0 ? `${named.length === 1 ? 'an action' : `${named.length} actions`} the review tried (${named.join('; ')})` : 'an action the review tried';
+    const review = options.jsonSchema ? parsed.structuredOutput !== null && parsed.structuredOutput !== undefined : typeof parsed.response === 'string' && parsed.response.trim() !== '';
+    if (rest.status === 'success' && review) {
+      warnings.push(`Antigravity refused ${what}; the review finished without it, from the diff and the file tools.`);
+      return { status: 'success', warnings: [...warnings, ...rest.warnings], permissionRequests: [], agyError };
+    }
+    if (rest.status !== 'success') {
+      warnings.push(`Antigravity refused ${what}.`);
+      return { ...rest, warnings: [...warnings, ...rest.warnings], permissionRequests: [] };
+    }
+    warnings.push(`Antigravity refused ${what} before it gave its review; a review cannot be approved and resumed, so run it again (the prompt tells it to read files with the file tools only).`);
+    return { status: 'blocked', warnings, permissionRequests: [], agyError };
   }
   if (denied) {
     const permissionRequests = describePermissionRequests(parsed, stderr);

@@ -35,7 +35,7 @@ Headless `agy` has no way to prompt a human, so any tool that needs confirmation
 
 `suggested_rule` is `null` when the target is too long to review at all. The denial is still `needs_permission`, but no rule is offered: agree a narrower one with the user, such as a `command(gh pr create)` prefix, rather than approving thousands of characters nobody has read.
 
-`blocked` means no allow-rule applies — either the target could not be determined, or `agy` reported that settings allow-rules do not apply to that tool. Report it and stop.
+`blocked` means no allow-rule applies — either the target could not be determined, or `agy` reported that settings allow-rules do not apply to that tool — or, for a review, that it was refused an action before it gave its review: run the review again rather than granting anything. Report it and stop.
 
 On `needs_permission`, do this and nothing more:
 
