@@ -1,6 +1,6 @@
 # Desktop sessions: projects on demand and runs that do not wait for each other
 
-Status: settled (owner decisions of 2026-11-28). A1–A5 and C1–C3 in finolabs/agybird#60; B1–B5 and C4 not implemented.
+Status: settled (owner decisions of 2026-11-28); implemented in finolabs/agybird#60 (not merged).
 Evidence: `docs/verification/2026-11-28-desktop-spike-projects-sidebar.md` (F1–F9 below refer to it).
 
 ## Goal
