@@ -1358,15 +1358,15 @@ test('older messages are loaded at most 8 times per conversation opened, and a r
 });
 
 test('a cancel on screen loads older messages before it presses Stop in its own conversation', { skip: process.platform === 'win32' }, async () => {
+  // Polls far apart, so the signal comes before any poll has loaded them.
   const context = setup({ stuck: true, olderHidden: 2 });
+  context.env.AGYBIRD_DESKTOP_POLL_MS = '5000';
   const { child, done } = start(context);
-  while (!names(context).includes('send') || context.fake().sent !== true) await new Promise((resolve) => setTimeout(resolve, 20));
-  // The run reads its own message on screen first, as a long turn would hide it later.
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  context.fake();
+  while (context.fake().sent !== true) await new Promise((resolve) => setTimeout(resolve, 20));
   child.kill('SIGTERM');
   const { envelope } = await done;
   assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().olderPresses, 2, 'loaded on the way out');
   assert.equal(context.fake().stopped, true, envelope.warnings.join(' | '));
 });
 

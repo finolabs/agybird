@@ -488,11 +488,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         loaded = await via(['load-older', expectedTitle], limit());
       } catch (error) {
         if (error instanceof Cancelled) throw error;
-      }
-      if (loaded?.pressed !== true) {
-        budget.left = 0;
+        // A failed call decides nothing; a later read may try again.
         break;
       }
+      // Every message is shown: nothing more to press in this conversation.
+      if (loaded?.pressed === false) budget.left = 0;
+      if (loaded?.pressed !== true) break;
       shown = await via(['snapshot', marker], limit());
     }
     return shown;
@@ -1131,7 +1132,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const left = () => {
         const ms = until - Date.now();
         if (ms < 500) throw new Error('no time left to load older messages');
-        return { timeoutMs: Math.min(RESTORE_TIMEOUT_MS, ms) };
+        // In a cancel, each call fits what its grace leaves; on a timeout or
+        // an error there is no grace to keep, only the margin before Stop.
+        return { timeoutMs: Math.min(cancelledAt !== null ? RESTORE_TIMEOUT_MS : 15_000, ms) };
       };
       try {
         await loadOwn(await call(['snapshot', marker], left()), expected(), call, left);

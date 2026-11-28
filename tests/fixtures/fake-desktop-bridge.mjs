@@ -622,6 +622,7 @@ function answer() {
       else state.shownElsewhere = null;
       return { ok: true, rows: 1 };
     case 'stop':
+      if (state.olderHidden > 0) return { error: "not_own: the run's own message is not on screen" };
       try {
         decisions.chooseStop(screenNodes(false), args[0], args[1]);
       } catch (error) {
