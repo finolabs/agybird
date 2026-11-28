@@ -382,6 +382,22 @@ test('a cancel during the clipboard restore before Send clears the composer, pre
   assertCleanedUp(context);
 });
 
+test('a cancel during a slow restore after the paste leaves the prompt unsent instead of overrunning the grace', { skip: process.platform === 'win32' }, async () => {
+  // The restore under way when the signal comes takes 5.8 s; clearing could take 14 s more, past the 18 s budget.
+  const context = setup({ delays: { 'clipboard-restore': 2_900, restore: 2_900 } });
+  const { child, done } = start(context);
+  await waitFor(context, 'clipboard-restore');
+  const started = Date.now();
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.ok(Date.now() - started < 18_000, 'cleanup stayed inside the budget');
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(!order.includes('clear-input') && !order.includes('send'));
+  assert.ok(envelope.warnings.some((warning) => /too little time left/.test(warning)), envelope.warnings.join(' | '));
+  assertCleanedUp(context);
+});
+
 test('options the desktop transport cannot honour are refused before the app is touched', async () => {
   for (const args of [['--model', 'x'], ['--swarm', '--new-session'], ['--conversation', 'c1'], ['--effort', 'high']]) {
     const context = setup();

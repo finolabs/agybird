@@ -47,10 +47,16 @@ const SEND_TIMEOUT_MS = 45_000;
 // decline and Stop (5 s each), then the clipboard and the front app (3 s
 // each), 16 s at most. Clearing the composer replaces Stop: a probe, the
 // switch and the clear (3 + 3 + 5 s), then the clipboard and the front app
-// (3 + 3 s), 17 s at most. The lock already says the app may run before any
-// of them (markLockForApp).
+// (3 + 3 s), 17 s at most; it starts only when that worst case still ends
+// within CANCEL_BUDGET_MS of the signal, so a restore already under way when
+// the signal came is counted. The lock already says the app may run before
+// any of them (markLockForApp).
 const PRESS_TIMEOUT_MS = 5_000;
 const RESTORE_TIMEOUT_MS = 3_000;
+// After a signal, the clearing path starts only when its worst case still ends
+// this long after the signal, inside the companion's 20 s grace with a margin;
+// a restore already under way when the signal came counts against it.
+const CANCEL_BUDGET_MS = 18_000;
 // The app comes to the front only once the user has left the keyboard and
 // mouse alone this long, waiting at most IDLE_WAIT_MS for it.
 const IDLE_SECONDS = 3;
@@ -283,6 +289,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // A signal marks the run cancelled and interrupts the step in flight; the run
   // then cleans up itself, so cleanup never races a bridge call still running.
   let cancelled = false;
+  // When the signal came: the cleanup that follows a cancel fits CANCEL_BUDGET_MS from it.
+  let cancelledAt = null;
   let wake = () => {};
   // A signal interrupts the step in flight (a long paste included), so cleanup
   // runs at once instead of after it; cleanup's own calls are never interrupted.
@@ -386,6 +394,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   // Clearing needs the app in front, so it happens only when one bounded probe
   // finds the user quiet again; otherwise the unsent prompt is left for them.
   const clearInput = async () => {
+    // At most a probe, the switch and the clear, then the clipboard and the
+    // front app (restore()) or the front app alone.
+    const needs = 2 * RESTORE_TIMEOUT_MS + PRESS_TIMEOUT_MS + (saved ? 2 : 1) * RESTORE_TIMEOUT_MS;
+    if (cancelledAt !== null && Date.now() - cancelledAt + needs > CANCEL_BUDGET_MS) {
+      warnings.push('The prompt was left unsent in the Antigravity app input, because the run was cancelled with too little time left to clear it safely; clear it there before sending anything.');
+      return;
+    }
     const now = await call(['probe'], { timeoutMs: RESTORE_TIMEOUT_MS }).catch(() => null);
     if (!now || !quiet(now)) {
       warnings.push('The prompt was left unsent in the Antigravity app input, because the Mac was in use, the screen was locked or the app was off the Space shown; clear it there before sending anything.');
@@ -441,6 +456,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.exitCode = value.status === 'error' ? 1 : 0;
   };
   const onTerm = () => {
+    cancelledAt ??= Date.now();
     cancelled = true;
     interrupt.abort();
     wake();
