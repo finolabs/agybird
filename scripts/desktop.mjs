@@ -391,7 +391,70 @@ const PARTIAL_TREE = "The Antigravity app's accessibility tree is too large to r
 // every other character must read back in order.
 const normalized = (text) => String(text ?? '').replace(/\s+/g, '');
 
+// `--archive-finished`: archives the conversations of runs that already ended,
+// listed on stdin as JSON [{ title, project }] (the app's window titles), each
+// only when its sidebar row is alone and Idle. Holds the app lock meanwhile,
+// waiting for a run that acts in phases as a starting run does; it never
+// brings the app to the front or changes the conversation on screen.
+export async function archiveFinished(items, env = process.env) {
+  const platform = env.AGYBIRD_DESKTOP_BRIDGE ? 'darwin' : process.platform;
+  checkPlatform(platform);
+  const call = (args, options) => callBridge(args, { env, ...options });
+  const probe = await call(['probe']);
+  checkProbe(probe, { platform, allowVersion: env.AGYBIRD_DESKTOP_ALLOW_VERSION === '1' });
+  const lockFile = join(env.AGYBIRD_STATE_DIR || join(homedir(), '.agybird'), 'desktop.lock');
+  const until = Date.now() + ATTACH_WAIT_MS;
+  let lockPath = null;
+  for (;;) {
+    try {
+      lockPath = acquireLock(lockFile, Date.now() + 10 * 60_000);
+      break;
+    } catch (error) {
+      const holder = readLock(lockFile);
+      const phased = holder === null || (holder.runs === true && Number.isInteger(holder.pid) && holder.pid > 0 && processIsRunning(holder.pid));
+      if (!(error instanceof Blocked) || Date.now() >= until || !phased) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  const archived = [];
+  const skipped = [];
+  // A run of 0.4.8 or earlier recorded no project: the longest project name
+  // the title ends with is its project.
+  const names = projectNames(env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'));
+  const projectOf = (title) => names.filter((name) => typeof name === 'string' && name && String(title).endsWith(` - ${name} - Antigravity`)).sort((a, b) => b.length - a.length)[0] ?? null;
+  try {
+    for (const item of items) {
+      const title = item?.title;
+      const project = typeof item?.project === 'string' ? item.project : projectOf(title);
+      if (typeof title !== 'string' || typeof project !== 'string' || !isProjectTitle(title, project)) {
+        skipped.push({ title, reason: 'no conversation title of its project' });
+        continue;
+      }
+      try {
+        await call(['archive-row', rowTitle(title, project), project], { timeoutMs: PRESS_TIMEOUT_MS });
+        archived.push(title);
+      } catch (error) {
+        skipped.push({ title, reason: error.message.replace(/^.* failed: /, '') });
+      }
+    }
+  } finally {
+    if (lockPath) releaseLock(lockPath);
+  }
+  return { archived, skipped };
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env) {
+  if (argv.includes('--archive-finished')) {
+    try {
+      const items = JSON.parse((await readPrompt()) || '[]');
+      if (!Array.isArray(items)) throw new Error('--archive-finished reads a JSON list of { title, project } on stdin');
+      process.stdout.write(`${JSON.stringify({ status: 'success', ...(await archiveFinished(items, env)) })}\n`);
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ status: error instanceof Blocked ? 'blocked' : 'error', blocked_reason: error.reason, error: error.message })}\n`);
+      process.exitCode = error instanceof Blocked ? 0 : 1;
+    }
+    return;
+  }
   // A signal marks the run cancelled and interrupts the step in flight; the run
   // then cleans up itself, so cleanup never races a bridge call still running.
   let cancelled = false;
@@ -762,10 +825,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     }
     const resolved = resolveProject(options.cwd, env.AGYBIRD_PROJECTS_DIR || join(homedir(), '.gemini', 'config', 'projects'), { create: resume.question === null });
     const project = resolved.name;
-    if (resolved.created) {
-      evidence.project_created = true;
-      evidence.project = project;
-    }
+    evidence.project = project;
+    if (resolved.created) evidence.project_created = true;
     projectName = project;
     mkdirSync(runsDir, { recursive: true, mode: 0o700 });
     runRecord = join(runsDir, `${marker}.json`);
@@ -1073,6 +1134,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         } catch {
           warnings.push('The diff stat of the changed files could not be read.');
         }
+      }
+    }
+    // Opt-in (setup --archive-finished on): the turn is over and its reply
+    // read, so the run's conversation is archived from its sidebar row, only
+    // when that row is alone and Idle; it stays in the app, out of the sidebar.
+    if (env.AGYBIRD_DESKTOP_ARCHIVE === '1' && conversation !== null && !cancelled) {
+      try {
+        await call(['archive-row', rowTitle(conversation, project), project], { timeoutMs: PRESS_TIMEOUT_MS });
+        evidence.archived = true;
+      } catch (error) {
+        warnings.push(`The run's conversation was not archived in the app (${error.message}); it stays in the sidebar.`);
       }
     }
     await cleanup();

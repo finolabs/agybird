@@ -71,7 +71,7 @@ test('a read task runs in a new conversation of the workspace project and return
   assert.equal(envelope.status, 'success');
   assert.equal(envelope.response, 'READY');
   const { conversation_marker: marker, ...evidence } = envelope.evidence;
-  assert.deepEqual(evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [], conversation_title: 'Fake Task - ws - Antigravity' });
+  assert.deepEqual(evidence, { transport: 'desktop', app_version: '2.35.2', preset: 'Request Review', session_resumed: false, changed_files: [], project: 'ws', conversation_title: 'Fake Task - ws - Antigravity' });
   assert.match(marker, /^[0-9a-f]{16}$/);
   const calls = context.fake().calls;
   assert.deepEqual(calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', 'ws']);
@@ -1331,4 +1331,52 @@ test('a run that finds the app lock held by a live run acting in phases waits fo
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
   assert.ok(Date.now() - started >= 1_000, 'it waited for the other run');
+});
+
+// Archiving finished conversations (finolabs/agybird#62).
+test('with archiving on, a finished run archives its own conversation from the sidebar', async () => {
+  const context = setup({ runningPolls: 1, reply: 'READY' });
+  context.env.AGYBIRD_DESKTOP_ARCHIVE = '1';
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.evidence.archived, true);
+  assert.equal(envelope.evidence.project, 'ws');
+  assert.deepEqual(context.fake().archived, ['Fake Task|ws']);
+  const order = names(context);
+  assert.ok(order.indexOf('archive-row') > order.indexOf('copy-reply'), 'after the reply was read');
+  assert.ok(!order.slice(order.indexOf('copy-reply')).includes('front'), 'the app stays behind');
+});
+
+test('archiving is off unless asked, and a failed archive only warns', async () => {
+  const off = setup({ runningPolls: 1 });
+  assert.equal((await run(off)).envelope.evidence.archived, undefined);
+  assert.ok(!names(off).includes('archive-row'));
+  const failing = setup({ runningPolls: 1, archiveFails: true });
+  failing.env.AGYBIRD_DESKTOP_ARCHIVE = '1';
+  const { envelope } = await run(failing);
+  assert.equal(envelope.status, 'success');
+  assert.ok(envelope.warnings.some((warning) => /was not archived in the app/.test(warning)), JSON.stringify(envelope.warnings));
+});
+
+test('a run that ends waiting for an answer is not archived', async () => {
+  const context = setup({ dialog: DIALOG, runningPolls: 1 });
+  context.env.AGYBIRD_DESKTOP_ARCHIVE = '1';
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'needs_permission');
+  assert.ok(!names(context).includes('archive-row'));
+});
+
+test('--archive-finished archives listed conversations that are alone and Idle, and skips the rest', async () => {
+  const context = setup({ sidebarRows: { 'Done|ws': ['Idle'], 'Going|ws': ['In Progress'], 'Twice|ws': ['Idle', 'Idle'] } });
+  const items = ['Done', 'Going', 'Twice', 'Gone'].map((name) => ({ title: `${name} - ws - Antigravity`, project: 'ws' }));
+  items.push({ title: 'Odd title', project: 'ws' });
+  // A run of 0.4.8 recorded no project: it is found from the title.
+  items[0].project = null;
+  const { envelope } = await run(context, ['--archive-finished'], JSON.stringify(items));
+  assert.equal(envelope.status, 'success');
+  assert.deepEqual(envelope.archived, ['Done - ws - Antigravity']);
+  assert.deepEqual(envelope.skipped.map((entry) => entry.reason.split(':')[0]), ['not_idle', 'several_rows', 'not_found', 'no conversation title of its project']);
+  assert.deepEqual(context.fake().archived, ['Done|ws']);
+  for (const name of ['front', 'open-row', 'snapshot']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assert.equal(existsSync(lockFile(context)), false);
 });

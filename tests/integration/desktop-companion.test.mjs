@@ -354,3 +354,30 @@ test('setup still reports when the transport config holds an unknown value', asy
   assert.equal(report.transportSource, 'invalid');
   assert.ok(report.problems.some((problem) => /gui/.test(problem)));
 });
+
+// finolabs/agybird#62: archiving finished desktop conversations.
+test('setup --archive-finished on makes a finished desktop task archive its conversation', async () => {
+  const context = workspace({ reply: 'done' });
+  context.choose('desktop');
+  const setup = await context.companion(['setup', '--archive-finished', 'on']);
+  assert.match(setup.stdout, /Archive finished desktop conversations: on/);
+  assert.equal(JSON.parse(readFileSync(join(context.env.AGYBIRD_JOBS_DIR, 'config.json'), 'utf8')).archiveFinished, true);
+  const { envelope } = json(await context.companion(['task', '--json', 'Say hi']));
+  assert.equal(envelope.evidence.archived, true, JSON.stringify(envelope.warnings));
+  assert.deepEqual(context.fake().archived, ['Fake Task|ws']);
+  assert.notEqual((await context.companion(['setup', '--archive-finished', 'maybe'])).code, 0);
+});
+
+test('archive archives the conversations of finished desktop jobs, once', async () => {
+  const context = workspace({ reply: 'done' });
+  context.choose('desktop');
+  json(await context.companion(['task', '--json', 'Say hi']));
+  assert.equal(context.fake().archived, undefined, 'off by default');
+  const first = json(await context.companion(['archive', '--json']));
+  assert.equal(first.candidates, 1);
+  assert.deepEqual(first.archived, ['Fake Task - ws - Antigravity']);
+  const again = json(await context.companion(['archive', '--json']));
+  assert.deepEqual(again.archived, []);
+  assert.match(again.skipped[0].reason, /not_found/);
+});
+
