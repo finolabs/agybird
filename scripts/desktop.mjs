@@ -78,6 +78,8 @@ const MAX_RUNS = 5;
 const ATTACH_WAIT_MS = 120_000;
 // Presses of the app's "Load older messages" while looking for the run's own message.
 const LOAD_OLDER_MAX = 8;
+// Reads in a row of the run's title without its message before the run ends.
+const UNMARKED_READS = 3;
 // Reads of the window after a sidebar row is opened, and the wait between them.
 const OPEN_READS = 4;
 const OPEN_READ_GAP_MS = 500;
@@ -1066,6 +1068,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       return statuses.length === 0 ? { kind: 'missing' } : { kind: 'rows', statuses };
     };
     const allRunning = (side) => side.kind === 'rows' && side.statuses.every((status) => status === 'In Progress');
+    let unmarked = 0;
     const follow = (state) => {
       if (state.truncated) {
         const partial = `${PARTIAL_TREE}, so a read could not show whether the task had ended; the run waited for a whole read.`;
@@ -1083,7 +1086,15 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         markApp();
       }
       if (state.title !== expected()) throw new OtherConversation(state.title, { late: conversation === null });
-      if (state.own !== true) throw new OtherConversation(state.title, { unmarked: true });
+      // The app can redraw the conversation (its last reply, an error it
+      // shows) so that one read lacks the run's message: that read decides
+      // nothing, and only UNMARKED_READS in a row end the run, unread.
+      if (state.own !== true) {
+        unmarked += 1;
+        if (unmarked >= UNMARKED_READS) throw new OtherConversation(state.title, { unmarked: true });
+        return false;
+      }
+      unmarked = 0;
       return true;
     };
     const changesSince = () => {

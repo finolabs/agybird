@@ -1430,3 +1430,14 @@ test('--archive-finished archives listed conversations that are alone and Idle, 
   for (const name of ['front', 'open-row', 'snapshot']) assert.ok(!names(context).includes(name), `no ${name}`);
   assert.equal(existsSync(lockFile(context)), false);
 });
+
+test('a read that redraws without the run\'s message decides nothing; three in a row end the run unread', async () => {
+  const once = setup({ runningPolls: 3, reply: 'READY', unmarkedReads: 2 });
+  const passed = await run(once);
+  assert.equal(passed.envelope.status, 'success', passed.envelope.warnings.join(' | '));
+  const gone = setup({ runningPolls: 6, reply: 'READY', unmarkedReads: 9 });
+  const failed = await run(gone);
+  assert.equal(failed.envelope.status, 'error');
+  assert.ok(!names(gone).includes('copy-reply'));
+});
+

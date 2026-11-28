@@ -442,6 +442,11 @@ function answer() {
       }
       // olderHidden: presses of Load older messages before the run's own message shows.
       if (state.olderHidden > 0 && own !== undefined) own = false;
+      // unmarkedReads: reads after Send that redraw without the run's message.
+      if (state.sent && state.unmarkedReads > 0 && own !== undefined) {
+        state.unmarkedReads -= 1;
+        own = false;
+      }
       if (state.untitledLeft > 0) state.untitledLeft -= 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
