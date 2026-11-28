@@ -4,6 +4,8 @@ All notable changes to Agybird are documented in this file.
 
 ## Unreleased
 
+## 0.4.7 - 2026-11-28
+
 - The desktop bridge reads every `NSArray` count through `Number()`. Under `osascript` the count can arrive as the string `"0"`, which is truthy, so a desktop run with the app closed failed with an exception instead of `blocked: app_missing`, and restoring the previous front app could relaunch an app the user had quit.
 
 ## 0.4.6 - 2026-11-28
