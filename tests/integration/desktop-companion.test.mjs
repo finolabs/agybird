@@ -19,7 +19,9 @@ function git(cwd, ...args) {
 
 // A git workspace that Antigravity knows as project "ws", and a fake app.
 function workspace(state = {}) {
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'agybird-dc-ws-')));
+  // native: on Windows the temp folder can be an 8.3 short name (RUNNER~1), and
+  // the companion compares the long path git reports.
+  const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), 'agybird-dc-ws-')));
   git(cwd, 'init', '-q');
   writeFileSync(join(cwd, 'a.txt'), 'one\n');
   git(cwd, 'add', '.');
