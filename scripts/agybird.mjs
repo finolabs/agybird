@@ -694,7 +694,10 @@ export function revertGrants({ path, previous }) {
   writeFileSync(path, previous);
 }
 
-const READ_ONLY_POLICY = 'Do not create, edit, move, or delete files. Work read-only and cite concrete evidence for conclusions.';
+// A read-only run cannot have its commands approved one by one without stopping, so it reads
+// with the file tools; a command it still needs is one plain command, which a single allow-rule
+// can cover (agy matches a rule's target as a pattern, so pipes and chains cannot be granted).
+const READ_ONLY_POLICY = 'Do not create, edit, move, or delete files. Work read-only and cite concrete evidence for conclusions. Read files with the file viewing and search tools, not terminal commands; if you must run a command, run one plain command per call, with no pipes, `;`, `&&` or redirection.';
 
 function escapeTaskDelimiters(text) {
   return text.replace(/<(\/?\s*agybird_user_task\b[^>]*)>/gi, '<\\$1>');

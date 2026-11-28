@@ -489,7 +489,11 @@ function answer() {
       const input = pick(args[0], 'Message input');
       if (input.error) return { error: input.error };
       // frontLostBeforePaste: another app takes the front between the switch and the paste.
-      if (state.frontLostBeforePaste) state.frontmost = 'com.example.other';
+      // A number loses it that many times, then no more.
+      if (state.frontLostBeforePaste === true || state.frontLostBeforePaste > 0) {
+        state.frontmost = 'com.example.other';
+        if (typeof state.frontLostBeforePaste === 'number') state.frontLostBeforePaste -= 1;
+      }
       if (state.frontmost !== 'com.google.antigravity') return { error: 'not_frontmost' };
       const value = state.paste ?? state.clipboard;
       if (input.node.rival) state.rivalComposer = value;

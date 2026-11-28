@@ -21,6 +21,9 @@ test('code read mode explicitly prohibits workspace writes', () => {
   assert.match(prompt, /Do not create, edit, move, or delete files/i);
   assert.match(prompt, /evidence/i);
   assert.doesNotMatch(prompt, /generate_image/);
+  // Reads go through the file tools; a needed command is one a single allow-rule can cover.
+  assert.match(prompt, /file viewing and search tools, not terminal commands/);
+  assert.match(prompt, /one plain command per call, with no pipes/);
 });
 
 test('code write mode scopes edits and requests verification', () => {

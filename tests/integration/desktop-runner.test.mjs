@@ -166,6 +166,22 @@ test('a paste refused before it pastes leaves no prompt behind and warns of none
   assert.equal(context.fake().clipboard, 'user clipboard');
 });
 
+test('a user who takes the front back before the paste is waited for, and the paste is tried again', async () => {
+  const context = setup({ frontLostBeforePaste: 1, runningPolls: 1, reply: 'READY' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(names(context).filter((name) => name === 'paste-input').length, 2);
+  assert.equal(context.fake().clipboard, 'user clipboard');
+  assert.equal(names(context).filter((name) => name === 'new-conversation').length, 1, 'the same new conversation');
+  // The conversation was checked again before the second paste, and the front was left to the user.
+  const order = names(context);
+  const second = order.lastIndexOf('paste-input');
+  const between = order.slice(order.indexOf('paste-input'), second);
+  assert.ok(between.includes('snapshot') && between.includes('read-input'));
+  assert.ok(between.lastIndexOf('read-input') < between.lastIndexOf('front'), 'checked with the app behind, then brought forward');
+  assert.ok(!order.slice(order.indexOf('paste-input'), second).includes('restore'), 'the front stays with the user');
+});
+
 test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {
   const context = setup({ idleSeq: [0.1] });
   context.env.AGYBIRD_DESKTOP_IDLE_WAIT_MS = '50';

@@ -142,3 +142,19 @@ test('slash-command arguments arrive as one string and are split', async () => {
   const result = json(await runCompanion(['status --json']));
   assert.deepEqual(result.jobs, []);
 });
+
+test('--help on a command prints its options and exits 0', async () => {
+  const run = await runCompanion(['review', '--help']);
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /^usage: companion\.mjs review \[options\] \[text\]/);
+  assert.match(run.stdout, /--base <value>/);
+  assert.equal(run.stderr, '');
+});
+
+test('-h inside the words of a task is part of the task, not a help request', async () => {
+  const run = await runCompanion(['task', '--json', 'CASE_SUCCESS', 'explain', 'what', 'grep', '-h', 'does']);
+  assert.equal(run.code, 0, run.stderr);
+  assert.doesNotMatch(run.stdout, /^usage:/);
+  assert.notEqual((await runCompanion(['hook', 'stop', '--help'])).code, 0, 'the stop hook takes no options');
+});
+

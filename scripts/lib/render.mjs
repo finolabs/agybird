@@ -39,7 +39,7 @@ function header(job, envelope) {
 }
 
 export function renderTask(job, envelope) {
-  const response = typeof envelope.response === 'string' ? envelope.response : JSON.stringify(envelope.response, null, 2);
+  const response = typeof envelope.response === 'string' ? envelope.response : envelope.response == null ? '' : JSON.stringify(envelope.response, null, 2);
   return [header(job, envelope), '', response || '_No response text._', ...permissionSection(job, envelope), ...warningSection(envelope)].join('\n');
 }
 
