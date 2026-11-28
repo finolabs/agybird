@@ -176,8 +176,9 @@ test('a user who takes the front back before the paste is waited for, and the pa
   // The conversation was checked again before the second paste, and the front was left to the user.
   const order = names(context);
   const second = order.lastIndexOf('paste-input');
-  assert.ok(order.slice(order.indexOf('paste-input'), second).includes('snapshot'));
-  assert.ok(order.slice(order.indexOf('paste-input'), second).includes('read-input'));
+  const between = order.slice(order.indexOf('paste-input'), second);
+  assert.ok(between.includes('snapshot') && between.includes('read-input'));
+  assert.ok(between.lastIndexOf('read-input') < between.lastIndexOf('front'), 'checked with the app behind, then brought forward');
   assert.ok(!order.slice(order.indexOf('paste-input'), second).includes('restore'), 'the front stays with the user');
 });
 

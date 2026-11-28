@@ -983,13 +983,17 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
         const again = await waitForIdleUser();
         userFront = again.frontmost;
         saved = { clipboard: again.clipboard };
-        const back = await bridge(['front']);
-        if (back.ok !== true) throw new Error('Antigravity did not come back to the front for the paste; nothing was pasted or sent.');
+        // Checked with the app still behind (the read back takes seconds):
+        // the same untitled conversation, nothing running or asking in it,
+        // the same project, This Computer, the same preset and an empty input.
         const reopened = await checkOpened();
         if (reopened.title !== UNTITLED) throw new Error(`The Antigravity app no longer shows the new conversation (it shows ${JSON.stringify(reopened.title)}); nothing was pasted or sent.`);
+        if (reopened.running || reopened.dialog) throw new Error('The new conversation is already running or asking something; nothing was pasted or sent.');
         if (reopened.preset !== evidence.preset) throw new Error(`The app's permissions preset changed while the run waited (${JSON.stringify(evidence.preset)} to ${JSON.stringify(reopened.preset)}); nothing was pasted or sent.`);
         const typed = await bridge(['read-input', UNTITLED]);
         if (normalized(typed.value) !== '') throw new Error('The new conversation\'s input is no longer empty (was the app in use?); nothing was pasted or sent.');
+        const back = await bridge(['front']);
+        if (back.ok !== true) throw new Error('Antigravity did not come back to the front for the paste; nothing was pasted or sent.');
       }
       // The composer holds the prompt now: the clipboard and the front go back
       // to the user at once, and the rest (the read back, Send) runs with the
