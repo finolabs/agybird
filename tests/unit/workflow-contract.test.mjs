@@ -21,12 +21,12 @@ test('CI uses immutable actions and least-privilege permissions', () => {
   assert.doesNotMatch(workflow, /secrets\.|GOOGLE_|GEMINI_|ANTIGRAVITY_/);
 });
 
-test('CI covers supported systems and Node versions', () => {
+test('CI covers supported systems and Node versions on main, one job on a pull request', () => {
   const workflow = read('.github/workflows/ci.yml');
-  for (const os of ['ubuntu-latest', 'macos-latest', 'windows-latest']) {
-    assert.match(workflow, new RegExp(os));
-  }
-  assert.match(workflow, /node:\s*\[20, 22\]/);
+  assert.match(workflow, /fromJSON\('\["ubuntu-latest", "macos-latest", "windows-latest"\]'\)/);
+  assert.match(workflow, /fromJSON\('\[20, 22\]'\)/);
+  assert.match(workflow, /pull_request' && fromJSON\('\["ubuntu-latest"\]'\)/);
+  assert.match(workflow, /branches: \[main\]/);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run check/);
 });
