@@ -453,6 +453,29 @@ function sidebarState(nodes, title, project, read) {
   return { grouped, rows };
 }
 
+// The app shows a long conversation's last 50 steps and a "Load older
+// messages, showing N of M" button above them; the run's own message, with its
+// marker, may lie before them. The button of the conversation titled
+// `expected`, outside the sidebar; -1 when every message is shown.
+function olderButton(nodes, expected) {
+  const area = conversationArea(nodes);
+  if (!area || title(nodes) !== expected) throw new Error('other_conversation');
+  const found = [];
+  for (let at = area.start + 1; at < area.end; at += 1) {
+    const node = nodes[at];
+    if (node.role === 'AXGroup' && node.label === 'Sidebar') {
+      at = subtreeEnd(nodes, at) - 1;
+    } else if (node.role === 'AXHeading' && node.label === 'Agent said') {
+      // The agent's replies can render buttons of their own.
+      at = replyEnd(nodes, at, area.end) - 1;
+    } else if (node.role === 'AXButton' && /^Load older messages\b/.test(node.label)) {
+      found.push(at);
+    }
+  }
+  if (found.length > 1) throw new Error('several_controls: Load older messages');
+  return found.length ? found[0] : -1;
+}
+
 // The Archive button of the one sidebar row of `title` in `project`, only when
 // that row is alone and under Idle: a running, waiting or namesake row is
 // never archived. Throws the reason otherwise.
@@ -960,6 +983,17 @@ const COMMANDS = {
     if (nodes.truncated) throw new Error('truncated');
     const shown = sidebarState(nodes, title, project, staticText);
     return { grouped: shown.grouped, statuses: shown.rows.map((row) => row.status) };
+  },
+  // Loads the older messages of the conversation titled `expected` once, with
+  // the app behind; { pressed: false } when it already shows them all.
+  'load-older'(app, expected) {
+    if (!expected) throw new Error('usage: load-older <expected title>');
+    const nodes = tree(app);
+    const at = olderButton(nodes, expected);
+    if (at < 0) return { pressed: false };
+    press(nodes[at], 'Load older messages');
+    delay(0.8);
+    return { pressed: true };
   },
   // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
   // the view changes, the front does not.

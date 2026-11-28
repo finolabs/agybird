@@ -543,6 +543,28 @@ test('only the one Sidebar group is read: conversation text shaped like a row or
   assert.equal(sidebarRows(twice).length, 0, 'two sidebars: none is trusted');
 });
 
+test('the Load older messages button is taken only in the conversation named, outside the sidebar', () => {
+  const { olderButton } = loadAxDecisions();
+  const TITLE = 'Long Task - ws - Antigravity';
+  const nodes = [
+    { depth: 0, role: 'AXWindow', label: 'Antigravity' },
+    { depth: 1, role: 'AXWebArea', label: TITLE },
+    { depth: 2, role: 'AXGroup', label: 'Sidebar' },
+    { depth: 3, role: 'AXButton', label: 'Load older messages, showing 1 of 2' },
+    { depth: 2, role: 'AXButton', label: 'Load older messages, showing 50 of 55' },
+    { depth: 2, role: 'AXStaticText', label: '', value: 'reply' },
+  ];
+  assert.equal(olderButton(nodes, TITLE), 4);
+  assert.equal(olderButton(nodes.filter((_, index) => index !== 4), TITLE), -1, 'the sidebar one is not the conversation\'s');
+  assert.throws(() => olderButton(nodes, 'Other - ws - Antigravity'), /other_conversation/);
+  // A button the agent's reply renders is not the conversation's.
+  // As 2.36 nests a reply: the heading, then its content groups beside it.
+  const replied = [...nodes.filter((_, index) => index !== 4), { depth: 2, role: 'AXHeading', label: 'Agent said' }, { depth: 2, role: 'AXGroup', label: '' }, { depth: 3, role: 'AXButton', label: 'Load older messages, showing 1 of 9' }];
+  assert.equal(olderButton(replied, TITLE), -1);
+  assert.throws(() => olderButton(Object.assign([...nodes], { truncated: true }), TITLE), /truncated/);
+  assert.throws(() => olderButton([...nodes, { depth: 2, role: 'AXButton', label: 'Load older messages, showing 2 of 3' }], TITLE), /several_controls/);
+});
+
 test('only the one Idle sidebar row of a title is archived', () => {
   const { archiveButton } = loadAxDecisions();
   const nodes = sidebarNodes();

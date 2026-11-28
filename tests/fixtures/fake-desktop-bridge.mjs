@@ -440,6 +440,13 @@ function answer() {
       } catch (error) {
         return { error: error.message };
       }
+      // olderHidden: presses of Load older messages before the run's own message shows.
+      if (state.olderHidden > 0 && own !== undefined) own = false;
+      // unmarkedReads: reads after Send that redraw without the run's message.
+      if (state.sent && state.unmarkedReads > 0 && own !== undefined) {
+        state.unmarkedReads -= 1;
+        own = false;
+      }
       if (state.untitledLeft > 0) state.untitledLeft -= 1;
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
@@ -604,6 +611,14 @@ function answer() {
       }
       return { grouped: true, statuses: ['Idle'] };
     }
+    case 'load-older': {
+      if (args[0] !== title()) return { error: 'other_conversation' };
+      (state.olderPresses ??= 0);
+      if (!(state.olderHidden > 0)) return { pressed: false };
+      state.olderHidden -= 1;
+      state.olderPresses += 1;
+      return { pressed: true };
+    }
     // archive-row: the run's own row reads Idle once the turn is over; other
     // conversations read as sidebarRows says. archiveFails: the press fails.
     case 'archive-row': {
@@ -626,6 +641,7 @@ function answer() {
       else state.shownElsewhere = null;
       return { ok: true, rows: 1 };
     case 'stop':
+      if (state.olderHidden > 0) return { error: "not_own: the run's own message is not on screen" };
       try {
         decisions.chooseStop(screenNodes(false), args[0], args[1]);
       } catch (error) {

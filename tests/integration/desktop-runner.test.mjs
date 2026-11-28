@@ -1333,6 +1333,51 @@ test('a run that finds the app lock held by a live run acting in phases waits fo
   assert.ok(Date.now() - started >= 1_000, 'it waited for the other run');
 });
 
+// A long turn: the app shows only its last 50 steps, and the run's own message
+// lies before them until "Load older messages" is pressed.
+test('a run whose own message the app has not loaded loads older messages before it reads or presses', async () => {
+  const onScreen = setup({ runningPolls: 2, reply: 'READY', olderHidden: 2 });
+  const first = await run(onScreen);
+  assert.equal(first.envelope.status, 'success', first.envelope.warnings.join(' | '));
+  assert.equal(onScreen.fake().olderPresses, 2);
+  const detached = settled({ runningPolls: 4, reply: 'READY', olderHidden: 3 });
+  const second = await run(detached);
+  assert.equal(second.envelope.status, 'success', second.envelope.warnings.join(' | '));
+  assert.ok(names(detached).includes('open-row'));
+  assert.equal(detached.fake().olderPresses, 3);
+  for (const context of [onScreen, detached]) assertCleanedUp(context);
+});
+
+test('older messages are loaded at most 8 times per conversation opened, and a run that never finds its message reads nothing', async () => {
+  const context = settled({ runningPolls: 3, reply: 'READY', olderHidden: 40 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(!names(context).includes('copy-reply'));
+  // At most 8 while opening the row, and 8 more before Stop.
+  assert.ok(context.fake().olderPresses <= 16, `${context.fake().olderPresses} presses`);
+});
+
+test('a cancel on screen loads older messages before it presses Stop in its own conversation', { skip: process.platform === 'win32' }, async () => {
+  // Polls far apart, so the signal comes before any poll has loaded them.
+  const context = setup({ stuck: true, olderHidden: 2 });
+  context.env.AGYBIRD_DESKTOP_POLL_MS = '5000';
+  const { child, done } = start(context);
+  while (context.fake().sent !== true) await new Promise((resolve) => setTimeout(resolve, 20));
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  assert.equal(context.fake().olderPresses, 2, 'loaded on the way out');
+  assert.equal(context.fake().stopped, true, envelope.warnings.join(' | '));
+});
+
+test('a kept lock whose long conversation is on screen idle is freed by the sidebar, with nothing pressed', async () => {
+  const context = setup({ runningPolls: 1, earlier: { title: 'Gone Task - ws - Antigravity', running: false, message: OWN }, olderHidden: 99, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE, project: 'ws' }));
+  const { envelope } = await run(context);
+  assert.ok(names(context).indexOf('load-older') < 0 || names(context).indexOf('load-older') > names(context).indexOf('send'), 'no press before the lock');
+  assert.notEqual(envelope.evidence.blocked_reason, 'locked', envelope.warnings.join(' | '));
+});
+
 // Archiving finished conversations (finolabs/agybird#62).
 test('with archiving on, a finished run archives its own conversation from the sidebar', async () => {
   const context = setup({ runningPolls: 1, reply: 'READY' });
@@ -1385,3 +1430,14 @@ test('--archive-finished archives listed conversations that are alone and Idle, 
   for (const name of ['front', 'open-row', 'snapshot']) assert.ok(!names(context).includes(name), `no ${name}`);
   assert.equal(existsSync(lockFile(context)), false);
 });
+
+test('a read that redraws without the run\'s message decides nothing; three in a row end the run unread', async () => {
+  const once = setup({ runningPolls: 3, reply: 'READY', unmarkedReads: 2 });
+  const passed = await run(once);
+  assert.equal(passed.envelope.status, 'success', passed.envelope.warnings.join(' | '));
+  const gone = setup({ runningPolls: 6, reply: 'READY', unmarkedReads: 9 });
+  const failed = await run(gone);
+  assert.equal(failed.envelope.status, 'error');
+  assert.ok(!names(gone).includes('copy-reply'));
+});
+
