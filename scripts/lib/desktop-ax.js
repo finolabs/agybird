@@ -408,32 +408,47 @@ function chooseProjectItem(nodes, project, read) {
 // sits under: `In Progress` (the agent works), `Blocked` (it waits for the
 // user) or `Idle`. A row is a link titled with the conversation's title whose
 // row group also shows the project's name. Rows under no status heading
-// (pinned ones) have a null status.
+// (pinned ones) have a null status. Only the one group labelled `Sidebar` is
+// read: a conversation's own text (rendered Markdown, links included) can
+// show the same headings and links, and is never taken for a row.
 const SIDEBAR_STATUSES = ['In Progress', 'Blocked', 'Idle'];
+function sidebarRange(nodes) {
+  const groups = [];
+  nodes.forEach((node, index) => {
+    if (node.role === 'AXGroup' && node.label === 'Sidebar') groups.push(index);
+  });
+  return groups.length === 1 ? { start: groups[0] + 1, end: subtreeEnd(nodes, groups[0]) } : null;
+}
 function sidebarRows(nodes, read) {
   const textOf = read || readNode;
   const rows = [];
+  const range = sidebarRange(nodes);
+  if (!range) return rows;
   let status = null;
-  nodes.forEach((node, index) => {
+  for (let index = range.start; index < range.end; index += 1) {
+    const node = nodes[index];
     if (node.role === 'AXHeading') {
       if (SIDEBAR_STATUSES.indexOf(node.label) >= 0) status = node.label;
       else if (/Conversations$/.test(node.label)) status = null;
-      return;
+      continue;
     }
-    if (node.role !== 'AXLink' || !node.label) return;
+    if (node.role !== 'AXLink' || !node.label) continue;
     const row = parentOf(nodes, index);
-    if (row < 0) return;
+    if (row < range.start) continue;
     const texts = [];
     for (let at = row + 1; at < subtreeEnd(nodes, row); at += 1) if (nodes[at].role === 'AXStaticText') texts.push(String(textOf(nodes[at])).trim());
     if (texts.length >= 2 && texts[0] === node.label) rows.push({ index, title: node.label, project: texts[1], status });
-  });
+  }
   return rows;
 }
 
 // The sidebar rows of `title` in `project`, with whether the read showed any
-// status heading at all (a sidebar grouped some other way shows none).
+// status heading in the sidebar at all (a sidebar grouped some other way, or
+// no single sidebar, shows none).
 function sidebarState(nodes, title, project, read) {
-  const grouped = nodes.some((node) => node.role === 'AXHeading' && SIDEBAR_STATUSES.indexOf(node.label) >= 0);
+  const range = sidebarRange(nodes);
+  let grouped = false;
+  if (range) for (let at = range.start; at < range.end; at += 1) if (nodes[at].role === 'AXHeading' && SIDEBAR_STATUSES.indexOf(nodes[at].label) >= 0) grouped = true;
   const rows = sidebarRows(nodes, read).filter((row) => row.title === title && row.project === project);
   return { grouped, rows };
 }
@@ -931,15 +946,21 @@ const COMMANDS = {
   },
   // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
   // the view changes, the front does not.
-  'open-row'(app, title, project, n) {
-    if (!title || !project) throw new Error('usage: open-row <title> <project> <n>');
+  'open-row'(app, name, project, n) {
+    if (!name || !project) throw new Error('usage: open-row <title> <project> <n>');
     const nodes = tree(app);
     if (nodes.truncated) throw new Error('truncated');
-    const rows = sidebarState(nodes, title, project, staticText).rows;
+    const rows = sidebarState(nodes, name, project, staticText).rows;
     const row = rows[Number(n) || 0];
-    if (!row) throw new Error(`not_found: sidebar row ${title}`);
+    if (!row) throw new Error(`not_found: sidebar row ${name}`);
     press(nodes[row.index], 'sidebar row');
-    delay(0.6);
+    // The view switch lands asynchronously: wait until the window shows the
+    // row's conversation, or 3 s; the runner checks the title and marker itself.
+    for (const until = Date.now() + 3000; Date.now() < until;) {
+      delay(0.2);
+      const shown = title(tree(app));
+      if (shown && shown.indexOf(`${name} - ${project} - `) === 0) break;
+    }
     return { ok: true, rows: rows.length };
   },
   stop(app, expectedTitle, nonce) {

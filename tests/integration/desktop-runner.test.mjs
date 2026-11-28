@@ -1179,14 +1179,38 @@ test('a sixth desktop run is refused before it touches the app', async () => {
   assert.equal(existsSync(lockFile(context)), false);
 });
 
-test('a run record of a process that is gone does not count, and a run removes its own', async () => {
+test('a run record of a process that is gone is removed, and a run removes its own', async () => {
   const context = setup({ runningPolls: 1 });
   const runs = join(context.stateDir, 'desktop-runs');
   mkdirSync(runs, { recursive: true });
   for (let n = 0; n < 5; n += 1) writeFileSync(join(runs, `gone${n}.json`), JSON.stringify({ pid: 999999, marker: `gone${n}` }));
+  // Not records: a part written by a run killed while writing, and Finder's file.
+  writeFileSync(join(runs, 'part.json'), '{"pid": 12');
+  writeFileSync(join(runs, '.DS_Store'), 'x');
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
-  assert.equal(readdirSync(runs).length, 5, 'its own record is gone');
+  assert.deepEqual(readdirSync(runs).sort(), ['.DS_Store', 'part.json']);
+});
+
+test('a gone run whose task the app may still run keeps its place until the sidebar shows it Idle', async () => {
+  const runs = (context) => join(context.stateDir, 'desktop-runs');
+  const keptRecords = (context, title) => {
+    mkdirSync(runs(context), { recursive: true });
+    for (let n = 0; n < 5; n += 1) writeFileSync(join(runs(context), `kept${n}.json`), JSON.stringify({ pid: 999999, marker: `kept${n}`, project: 'ws', title, app: true }));
+  };
+  // Its conversation is not in the sidebar: the places stay taken.
+  const going = setup({ runningPolls: 1 });
+  keptRecords(going, 'Gone Task - ws - Antigravity');
+  const refused = (await run(going)).envelope;
+  assert.equal(refused.evidence.blocked_reason, 'too_many_runs');
+  assert.ok(refused.warnings.some((warning) => /5 of them ended without stopping their task/.test(warning)), JSON.stringify(refused.warnings));
+  assert.equal(readdirSync(runs(going)).length, 5);
+  // The sidebar shows the kept conversation alone and Idle: the records go.
+  const done = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  keptRecords(done, 'Gone Task - ws - Antigravity');
+  const { envelope } = await run(done);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(readdirSync(runs(done)).length, 0);
 });
 
 test('an interim message while the sidebar still shows the turn In Progress is never returned', async () => {
@@ -1210,6 +1234,45 @@ test('a run cancelled while it waits takes the app back and presses Stop in its 
   assert.equal(existsSync(lockFile(context)), false);
 });
 
+test('a run whose row leaves the sidebar while it waits ends after 3 reads, and the lock does not stay', async () => {
+  const context = settled({ stuck: true, sidebarMissingAfter: 2 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /did not list the run's conversation/.test(warning)), JSON.stringify(envelope.warnings));
+  const order = names(context);
+  assert.ok(!order.slice(order.indexOf('send')).includes('open-row'), 'no row to open');
+  // The app was taken back without waiting on its own lock, and Stop went only to its own conversation.
+  assert.equal(context.fake().stopped, true);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a cancel while it waits ends within the companion grace even when the row hangs', { skip: process.platform === 'win32' }, async () => {
+  const context = settled({ stuck: true, delays: { 'open-row': 30_000 } });
+  const { child, done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  const signalled = Date.now();
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.ok(Date.now() - signalled < 18_000, `ended ${Date.now() - signalled} ms after the signal`);
+  assert.equal(envelope.status, 'error');
+});
+
+test('a sidebar read that fails decides nothing about the end of the turn', async () => {
+  const context = setup({ runningPolls: 0, sidebarErrors: 2, reply: 'FINAL' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  const order = names(context);
+  assert.ok(order.slice(0, order.indexOf('copy-reply')).filter((name) => name === 'sidebar-state').length >= 3);
+});
+
+test('a resumed approval opens its conversation from the sidebar when another one is on screen', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, runningPolls: 1, reply: 'done', shownElsewhere: 'Other Chat' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  const order = names(context);
+  assert.ok(order.indexOf('open-row') >= 0 && order.indexOf('open-row') < order.indexOf('answer'));
+});
+
 test('a sidebar with no status groups keeps the run on screen with the app lock held', async () => {
   const context = settled({ runningPolls: 3, sidebarUngrouped: true });
   const { envelope } = await run(context);
@@ -1217,13 +1280,13 @@ test('a sidebar with no status groups keeps the run on screen with the app lock 
   assert.ok(!names(context).includes('open-row'));
 });
 
-test('a run that finds the app lock held by a live run with a run record waits for it', async () => {
+test('a run that finds the app lock held by a live run acting in phases waits for it', async () => {
   const context = setup({ runningPolls: 1 });
   const runs = join(context.stateDir, 'desktop-runs');
   mkdirSync(runs, { recursive: true });
   const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)']);
   writeFileSync(join(runs, 'other.json'), JSON.stringify({ pid: holder.pid, marker: 'other' }));
-  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000 }));
+  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000, runs: true }));
   const started = Date.now();
   const { envelope } = await run(context);
   assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));

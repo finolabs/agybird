@@ -41,7 +41,8 @@ export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
 // agybird:desktop-start
 export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
 // Longer than the most a signalled desktop runner's cleanup can take: its
-// bridge calls are bounded to 16 s together (desktop.mjs).
+// bridge calls are bounded to 16 s together, or 18 s from the signal for a run
+// that first takes the app back from other runs (desktop.mjs).
 export const DESKTOP_STOP_GRACE_MS = 20_000;
 // agybird:desktop-end
 const COMPANION_PATH = fileURLToPath(import.meta.url);
