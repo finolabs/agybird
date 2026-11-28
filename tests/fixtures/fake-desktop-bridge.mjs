@@ -54,7 +54,9 @@
 // the branch (branch; default main). The open project picker lists
 // pickerProjects (default [project]) filtered by its search; pickerNoop leaves
 // the picker unchanged when an item is pressed; locationAfterOpen is where the
-// agent runs once the conversation has opened. Every press of the flow is
+// agent runs once the conversation has opened; titleWhileMenuOpen is the
+// conversation the app shows once the project menu is open; sidebarExtra adds a
+// sidebar entry (MARKER: one holding the run's marker). Every press of the flow is
 // recorded in `pressed`. A turn shows Cancel (⌃C) instead of Stop execution and
 // its reply as several groups.
 
@@ -129,6 +131,7 @@ function isStopNode(node) {
 }
 
 function title() {
+  if (state.menuOpen && state.titleWhileMenuOpen) return state.titleWhileMenuOpen;
   if (!state.sent && state.earlier) return state.earlier.title;
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
   if (state.rivalDuringNaming) return `${state.rivalDuringNaming} - ${state.project} - Antigravity`;
@@ -226,7 +229,14 @@ function sidebar236() {
     { depth: 2, role: 'AXGroup', label: 'Sidebar' },
     ...Array.from({ length: state.newConversationLinks ?? 1 }, () => ({ depth: 3, role: 'AXLink', label: 'New Conversation' })),
     ...listed().map((value) => ({ depth: 3, role: 'AXStaticText', label: '', value })),
+    // A sidebar entry whose text holds a run marker (MARKER: the marker of the run in flight).
+    ...(state.sidebarExtra ? [{ depth: 3, role: 'AXStaticText', label: '', value: state.sidebarExtra === 'MARKER' ? `Chat ${runMarker()}` : state.sidebarExtra }] : []),
   ];
+}
+
+// The marker line of the prompt the run sent, read from the composer it pasted.
+function runMarker() {
+  return /\[agybird-run [0-9a-f]+\]/.exec(String(state.composer ?? state.clipboardWrites?.[0] ?? ''))?.[0] ?? '';
 }
 
 // The 2.36 composer's pickers, with the project picker's menu while it is open.

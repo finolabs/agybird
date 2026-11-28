@@ -456,3 +456,22 @@ test('on 2.36 the reply is every group after "Agent said", up to its response ac
   const echoed = conversation236('Another task.', { replyTexts: ['READY', MARK] });
   assert.throws(() => requireOwn(echoed, TITLE, NONCE), /not_own/);
 });
+
+test('on 2.36 a marker in the sidebar, inside the titled web area, is not the conversation\'s own message', () => {
+  // Another conversation, unmarked, while the sidebar lists a chat whose title holds the run's marker.
+  const nodes = conversation236('Another task.');
+  const sidebarAt = nodes.findIndex((entry) => entry.role === 'AXWebArea' && entry.label === TITLE) + 1;
+  nodes.splice(sidebarAt, 0, node(2, 'AXGroup', 'Sidebar'), node(3, 'AXLink', 'New Conversation'), node(3, 'AXStaticText', '', `Chat ${MARK}`));
+  assert.throws(() => requireOwn(nodes, TITLE, NONCE), /not_own/);
+  assert.equal(namedConversation(nodes, 'Antigravity', 'ws', NONCE), null);
+  // The run's own message still counts with the same sidebar beside it.
+  const own = conversation236(`Say READY.\n${MARK}`);
+  own.splice(sidebarAt, 0, node(2, 'AXGroup', 'Sidebar'), node(3, 'AXStaticText', '', 'Other Chat'));
+  assert.doesNotThrow(() => requireOwn(own, TITLE, NONCE));
+});
+
+test('the project menu is searched and pressed only in the untitled new conversation', () => {
+  const titled = newConversation236({ windowTitle: TITLE, menu: ['agybird'] });
+  assert.throws(() => chooseProjectSearch(titled), /other_conversation/);
+  assert.throws(() => chooseProjectItem(titled, 'agybird'), /other_conversation/);
+});

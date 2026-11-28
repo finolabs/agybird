@@ -950,3 +950,23 @@ test('a kept app lock is released once the app shows its renamed conversation wi
   appLock(going, Date.now() - 1);
   assert.equal((await run(going)).envelope.evidence.blocked_reason, 'locked');
 });
+
+test('on 2.36 a switch to a titled conversation while the project menu is open searches and presses nothing there', async () => {
+  const context = setup({ version: '2.36.0', pickerCurrent: 'studio', pickerProjects: NEAR_NAMES, titleWhileMenuOpen: 'Other Chat - ws - Antigravity' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /other_conversation/.test(warning)), JSON.stringify(envelope.warnings));
+  assert.deepEqual(context.fake().pressed, ['New Conversation', 'Select project, current: studio']);
+  assert.ok(!names(context).includes('paste-input'));
+  assertCleanedUp(context);
+});
+
+test('on 2.36 a marker in a sidebar title neither follows a rename into another conversation nor frees a kept lock', async () => {
+  const marked = setup({ version: '2.36.0', pickerProjects: ['ws'], runningPolls: 5, renameAfter: 1, renamed: 'Agybird CLI Ready Check', renamedMessage: 'Another task of the user.', sidebarExtra: 'MARKER' });
+  const { envelope } = await run(marked);
+  assert.equal(envelope.status, 'error', JSON.stringify(envelope.warnings));
+  assert.ok(!names(marked).includes('copy-reply') && !names(marked).includes('stop'));
+  const kept = setup({ version: '2.36.0', earlier: { title: 'Agybird CLI Ready Check - ws - Antigravity', running: false, message: 'Another task of the user.' }, sidebarExtra: OWN });
+  appLock(kept, Date.now() + 60 * 60_000);
+  assert.equal((await run(kept)).envelope.evidence.blocked_reason, 'locked');
+});

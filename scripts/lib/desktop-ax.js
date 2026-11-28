@@ -119,7 +119,7 @@ function marker(nonce) {
 
 // Whether the conversation on screen shows the run's own message: the text of
 // the titled web area (the conversation the title names), outside the agent's
-// replies, holds the run's marker. Only the run's prompt carries that marker,
+// replies and the sidebar, holds the run's marker. Only the run's prompt carries that marker,
 // so another conversation, a namesake included, does not; an agent repeating
 // it in a reply does not count. The marker is the message's last line, so the
 // texts are read from the end, and the first one holding it, alone or joined
@@ -135,6 +135,10 @@ function ownConversation(nodes, nonce, read) {
     const node = nodes[at];
     if (node.role === 'AXHeading' && node.label === 'Agent said') {
       at = replyEnd(nodes, at, end) - 1;
+    } else if (node.role === 'AXGroup' && node.label === 'Sidebar') {
+      // 2.36 draws the sidebar inside the titled web area; its conversation
+      // titles are not this conversation's text.
+      at = subtreeEnd(nodes, at) - 1;
     } else if (node.role === 'AXStaticText') {
       texts.push(node);
     }
@@ -352,6 +356,8 @@ function requireLocal(nodes) {
 // The open project picker of the new conversation: the one menu labelled
 // `Select project, current: …`, as the range [start, end) of its subtree.
 function projectMenu(nodes) {
+  // Only while the untitled new conversation shows, as choosePicker requires.
+  if (title(nodes) !== UNTITLED) throw new Error('other_conversation');
   const found = withinConversation(nodes, (node) => node.role === 'AXMenu' && node.label.startsWith('Select project, current: '), 'project picker');
   if (found.length === 0) throw new Error('not_found: project picker');
   if (found.length > 1) throw new Error('several_controls: project picker');
