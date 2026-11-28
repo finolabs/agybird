@@ -44,6 +44,7 @@ test('parses the complete supported argument surface', () => {
     newSession: false,
     noRecord: false,
     swarm: false,
+    review: false,
     timeout: '45s',
   });
   assert.doesNotThrow(() => validateRequest(options));
