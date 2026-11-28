@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -136,6 +136,36 @@ test('a clipboard restore whose write fails is reported, never taken as restored
   assert.ok(envelope.warnings.some((warning) => /clipboard could not be restored/.test(warning)), envelope.warnings.join(' | '));
 });
 
+test('an agent question is reported for the user to answer in the app, never as a permission prompt', async () => {
+  const context = setup({ dialog: { question: 'Which color do you prefer?', options: ['1 Red', '2 Blue', '3 Other (write your answer)'] } });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'agent_question');
+  assert.deepEqual(envelope.permission_requests, []);
+  assert.deepEqual(envelope.evidence.agent_question.options, ['1 Red', '2 Blue', '3 Other (write your answer)']);
+  assert.ok(!names(context).includes('answer') && !names(context).includes('stop'));
+  assertCleanedUp(context);
+});
+
+test('a switch to the app that leaves it behind ends the run before a conversation opens', async () => {
+  const context = setup({ frontFails: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /did not come to the front/.test(warning)), envelope.warnings.join(' | '));
+  for (const name of ['new-conversation', 'clipboard-set', 'paste-input', 'send']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assertCleanedUp(context);
+});
+
+test('a paste refused before it pastes leaves no prompt behind and warns of none', async () => {
+  const context = setup({ frontLostBeforePaste: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(!order.includes('clear-input') && !order.includes('send'));
+  assert.ok(!envelope.warnings.some((warning) => /left unsent|may still be in the Antigravity app input/.test(warning)), envelope.warnings.join(' | '));
+  assert.equal(context.fake().clipboard, 'user clipboard');
+});
+
 test('a user who keeps typing past the wait is never interrupted: blocked, nothing touched', async () => {
   const context = setup({ idleSeq: [0.1] });
   context.env.AGYBIRD_DESKTOP_IDLE_WAIT_MS = '50';
@@ -194,7 +224,6 @@ test('preflight blocks with a specific reason and leaves no lock', async () => {
     [{ trusted: false }, {}, 'not_trusted'],
     [{ version: '2.40.0' }, {}, 'unsupported_version'],
     [{ missingLabel: 'Select model' }, {}, 'labels_missing'],
-    [{}, { projects: [] }, 'no_project'],
     [{}, { projects: ['ws', 'ws'] }, 'ambiguous_project'],
   ];
   for (const [state, projectOptions, reason] of cases) {
@@ -206,6 +235,50 @@ test('preflight blocks with a specific reason and leaves no lock', async () => {
     assert.ok(!names(context).includes('send'), reason);
     assert.equal(existsSync(join(context.stateDir, 'desktop.lock')), false, reason);
   }
+});
+
+const projectFiles = (context) => readdirSync(context.env.AGYBIRD_PROJECTS_DIR).map((entry) => JSON.parse(readFileSync(join(context.env.AGYBIRD_PROJECTS_DIR, entry), 'utf8')));
+
+test('a folder no project points at gets one, named after it, and the next run reuses it', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const first = await run(context);
+  assert.equal(first.envelope.status, 'success', first.envelope.warnings.join(' | '));
+  const name = basename(context.cwd);
+  assert.equal(first.envelope.evidence.project_created, true);
+  assert.equal(first.envelope.evidence.project, name);
+  assert.deepEqual(context.fake().calls.find((call) => call[0] === 'new-conversation'), ['new-conversation', name]);
+  const [created] = projectFiles(context);
+  assert.equal(created.projectResources.resources[0].gitFolder.folderUri, pathToFileURL(context.cwd).href);
+  const second = await run(context);
+  assert.equal(second.envelope.evidence.project_created, undefined);
+  assert.equal(projectFiles(context).length, 1, 'no second project');
+});
+
+test('a new project never takes a name another project has', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const name = basename(context.cwd);
+  writeFileSync(join(context.env.AGYBIRD_PROJECTS_DIR, 'other.json'), JSON.stringify({ id: 'other', name, projectResources: { resources: [{ gitFolder: { folderUri: 'file:///elsewhere' } }] } }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.evidence.project, `${name}-2`);
+});
+
+test('a linked worktree gets its own project named <repo>-<worktree>', async () => {
+  const context = setup({ runningPolls: 1 }, { projects: [] });
+  const worktree = join(mkdtempSync(join(tmpdir(), 'agybird-dr-wt-')), 'feature-x');
+  git(context.cwd, 'worktree', 'add', '-q', '-b', 'feature-x', worktree);
+  const { envelope } = await start({ ...context, cwd: worktree }).done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.evidence.project, `${basename(context.cwd)}-feature-x`);
+  assert.ok(projectFiles(context).some((project) => project.projectResources.resources[0].gitFolder.folderUri === pathToFileURL(realpathSync(worktree)).href || project.projectResources.resources[0].gitFolder.folderUri === pathToFileURL(worktree).href));
+});
+
+test('a created project the app does not list blocks with nothing pasted', async () => {
+  const context = setup({ notListed: true }, { projects: [] });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'project_not_listed');
+  assert.ok(!names(context).includes('clipboard-set'));
+  assertCleanedUp(context);
 });
 
 test('an app version outside the tested range runs when the user confirmed it', async () => {
@@ -383,8 +456,10 @@ test('a cancel during the clipboard restore before Send clears the composer, pre
 });
 
 test('a cancel during a slow restore after the paste leaves the prompt unsent instead of overrunning the grace', { skip: process.platform === 'win32' }, async () => {
-  // The restore under way when the signal comes takes 5.8 s; clearing could take 14 s more, past the 18 s budget.
-  const context = setup({ delays: { 'clipboard-restore': 2_900, restore: 2_900 } });
+  // The restore under way when the signal comes takes about 5 s (each step well
+  // inside its 3 s timeout, even on a slow runner); clearing could take 14 s
+  // more, past the 18 s budget.
+  const context = setup({ delays: { 'clipboard-restore': 2_400, restore: 2_400 } });
   const { child, done } = start(context);
   await waitFor(context, 'clipboard-restore');
   const started = Date.now();
@@ -1068,4 +1143,192 @@ test('on 2.36 a marker in a sidebar title neither follows a rename into another 
   const kept = setup({ version: '2.36.0', earlier: { title: 'Agybird CLI Ready Check - ws - Antigravity', running: false, message: 'Another task of the user.' }, sidebarExtra: OWN });
   appLock(kept, Date.now() + 60 * 60_000);
   assert.equal((await run(kept)).envelope.evidence.blocked_reason, 'locked');
+});
+
+// Runs that wait with the app free (docs/specs/desktop-sessions.md, B1–B5, C4).
+const sidebarReads = (context) => names(context).filter((name) => name === 'sidebar-state').length;
+const settled = (state) => {
+  const context = setup(state);
+  context.env.AGYBIRD_DESKTOP_SETTLE_MS = '0';
+  return context;
+};
+
+test('once its title settles, a run waits on its sidebar row with the app lock released', async () => {
+  const context = settled({ runningPolls: 6, reply: 'READY', delays: { 'sidebar-state': 120 } });
+  const { done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(existsSync(lockFile(context)), false, 'no lock while the agent works');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.response, 'READY');
+  const order = names(context);
+  assert.ok(order.indexOf('open-row') > order.indexOf('send'), 'the conversation was opened from the sidebar for the result');
+  assert.ok(order.indexOf('copy-reply') > order.indexOf('open-row'));
+  assertCleanedUp(context);
+});
+
+test('a run whose app another run took meanwhile waits for it, then reads its own result', async () => {
+  const context = settled({ runningPolls: 8, reply: 'READY' });
+  const { done } = start(context);
+  while (sidebarReads(context) < 2 || existsSync(lockFile(context))) await new Promise((resolve) => setTimeout(resolve, 20));
+  // A run of an older version takes the free app and holds it for its turn.
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2500)']);
+  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000 }));
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(envelope.response, 'READY');
+  assertCleanedUp(context);
+});
+
+test('a sixth desktop run is refused before it touches the app', async () => {
+  const context = setup();
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  for (let n = 0; n < 5; n += 1) writeFileSync(join(runs, `run${n}.json`), JSON.stringify({ pid: process.pid, marker: `run${n}` }));
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'blocked');
+  assert.equal(envelope.evidence.blocked_reason, 'too_many_runs');
+  for (const name of ['front', 'clipboard-get', 'new-conversation']) assert.ok(!names(context).includes(name), `no ${name}`);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a run record of a process that is gone is removed, and a run removes its own', async () => {
+  const context = setup({ runningPolls: 1 });
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  for (let n = 0; n < 5; n += 1) writeFileSync(join(runs, `gone${n}.json`), JSON.stringify({ pid: 999999, marker: `gone${n}` }));
+  // Not records: a part written by a run killed while writing, and Finder's file.
+  writeFileSync(join(runs, 'part.json'), '{"pid": 12');
+  writeFileSync(join(runs, '.DS_Store'), 'x');
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.deepEqual(readdirSync(runs).sort(), ['.DS_Store', 'part.json']);
+});
+
+test('a gone run whose task the app may still run keeps its place until the sidebar shows it Idle', async () => {
+  const runs = (context) => join(context.stateDir, 'desktop-runs');
+  const keptRecords = (context, title) => {
+    mkdirSync(runs(context), { recursive: true });
+    for (let n = 0; n < 5; n += 1) writeFileSync(join(runs(context), `kept${n}.json`), JSON.stringify({ pid: 999999, marker: `kept${n}`, project: 'ws', title, app: true }));
+  };
+  // Its conversation is not in the sidebar: the places stay taken.
+  const going = setup({ runningPolls: 1 });
+  keptRecords(going, 'Gone Task - ws - Antigravity');
+  const refused = (await run(going)).envelope;
+  assert.equal(refused.evidence.blocked_reason, 'too_many_runs');
+  assert.ok(refused.warnings.some((warning) => /5 of them ended without stopping their task/.test(warning)), JSON.stringify(refused.warnings));
+  assert.equal(readdirSync(runs(going)).length, 5);
+  // The sidebar shows the kept conversation alone and Idle: the records go.
+  const done = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  keptRecords(done, 'Gone Task - ws - Antigravity');
+  const { envelope } = await run(done);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.equal(readdirSync(runs(done)).length, 0);
+});
+
+test('an interim message while the sidebar still shows the turn In Progress is never returned', async () => {
+  const context = setup({ runningPolls: 0, sidebarLag: 3, reply: 'FINAL' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success');
+  const order = names(context);
+  assert.ok(order.slice(0, order.indexOf('copy-reply')).filter((name) => name === 'sidebar-state').length >= 4, 'waited for the sidebar to show it Idle');
+});
+
+test('a run cancelled while it waits takes the app back and presses Stop in its own conversation', { skip: process.platform === 'win32' }, async () => {
+  const context = settled({ stuck: true });
+  const { child, done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.equal(envelope.status, 'error');
+  const order = names(context);
+  assert.ok(order.lastIndexOf('open-row') < order.lastIndexOf('stop'), 'opened, then Stop');
+  assert.equal(context.fake().stopped, true);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a conversation opened from the sidebar is read again until the view has switched', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, runningPolls: 1, reply: 'done', shownElsewhere: 'Other Chat', openRowLag: 2 });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  assert.equal(context.fake().opened, 1, 'one press, then reads');
+});
+
+test('a kept app lock is freed when the sidebar shows its conversation alone and Idle while another one is on screen', async () => {
+  const kept = (context, extra = {}) => writeFileSync(lockFile(context), JSON.stringify({ pid: 999999999, expiresAt: Date.now() + 60 * 60_000, app: true, conversation: 'Gone Task - ws - Antigravity', marker: NONCE, project: 'ws', ...extra }));
+  const context = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  kept(context);
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  const busy = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['In Progress'] } });
+  kept(busy);
+  assert.equal((await run(busy)).envelope.evidence.blocked_reason, 'locked');
+  // A lock that did not record its project is left to the screen or the user.
+  const unnamed = setup({ runningPolls: 1, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  kept(unnamed, { project: undefined });
+  assert.equal((await run(unnamed)).envelope.evidence.blocked_reason, 'locked');
+  // The kept conversation on screen, still running: the sidebar is never asked.
+  const running = setup({ runningPolls: 1, earlier: { title: 'Gone Task - ws - Antigravity', running: true, message: OWN }, sidebarRows: { 'Gone Task|ws': ['Idle'] } });
+  kept(running);
+  assert.equal((await run(running)).envelope.evidence.blocked_reason, 'locked');
+  assert.ok(!names(running).includes('sidebar-state'));
+});
+
+test('a run whose row leaves the sidebar while it waits ends after 3 reads, and the lock does not stay', async () => {
+  const context = settled({ stuck: true, sidebarMissingAfter: 2 });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'error');
+  assert.ok(envelope.warnings.some((warning) => /did not list the run's conversation/.test(warning)), JSON.stringify(envelope.warnings));
+  const order = names(context);
+  assert.ok(!order.slice(order.indexOf('send')).includes('open-row'), 'no row to open');
+  // The app was taken back without waiting on its own lock, and Stop went only to its own conversation.
+  assert.equal(context.fake().stopped, true);
+  assert.equal(existsSync(lockFile(context)), false);
+});
+
+test('a cancel while it waits ends within the companion grace even when the row hangs', { skip: process.platform === 'win32' }, async () => {
+  const context = settled({ stuck: true, delays: { 'open-row': 30_000 } });
+  const { child, done } = start(context);
+  while (sidebarReads(context) < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+  const signalled = Date.now();
+  child.kill('SIGTERM');
+  const { envelope } = await done;
+  assert.ok(Date.now() - signalled < 18_000, `ended ${Date.now() - signalled} ms after the signal`);
+  assert.equal(envelope.status, 'error');
+});
+
+test('a sidebar read that fails decides nothing about the end of the turn', async () => {
+  const context = setup({ runningPolls: 0, sidebarErrors: 2, reply: 'FINAL' });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  const order = names(context);
+  assert.ok(order.slice(0, order.indexOf('copy-reply')).filter((name) => name === 'sidebar-state').length >= 3);
+});
+
+test('a resumed approval opens its conversation from the sidebar when another one is on screen', async () => {
+  const context = setup({ sent: true, project: 'ws', message: OWN, dialog: DIALOG, runningPolls: 1, reply: 'done', shownElsewhere: 'Other Chat' });
+  const { envelope } = await run(context, ['--resume-dialog', DIALOG.question, '--resume-title', TITLE, '--resume-marker', NONCE]);
+  assert.equal(envelope.status, 'success', JSON.stringify(envelope.warnings));
+  const order = names(context);
+  assert.ok(order.indexOf('open-row') >= 0 && order.indexOf('open-row') < order.indexOf('answer'));
+});
+
+test('a sidebar with no status groups keeps the run on screen with the app lock held', async () => {
+  const context = settled({ runningPolls: 3, sidebarUngrouped: true });
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.ok(!names(context).includes('open-row'));
+});
+
+test('a run that finds the app lock held by a live run acting in phases waits for it', async () => {
+  const context = setup({ runningPolls: 1 });
+  const runs = join(context.stateDir, 'desktop-runs');
+  mkdirSync(runs, { recursive: true });
+  const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)']);
+  writeFileSync(join(runs, 'other.json'), JSON.stringify({ pid: holder.pid, marker: 'other' }));
+  writeFileSync(lockFile(context), JSON.stringify({ pid: holder.pid, expiresAt: Date.now() + 60_000, runs: true }));
+  const started = Date.now();
+  const { envelope } = await run(context);
+  assert.equal(envelope.status, 'success', envelope.warnings.join(' | '));
+  assert.ok(Date.now() - started >= 1_000, 'it waited for the other run');
 });

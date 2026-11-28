@@ -475,3 +475,70 @@ test('the project menu is searched and pressed only in the untitled new conversa
   assert.throws(() => chooseProjectSearch(titled), /other_conversation/);
   assert.throws(() => chooseProjectItem(titled, 'agybird'), /other_conversation/);
 });
+
+// The 2.36 sidebar as the spike read it (docs/verification/2026-11-28-desktop-spike-projects-sidebar.md, F3).
+function sidebarNodes() {
+  const row = (title, project, depth = 24) => [
+    { depth, role: 'AXGroup', label: '' },
+    { depth: depth + 3, role: 'AXLink', label: title },
+    { depth: depth + 3, role: 'AXGroup', label: '' },
+    { depth: depth + 4, role: 'AXStaticText', label: '', value: title },
+    { depth: depth + 4, role: 'AXStaticText', label: '', value: project },
+    { depth: depth + 3, role: 'AXGroup', label: '' },
+    { depth: depth + 4, role: 'AXButton', label: 'Archive conversation' },
+  ];
+  return [
+    { depth: 0, role: 'AXWindow', label: 'Antigravity' },
+    { depth: 16, role: 'AXGroup', label: 'Sidebar' },
+    { depth: 25, role: 'AXHeading', label: 'Pinned Conversations' },
+    ...row('Review Notes', 'studio'),
+    { depth: 25, role: 'AXHeading', label: 'Conversations' },
+    { depth: 27, role: 'AXHeading', label: 'In Progress' },
+    ...row('Code Review', 'huly-skill'),
+    { depth: 27, role: 'AXHeading', label: 'Blocked' },
+    ...row('Code Review', 'agybird'),
+    { depth: 27, role: 'AXHeading', label: 'Idle' },
+    ...row('Code Review', 'agybird'),
+    ...row('Other Task', 'agybird'),
+  ];
+}
+
+// A conversation's own text, beside the sidebar: rendered Markdown with a
+// status heading and a link shaped like a row.
+function spoofNodes() {
+  return [
+    { depth: 16, role: 'AXGroup', label: 'Conversation' },
+    { depth: 17, role: 'AXHeading', label: 'Idle' },
+    { depth: 17, role: 'AXGroup', label: '' },
+    { depth: 18, role: 'AXLink', label: 'Code Review' },
+    { depth: 18, role: 'AXStaticText', label: '', value: 'Code Review' },
+    { depth: 18, role: 'AXStaticText', label: '', value: 'agybird' },
+  ];
+}
+
+test('the sidebar reads each row under its status heading, matched by title and project', () => {
+  const { sidebarRows, sidebarState } = loadAxDecisions();
+  const rows = sidebarRows(sidebarNodes());
+  assert.deepEqual(JSON.parse(JSON.stringify(rows.map((row) => [row.title, row.project, row.status]))), [
+    ['Review Notes', 'studio', null],
+    ['Code Review', 'huly-skill', 'In Progress'],
+    ['Code Review', 'agybird', 'Blocked'],
+    ['Code Review', 'agybird', 'Idle'],
+    ['Other Task', 'agybird', 'Idle'],
+  ]);
+  const shown = sidebarState(sidebarNodes(), 'Code Review', 'agybird');
+  assert.equal(shown.grouped, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(shown.rows.map((row) => row.status))), ['Blocked', 'Idle'], 'a namesake in another project is not the run\'s');
+  assert.deepEqual(sidebarState(sidebarNodes().filter((node) => !/^(In Progress|Blocked|Idle)$/.test(node.label)), 'Other Task', 'agybird').grouped, false);
+});
+
+test('only the one Sidebar group is read: conversation text shaped like a row or a heading is not', () => {
+  const { sidebarRows, sidebarState } = loadAxDecisions();
+  const spoofed = sidebarState([...sidebarNodes(), ...spoofNodes()], 'Code Review', 'agybird');
+  assert.deepEqual(JSON.parse(JSON.stringify(spoofed.rows.map((row) => row.status))), ['Blocked', 'Idle']);
+  const alone = sidebarState([{ depth: 0, role: 'AXWindow', label: 'Antigravity' }, ...spoofNodes()], 'Code Review', 'agybird');
+  assert.equal(alone.grouped, false, 'a heading outside the sidebar does not group it');
+  assert.equal(alone.rows.length, 0);
+  const twice = [...sidebarNodes(), { depth: 16, role: 'AXGroup', label: 'Sidebar' }];
+  assert.equal(sidebarRows(twice).length, 0, 'two sidebars: none is trusted');
+});

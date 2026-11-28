@@ -49,7 +49,9 @@
 // probes report, the last repeated; default 60), locked (the screen is
 // locked), onScreen (an app window is on the Space shown; default true),
 // clipboardItems (every item of the clipboard, as clipboard-get saves it whole),
-// restoreFails (clipboard-restore answers ok false).
+// restoreFails (clipboard-restore answers ok false), frontFails (front leaves
+// the app behind), frontLostBeforePaste (another app is in front at the paste),
+// notListed (new-conversation finds no such project).
 // Each call records the app in front as it starts in frontmostAtCalls.
 //
 // A version of 2.36.x shows the 2.36 layout: one New Conversation link in the
@@ -141,6 +143,8 @@ function isStopNode(node) {
 }
 
 function title() {
+  // shownElsewhere: another conversation on screen until a sidebar row is opened.
+  if (state.shownElsewhere) return `${state.shownElsewhere} - ${state.project} - Antigravity`;
   if (state.menuOpen && state.titleWhileMenuOpen) return state.titleWhileMenuOpen;
   if (!state.sent && state.earlier) return state.earlier.title;
   if (!state.sent) return state.titleBeforeSend ?? 'Antigravity';
@@ -412,6 +416,13 @@ function answer() {
   if (!state.trusted) return { error: 'not_trusted' };
   switch (command) {
     case 'snapshot': {
+      // openRowLag: reads after open-row that still show the other conversation.
+      if (state.viewLag !== undefined) {
+        if (state.viewLag === 0) {
+          state.shownElsewhere = null;
+          delete state.viewLag;
+        } else state.viewLag -= 1;
+      }
       if (state.sent && state.failSnapshotAfterSend) return { error: 'snapshot_failed' };
       if (state.sent) state.polled = (state.polled ?? 0) + 1;
       const cutRead = Boolean(state.truncatedIn?.includes('snapshot')) || (Boolean(state.sent) && state.truncatedPolls > 0);
@@ -433,7 +444,7 @@ function answer() {
       const lagging = Boolean(state.sent) && state.lagLeft > 0;
       if (lagging) state.lagLeft -= 1;
       const found = state.sent && !lagging && waiting() ? decisions.dialogs(screenNodes(true))[0] : null;
-      const dialog = found ? { question: found.question, options: [...found.options] } : null;
+      const dialog = found ? { question: found.question, options: [...found.options], permission: found.permission } : null;
       const running = Boolean(state.sent) && !lagging && !dialog && (state.stuck || state.runningPolls > 0);
       if (running && !state.stuck) state.runningPolls -= 1;
       let reply = null;
@@ -454,6 +465,8 @@ function answer() {
       };
     }
     case 'new-conversation':
+      // notListed: the app does not list the project yet.
+      if (state.notListed) return { error: `not_found: project ${args[0]}` };
       if (pickerLayout()) {
         try {
           openWithPicker(args[0]);
@@ -466,14 +479,17 @@ function answer() {
       delete state.earlier;
       return { ok: true };
     case 'front':
-      state.frontmost = 'com.google.antigravity';
-      return { ok: true };
+      // frontFails: macOS keeps another app in front.
+      if (!state.frontFails) state.frontmost = 'com.google.antigravity';
+      return { ok: !state.frontFails };
     case 'restore':
       state.frontmost = args[0];
       return { ok: true };
     case 'paste-input': {
       const input = pick(args[0], 'Message input');
       if (input.error) return { error: input.error };
+      // frontLostBeforePaste: another app takes the front between the switch and the paste.
+      if (state.frontLostBeforePaste) state.frontmost = 'com.example.other';
       if (state.frontmost !== 'com.google.antigravity') return { error: 'not_frontmost' };
       const value = state.paste ?? state.clipboard;
       if (input.node.rival) state.rivalComposer = value;
@@ -554,6 +570,47 @@ function answer() {
       if (state.copyNoop) return { error: 'copy_unchanged' };
       state.clipboard = state.reply;
       return { ok: true, text: state.reply };
+    // The 2.36 sidebar row of the run's conversation, under its status. Each
+    // read counts as a poll of a running task. sidebarUngrouped: no status
+    // groups; sidebarLag: reads that still show In Progress after the turn
+    // ended; sidebarMissing: the row is not listed (sidebarMissingAfter: once
+    // more than that many reads were made); sidebarErrors: reads after Send
+    // that fail, as a cut-off tree does.
+    case 'sidebar-state': {
+      (state.sidebarReads ??= []).push(state.frontmost);
+      if (state.sent && state.sidebarErrors > 0) {
+        state.sidebarErrors -= 1;
+        return { error: 'truncated' };
+      }
+      const elsewhere = state.shownElsewhere;
+      state.shownElsewhere = null;
+      const own = title();
+      state.shownElsewhere = elsewhere;
+      const missing = state.sidebarMissing || (state.sidebarMissingAfter !== undefined && state.sidebarReads.length > state.sidebarMissingAfter);
+      if (state.sidebarUngrouped) return { grouped: false, statuses: [] };
+      // sidebarRows: statuses of other conversations, keyed "<name>|<project>".
+      if (state.sidebarRows?.[`${args[0]}|${args[1]}`]) return { grouped: true, statuses: state.sidebarRows[`${args[0]}|${args[1]}`] };
+      // The sidebar lists the conversation by its name, without " - <project> - Antigravity".
+      if (missing || !state.sent || `${args[0]} - ${args[1]} - Antigravity` !== own || args[1] !== state.project) return { grouped: true, statuses: [] };
+      if (waiting()) return { grouped: true, statuses: ['Blocked'] };
+      if (state.stuck) return { grouped: true, statuses: ['In Progress'] };
+      if (state.runningPolls > 0) {
+        state.runningPolls -= 1;
+        return { grouped: true, statuses: ['In Progress'] };
+      }
+      if (state.sidebarLag > 0) {
+        state.sidebarLag -= 1;
+        return { grouped: true, statuses: ['In Progress'] };
+      }
+      return { grouped: true, statuses: ['Idle'] };
+    }
+    case 'open-row':
+      if (state.openRowFails) return { error: 'not_found: sidebar row' };
+      (state.opened ??= 0);
+      state.opened += 1;
+      if (state.openRowLag > 0 && state.shownElsewhere) state.viewLag = state.openRowLag;
+      else state.shownElsewhere = null;
+      return { ok: true, rows: 1 };
     case 'stop':
       try {
         decisions.chooseStop(screenNodes(false), args[0], args[1]);

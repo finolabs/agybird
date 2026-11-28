@@ -258,14 +258,23 @@ export function ensureProject(cwd, directory = PROJECTS_DIRECTORY) {
   if (existing) {
     return { id: existing.document.id ?? basename(existing.path, '.json'), path: existing.path };
   }
+  return createProject(cwd, basename(cwd), { directory });
+}
+
+// Writes a new project for `cwd` under `name`, never over an existing file.
+// A repository is recorded as `gitFolder.folderUri`, any other folder as
+// `folderUri`, the two shapes findProjectForWorkspace reads.
+export function createProject(cwd, name, { directory = PROJECTS_DIRECTORY, git = true } = {}) {
+  mkdirSync(directory, { recursive: true });
   const id = `agybird-${randomUUID()}`;
   const path = join(directory, `${id}.json`);
+  const resource = git ? { gitFolder: { folderUri: workspaceUri(cwd) } } : { folderUri: workspaceUri(cwd) };
   writeFileSync(path, JSON.stringify({
     id,
-    name: basename(cwd),
-    projectResources: { resources: [{ gitFolder: { folderUri: workspaceUri(cwd) } }] },
+    name,
+    projectResources: { resources: [resource] },
     updatedAt: new Date().toISOString(),
-  }, null, 1));
+  }, null, 1), { flag: 'wx' });
   return { id, path };
 }
 

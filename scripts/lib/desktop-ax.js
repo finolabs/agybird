@@ -218,7 +218,9 @@ function dialogs(nodes, read) {
           parts.push(String(textOf(entry)));
         }
       }
-      found.push({ question: flatten(parts.join(' ')), options, option1, skip, submit: inside((entry) => isButton(entry, 'Submit')), ambiguous: firsts > 1 });
+      // Only a dialog whose option 1 is the app's permission answer is a
+      // permission prompt; an agent's own question ("1 Red", "2 Blue") is not.
+      found.push({ question: flatten(parts.join(' ')), options, option1, skip, submit: inside((entry) => isButton(entry, 'Submit')), ambiguous: firsts > 1, permission: option1 >= 0 && nodes[option1].label.trim() === OPTION_1 });
       return;
     }
   });
@@ -235,7 +237,11 @@ function chooseAnswer(nodes, option, question, expected, nonce, read) {
   const shown = dialogs(nodes, read);
   if (shown.length === 0) throw new Error('not_found: permission dialog');
   requireOwn(nodes, expected, nonce, read);
-  const asking = shown.filter((prompt) => prompt.question === question);
+  const matching = shown.filter((prompt) => prompt.question === question);
+  // A dialog whose option 1 is not the app's permission answer (an agent's own
+  // question, or a wider grant) is never answered.
+  if (matching.length > 0 && !matching.some((prompt) => prompt.permission)) throw new Error('not_found: option 1');
+  const asking = matching.filter((prompt) => prompt.permission);
   if (asking.length === 0) throw new Error('question_changed');
   if (asking.length > 1 || asking[0].ambiguous) throw new Error('several_dialogs');
   const prompt = asking[0];
@@ -398,6 +404,55 @@ function chooseProjectItem(nodes, project, read) {
   if (found.length > 1) throw new Error(`several_controls: project ${project}`);
   return found[0];
 }
+// The conversations the 2.36 sidebar lists, each with the status heading it
+// sits under: `In Progress` (the agent works), `Blocked` (it waits for the
+// user) or `Idle`. A row is a link titled with the conversation's title whose
+// row group also shows the project's name. Rows under no status heading
+// (pinned ones) have a null status. Only the one group labelled `Sidebar` is
+// read: a conversation's own text (rendered Markdown, links included) can
+// show the same headings and links, and is never taken for a row.
+const SIDEBAR_STATUSES = ['In Progress', 'Blocked', 'Idle'];
+function sidebarRange(nodes) {
+  const groups = [];
+  nodes.forEach((node, index) => {
+    if (node.role === 'AXGroup' && node.label === 'Sidebar') groups.push(index);
+  });
+  return groups.length === 1 ? { start: groups[0] + 1, end: subtreeEnd(nodes, groups[0]) } : null;
+}
+function sidebarRows(nodes, read) {
+  const textOf = read || readNode;
+  const rows = [];
+  const range = sidebarRange(nodes);
+  if (!range) return rows;
+  let status = null;
+  for (let index = range.start; index < range.end; index += 1) {
+    const node = nodes[index];
+    if (node.role === 'AXHeading') {
+      if (SIDEBAR_STATUSES.indexOf(node.label) >= 0) status = node.label;
+      else if (/Conversations$/.test(node.label)) status = null;
+      continue;
+    }
+    if (node.role !== 'AXLink' || !node.label) continue;
+    const row = parentOf(nodes, index);
+    if (row < range.start) continue;
+    const texts = [];
+    for (let at = row + 1; at < subtreeEnd(nodes, row); at += 1) if (nodes[at].role === 'AXStaticText') texts.push(String(textOf(nodes[at])).trim());
+    if (texts.length >= 2 && texts[0] === node.label) rows.push({ index, title: node.label, project: texts[1], status });
+  }
+  return rows;
+}
+
+// The sidebar rows of `title` in `project`, with whether the read showed any
+// status heading in the sidebar at all (a sidebar grouped some other way, or
+// no single sidebar, shows none).
+function sidebarState(nodes, title, project, read) {
+  const range = sidebarRange(nodes);
+  let grouped = false;
+  if (range) for (let at = range.start; at < range.end; at += 1) if (nodes[at].role === 'AXHeading' && SIDEBAR_STATUSES.indexOf(nodes[at].label) >= 0) grouped = true;
+  const rows = sidebarRows(nodes, read).filter((row) => row.title === title && row.project === project);
+  return { grouped, rows };
+}
+
 // desktop-decisions:end
 
 function get(element, name) {
@@ -554,7 +609,7 @@ function snapshot(nodes) {
     title: title(nodes),
     running: running(nodes),
     sendable: Boolean(find(nodes, 'AXButton', 'Send message')),
-    dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options }))[0] || null,
+    dialog: dialogs(nodes, staticText).map((prompt) => ({ question: prompt.question, options: prompt.options, permission: prompt.permission }))[0] || null,
     reply: reply(nodes, staticText),
   };
 }
@@ -880,6 +935,30 @@ const COMMANDS = {
     if (board.changeCount === before) throw new Error('copy_unchanged');
     const value = board.stringForType($.NSPasteboardTypeString);
     return { ok: true, text: value && !value.isNil() ? value.js : null };
+  },
+  // The run's rows in the sidebar, read with the app behind and the view unchanged.
+  'sidebar-state'(app, title, project) {
+    if (!title || !project) throw new Error('usage: sidebar-state <title> <project>');
+    const nodes = tree(app);
+    if (nodes.truncated) throw new Error('truncated');
+    const shown = sidebarState(nodes, title, project, staticText);
+    return { grouped: shown.grouped, statuses: shown.rows.map((row) => row.status) };
+  },
+  // Opens the `n`th (0-based) row of `title` in `project` from the sidebar:
+  // the view changes, the front does not.
+  'open-row'(app, name, project, n) {
+    if (!name || !project) throw new Error('usage: open-row <title> <project> <n>');
+    const nodes = tree(app);
+    if (nodes.truncated) throw new Error('truncated');
+    const rows = sidebarState(nodes, name, project, staticText).rows;
+    const row = rows[Number(n) || 0];
+    if (!row) throw new Error(`not_found: sidebar row ${name}`);
+    press(nodes[row.index], 'sidebar row');
+    // The view switch lands asynchronously; the runner reads the window again
+    // until it shows the row's conversation (each read of the tree takes about
+    // a second on a large app, so none is made here).
+    delay(0.3);
+    return { ok: true, rows: rows.length };
   },
   stop(app, expectedTitle, nonce) {
     const nodes = tree(app);
