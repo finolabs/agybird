@@ -31,9 +31,19 @@ import { renderJobTable, renderOutcome } from './lib/render.mjs';
 import { resolveAgyBinary } from './agybird.mjs';
 import { collectScope } from './lib/scope.mjs';
 import { chooseModel, readQuota, TIERS } from './lib/quota.mjs';
+// agybird:desktop-start
+import { processAlive, withJobLock } from './lib/jobs.mjs';
+import { assertTransportSupported, checkTransport, resolveTransport } from './lib/transport.mjs';
+// agybird:desktop-end
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_PATH = join(SCRIPT_DIRECTORY, 'agybird.mjs');
+// agybird:desktop-start
+export const DESKTOP_RUNNER_PATH = join(SCRIPT_DIRECTORY, 'desktop.mjs');
+// Longer than the most a signalled desktop runner's cleanup can take: its
+// bridge calls are bounded to 16 s together (desktop.mjs).
+export const DESKTOP_STOP_GRACE_MS = 20_000;
+// agybird:desktop-end
 const COMPANION_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_ROOT = join(SCRIPT_DIRECTORY, '..');
 // An edition built without hooks/ (the Codex and Anthropic directory editions)
@@ -122,9 +132,8 @@ function lastJsonLine(text) {
   return null;
 }
 
-// Runs the runner once and returns its envelope. The prompt goes through stdin,
-// never the argument list, exactly as the skill does it.
-export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+// The runner and its arguments for one request.
+export function runnerCommand(workspace, request) {
   const args = [
     RUNNER_PATH,
     '--category', request.category,
@@ -133,6 +142,52 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     '--timeout', request.timeout,
     ...request.runnerArgs,
   ];
+  // agybird:desktop-start
+  if (request.transport === 'desktop') args[0] = DESKTOP_RUNNER_PATH;
+  // agybird:desktop-end
+  return args;
+}
+
+// agybird:desktop-start
+// Ctrl+C or a host's timeout on a foreground desktop task: the runner alone gets
+// SIGTERM and the same grace as a cancel, to press Stop in the app and put the
+// clipboard and the front app back; only then is its group killed. This process
+// does not exit on the runner's exit: it goes on to record the run's result and
+// the approval it spent, then ends with the signal's exit code.
+function forwardToDesktopRunner(child, signal) {
+  const code = signal === 'SIGINT' ? 130 : 143;
+  process.exitCode = code;
+  process.once('exit', () => { process.exitCode = code; });
+  const timer = setTimeout(() => killTree(child.pid), DESKTOP_STOP_GRACE_MS);
+  child.once('close', () => {
+    clearTimeout(timer);
+    // Should the accounting stall, the process still ends.
+    setTimeout(() => process.exit(code), 10_000).unref();
+  });
+  try {
+    process.kill(child.pid, 'SIGTERM');
+  } catch {
+    // already gone; its close lets the accounting finish
+  }
+}
+
+// The file the desktop runner creates before it starts to press the answer to
+// request `index` of job `id`, so the approval is spent even if this process or
+// the runner is killed during the press; the runner removes it only when the
+// app refused the answer before any press.
+function answerMark(directory, id, index) {
+  return join(directory, `${id}.answered-${index}`);
+}
+
+function desktopAnswered(directory, job, index) {
+  return (job.answered ?? []).includes(index) || existsSync(answerMark(directory, job.id, index));
+}
+
+// agybird:desktop-end
+// Runs the runner once and returns its envelope. The prompt goes through stdin,
+// never the argument list, exactly as the skill does it.
+export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+  const args = runnerCommand(workspace, request);
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
   return new Promise((resolvePromise, reject) => {
@@ -148,6 +203,9 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     });
     // A separate group no longer hears Ctrl+C from the terminal, so pass it on.
     const forward = (signal) => {
+      // agybird:desktop-start
+      if (request.transport === 'desktop') return forwardToDesktopRunner(child, signal);
+      // agybird:desktop-end
       killTree(child.pid);
       process.exit(signal === 'SIGINT' ? 130 : 143);
     };
@@ -211,6 +269,9 @@ function createJob({ directory, workspace, kind, title, request, model }) {
     workspace,
     status: 'queued',
     model: model ?? null,
+    // agybird:desktop-start
+    ...(request.transport ? { transport: request.transport } : {}),
+    // agybird:desktop-end
     createdAt: new Date().toISOString(),
     // The runner's own timeout, its kill grace and agy's shutdown window.
     timeoutMs: timeoutMs(request.timeout) + 45_000,
@@ -226,10 +287,28 @@ async function executeJob(directory, job, env) {
   // knows the pid is still its own. Cancel just marks the record and waits.
   let runner = null;
   let runnerExited = false;
+  let stopRunner = (pid) => killTree(pid);
+  // agybird:desktop-start
+  // The desktop runner presses Stop in the app and puts the clipboard and the front
+  // app back before it exits, accessibility calls bounded to fit the grace. It
+  // gets SIGTERM alone and time to do that while this loop keeps reaping; only a
+  // runner still alive after the grace has its whole group killed.
+  let termAt = null;
+  if (request.transport === 'desktop') {
+    stopRunner = (pid) => {
+      if (termAt === null) {
+        termAt = Date.now();
+        process.kill(pid, 'SIGTERM');
+      } else if (Date.now() - termAt >= DESKTOP_STOP_GRACE_MS) {
+        killTree(pid);
+      }
+    };
+  }
+  // agybird:desktop-end
   let lastBeat = 0;
   const stopIfCancelled = () => {
     try {
-      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') killTree(runner.pid);
+      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') stopRunner(runner.pid);
     } catch {
       // the next check retries
     }
@@ -390,6 +469,38 @@ function writeConfig(cwd, env, patch) {
   return next;
 }
 
+// agybird:desktop-start
+function globalConfigPath(env) {
+  return join(jobsRoot(env), 'config.json');
+}
+
+function readGlobalConfig(env) {
+  const path = globalConfigPath(env);
+  try {
+    return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGlobalConfig(env, patch) {
+  const path = globalConfigPath(env);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${JSON.stringify({ ...readGlobalConfig(env), ...patch }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function transportFor({ cwd, env = process.env, flag }) {
+  return resolveTransport({ flag, workspace: readConfig(cwd, env), global: readGlobalConfig(env) });
+}
+
+// The app runs its own model and reasoning settings; Agybird never changes them.
+function refuseDesktopOptions(options) {
+  for (const [flag, value] of [['--model', options.model], ['--effort', options.effort]]) {
+    if (value !== undefined) throw new Error(`${flag} is not supported on the desktop transport: the app uses the model chosen in it. Drop ${flag}, or pass --via cli.`);
+  }
+}
+
+// agybird:desktop-end
 function output(options, data, text) {
   process.stdout.write(options.json ? `${JSON.stringify(data)}\n` : `${text.trimEnd()}\n`);
 }
@@ -419,6 +530,16 @@ async function commandResult(argv, env) {
   output(options, { job: summary(job), envelope }, rendered);
 }
 
+// How long cancel waits for the worker to confirm that a job's runner stopped.
+export function cancelWaitMs(job) {
+  // agybird:desktop-start
+  // The worker sees the cancel at its next poll, gives a desktop runner its
+  // grace, then killTree waits its own 3 s: cancel waits that long and a little more.
+  if (job.request?.transport === 'desktop') return CANCEL_POLL_MS + DESKTOP_STOP_GRACE_MS + 3_000 + 2_000;
+  // agybird:desktop-end
+  return CANCEL_WAIT_MS;
+}
+
 async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
@@ -442,7 +563,7 @@ async function commandCancel(argv, env) {
   // The worker stops its own runner; a worker that no longer beats cannot.
   let stopped = false;
   if (heartbeatFresh(before)) {
-    const deadline = Date.now() + CANCEL_WAIT_MS;
+    const deadline = Date.now() + cancelWaitMs(before);
     while (Date.now() < deadline) {
       if (readJob(directory, job.id)?.stoppedAt) {
         stopped = true;
@@ -469,6 +590,10 @@ const TASK_FLAGS = {
   '--timeout': 'value',
   '--approve': 'list',
   '--grant-scope': 'value',
+  // agybird:desktop-start
+  '--via': 'value',
+  '--decline': 'value',
+  // agybird:desktop-end
 };
 
 // The categories a job can resume in after an approval.
@@ -504,6 +629,21 @@ export function approvedRules(directory, approvals = []) {
     const envelope = job ? readStoredResult(directory, id) : null;
     const request = envelope?.permission_requests?.[Number(index)];
     if (!request) throw new Error(`Job ${id} has no permission request ${index}.`);
+    // agybird:desktop-start
+    // In the app an approval answers the prompt that is waiting there, once.
+    if (job.request?.transport === 'desktop') {
+      if (approvals.length !== 1) throw new Error('Approve one desktop request at a time.');
+      if (job.kind !== 'task') throw new Error(`Job ${id} is a ${job.kind}; only a task can be approved and resumed.`);
+      if (!request.question) throw new Error(`Request ${index} of ${id} has no question to answer.`);
+      // An approval binds to the whole question, so one too long to show whole cannot be given from here.
+      if (request.question_truncated || !request.question_full) throw new Error(`Request ${index} of ${id} asks a question too long to show whole here, so it cannot be approved from here; answer it in the Antigravity app.`);
+      if (desktopAnswered(directory, job, Number(index))) throw new Error(`Request ${index} of ${id} was already answered; if the app asks again, approve the new request it reports.`);
+      const title = envelope.evidence?.conversation_title;
+      const marker = envelope.evidence?.conversation_marker;
+      if (!title || !marker) throw new Error(`Job ${id} did not record which app conversation asked, so it cannot be approved from here; answer it in the Antigravity app.`);
+      return { rules: [], transport: 'desktop', id, index: Number(index), question: request.question_full, title, marker, mode: job.request.mode === 'write' ? 'write' : 'read', category: job.request.category === 'general' ? 'general' : 'code' };
+    }
+    // agybird:desktop-end
     // A review runs in a standalone conversation the workspace never resumes;
     // granting into it would record it as the task session.
     if (!['task', 'image'].includes(job.kind)) throw new Error(`Job ${id} is a ${job.kind}; only a task or image job can be approved and resumed.`);
@@ -530,14 +670,70 @@ async function readStdin() {
 
 async function commandTask(argv, env) {
   const { options, positional } = parseFlags(argv, TASK_FLAGS);
-  const approving = (options.approve ?? []).length > 0;
+  let approvals = options.approve ?? [];
+  // agybird:desktop-start
+  if (options.decline) {
+    if (approvals.length > 0) throw new Error('Choose --approve or --decline, not both.');
+    approvals = [options.decline];
+  }
+  // agybird:desktop-end
+  const approving = approvals.length > 0;
   const text = positional.join(' ').trim() || (await readStdin()).trim() || (approving ? GRANTED_PROMPT : '');
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
   if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
   if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const cwd = options.cwd ?? process.cwd();
-  const approval = approvedRules(storeFor(cwd, env), options.approve);
+  const approval = approvedRules(storeFor(cwd, env), approvals);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
+  // agybird:desktop-start
+  if (approving && options.via) throw new Error('An approval resumes the job on its own transport; drop --via.');
+  if (options.decline && approval.transport !== 'desktop') throw new Error('--decline answers a prompt waiting in the Antigravity app, so it applies only to a desktop request; a CLI request is declined by not granting it.');
+  // An approval resumes the job on the transport it ran on, whatever is chosen now.
+  const transport = approving ? (approval.transport ?? 'cli') : transportFor({ cwd, env, flag: options.via }).transport;
+  if (transport === 'desktop') {
+    if (approving && options.grantScope) throw new Error('--grant-scope does not apply to the desktop transport: an approval answers "Yes, allow this time" in the app, once.');
+    if (options.grantScope) throw new Error('--grant-scope applies only with --approve.');
+    refuseDesktopOptions(options);
+    const category = approval.category ?? options.category ?? 'code';
+    if (!['code', 'general'].includes(category)) throw new Error('--category must be code or general');
+    const runnerArgs = [];
+    const store = storeFor(cwd, env);
+    if (approval.question) {
+      runnerArgs.push('--resume-dialog', approval.question, '--resume-title', approval.title, '--resume-marker', approval.marker, '--resume-ack', answerMark(store, approval.id, approval.index));
+      if (options.decline) runnerArgs.push('--resume-answer', 'Skip');
+    }
+    const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text, transport };
+    if (!approval.question) return finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env }));
+    // An answer is given once; a later prompt with the same words is a new
+    // request. The request is claimed under the job lock, so two approvals
+    // cannot both answer it. The runner's answer mark, created before it
+    // starts to press, spends it whatever ends either process; a run blocked
+    // before that, or whose answer the app refused before any press, leaves no
+    // mark, so the request can be approved again.
+    withJobLock(store, approval.id, () => {
+      const current = readJob(store, approval.id);
+      if (desktopAnswered(store, current, approval.index)) throw new Error(`Request ${approval.index} of ${approval.id} was already answered; if the app asks again, approve the new request it reports.`);
+      const claim = current.answering?.[approval.index];
+      if (claim && claim !== process.pid && processAlive(claim)) throw new Error(`Request ${approval.index} of ${approval.id} is being answered by another approval; wait for it.`);
+      writeJob(store, { ...current, answering: { ...current.answering, [approval.index]: process.pid } });
+    });
+    let result;
+    try {
+      // A decline with no text of its own is not titled as a grant.
+      const title = options.decline && text === GRANTED_PROMPT ? 'Declined the permission prompt in the Antigravity app' : text.slice(0, 80);
+      result = await launch({ cwd, kind: 'task', title, request, background: options.background, env });
+    } finally {
+      withJobLock(store, approval.id, () => {
+        const current = readJob(store, approval.id);
+        const answering = { ...current.answering };
+        delete answering[approval.index];
+        const pressed = Boolean(result?.envelope?.evidence?.answered) || existsSync(answerMark(store, approval.id, approval.index));
+        writeJob(store, { ...current, answering, ...(pressed ? { answered: [...new Set([...(current.answered ?? []), approval.index])] } : {}) });
+      });
+    }
+    return finishTask(options, result);
+  }
+  // agybird:desktop-end
   const category = approval.category ?? options.category ?? 'code';
   const allowedCategories = ['code', 'general'];
   // agybird:image-start
@@ -565,7 +761,10 @@ async function commandTask(argv, env) {
   for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
-  const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
+  finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model }));
+}
+
+function finishTask(options, result) {
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
     return;
@@ -622,6 +821,9 @@ const REVIEW_FLAGS = {
   '--model': 'value',
   '--effort': 'value',
   '--timeout': 'value',
+  // agybird:desktop-start
+  '--via': 'value',
+  // agybird:desktop-end
 };
 
 function reviewCommand(kind) {
@@ -634,9 +836,20 @@ function reviewCommand(kind) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+    let picked = null;
+    // agybird:desktop-start
+    const { transport } = transportFor({ cwd, env, flag: options.via });
+    if (transport === 'desktop') {
+      refuseDesktopOptions(options);
+      picked = { model: undefined, note: null };
+    }
+    // agybird:desktop-end
+    const { model, note } = picked ?? pickModel({ cwd, env, tier: 'standard', model: options.model });
     if (note) process.stderr.write(`agybird: ${note}\n`);
     const request = buildReviewRequest({ kind, scope, options: { ...options, model }, focus: positional.join(' ').trim() });
+    // agybird:desktop-start
+    if (transport === 'desktop') request.transport = transport;
+    // agybird:desktop-end
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
     const result = await launch({ cwd, kind, title, request, background: options.background, env, model });
     if (options.background) {
@@ -668,10 +881,17 @@ async function commandPermissions(argv, env) {
     target_truncated: request.target_truncated,
     suggested_rule: request.suggested_rule,
     grantable: request.grantable === true && Boolean(request.suggested_rule),
+    // agybird:desktop-start
+    // A desktop request is approved by answering the app's prompt once, never by
+    // a rule, and only when the user can be shown the whole question.
+    ...(job.request?.transport === 'desktop' ? { transport: 'desktop', question: request.question, question_truncated: request.question_truncated === true, scope: request.scope, options: request.options, approvable: Boolean(request.question_full) && request.question_truncated !== true && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_title) && Boolean(readStoredResult(directory, job.id)?.evidence?.conversation_marker) && job.kind === 'task' } : {}),
+    // agybird:desktop-end
   }));
-  const text = requests.length
-    ? requests.map((request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`).join('\n')
-    : `Job ${job.id} reported no permission request.`;
+  let describe = (request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`;
+  // agybird:desktop-start
+  if (job.request?.transport === 'desktop') describe = (request) => `- ${request.approval}: the Antigravity app asks ${JSON.stringify(request.question)} -> ${request.question_truncated ? 'the question is shortened here, so answer it in the app' : request.approvable ? 'approving answers "Yes, allow this time" once' : 'answer it in the app'}${request.scope ? `; a wider rule for '${request.scope}' can only be given in the app` : ''}`;
+  // agybird:desktop-end
+  const text = requests.length ? requests.map(describe).join('\n') : `Job ${job.id} reported no permission request.`;
   output(options, { job: summary(job), requests }, text);
 }
 
@@ -696,14 +916,38 @@ async function commandUsage(argv, env) {
 }
 
 async function commandSetup(argv, env) {
-  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
+  const { options } = parseFlags(argv, {
+    ...COMMON,
+    '--enable-review-gate': 'flag',
+    '--disable-review-gate': 'flag',
+    // agybird:desktop-start
+    '--transport': 'value',
+    '--here': 'flag',
+    // agybird:desktop-end
+  });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
   const cwd = options.cwd ?? process.cwd();
+  // agybird:desktop-start
+  if (options.here && !options.transport) throw new Error('--here applies only with --transport.');
+  if (options.transport) {
+    assertTransportSupported(checkTransport(options.transport, '--transport'));
+    if (options.here) writeConfig(cwd, env, { transport: options.transport });
+    else writeGlobalConfig(env, { transport: options.transport });
+  }
+  // agybird:desktop-end
   const gateAvailable = GATE_AVAILABLE;
   if (options.enableReviewGate && !gateAvailable) throw new Error('This edition has no review gate: it ships without the Stop hook that runs it.');
   if (options.enableReviewGate) writeConfig(cwd, env, { reviewGate: true });
   if (options.disableReviewGate) writeConfig(cwd, env, { reviewGate: false });
   const report = { agy: { found: false, version: null }, signedIn: false, models: 0, limits: [], reviewGateAvailable: gateAvailable, reviewGate: gateAvailable && readConfig(cwd, env).reviewGate === true, workspace: workspaceRoot(cwd), problems: [] };
+  // agybird:desktop-start
+  try {
+    ({ transport: report.transport, source: report.transportSource } = transportFor({ cwd, env }));
+  } catch (error) {
+    Object.assign(report, { transport: null, transportSource: 'invalid' });
+    report.problems.push(`${error.message} Run setup with --transport cli or --transport desktop (with --here for this repository's config) to replace it.`);
+  }
+  // agybird:desktop-end
   try {
     const binary = resolveAgyBinary(env);
     const version = spawnSync(binary.command, [...binary.prefixArgs, '--version'], { encoding: 'utf8', timeout: 15_000, shell: false, windowsHide: true, env });
@@ -725,6 +969,9 @@ async function commandSetup(argv, env) {
     `agy: ${report.agy.found ? `${report.agy.version} at ${report.agy.path}` : 'not found'}`,
     `Signed in: ${report.signedIn ? 'yes' : 'no'}${report.models ? ` (${report.models} models)` : ''}`,
     gateAvailable ? `Review gate for ${report.workspace}: ${report.reviewGate ? 'on' : 'off'}` : 'Review gate: not included in this edition',
+    // agybird:desktop-start
+    `Transport: ${report.transport} (${report.transportSource})`,
+    // agybird:desktop-end
     ...report.limits.map((limit) => `Quota: ${limit.label} (${limit.window}) ${limit.remaining}%, resets ${localTime(limit.resetAt)}`),
     ...report.problems.map((problem) => `Problem: ${problem}`),
   ].join('\n');
@@ -740,6 +987,9 @@ async function commandImage(argv, env) {
   for (const reference of options.reference ?? []) runnerArgs.push('--reference', resolve(reference));
   const request = { category: 'image', mode: 'write', timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
   const cwd = options.cwd ?? process.cwd();
+  // agybird:desktop-start
+  if (transportFor({ cwd, env }).transport === 'desktop') process.stderr.write('agybird: image work runs on the agy CLI; the desktop transport does not generate images.\n');
+  // agybird:desktop-end
   const result = await launch({ cwd, kind: 'image', title: text.slice(0, 80), request, background: options.background, env });
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);

@@ -50,6 +50,33 @@ test('threat model covers the required trust and abuse cases', () => {
   }
 });
 
+test('the desktop transport is documented as opt-in, with its permissions and what it touches', () => {
+  const readme = read('README.md');
+  assert.match(readme, /## Desktop transport/);
+  assert.match(readme, /opt-in/i);
+  assert.match(readme, /macOS/);
+  assert.match(readme, /Accessibility/);
+  assert.match(readme, /Turbo/);
+  assert.match(readme, /clipboard/i);
+  const threatModel = read('docs/threat-model.md');
+  for (const topic of ['Accessibility', 'Turbo', 'keystroke', 'clipboard', 'Yes, allow this time', 'desktop.lock']) {
+    assert.match(threatModel, new RegExp(topic, 'i'), topic);
+  }
+  const privacy = read('PRIVACY.md');
+  assert.match(privacy, /desktop transport/i);
+  assert.match(privacy, /clipboard/i);
+  assert.match(read('CHANGELOG.md').split('## 0.')[0], /desktop transport/i);
+});
+
+test('the desktop reference says a second pane during Copy returns the verified on-screen reply with a warning', () => {
+  // The runner's fallback, as desktop-runner.test.mjs pins it: Copy fails, a warning, the on-screen reply.
+  assert.match(read('scripts/desktop.mjs'), /could not be copied from the app \(\$\{error\.message\}\); its on-screen text is returned instead/);
+  const reference = read('references/desktop.md');
+  assert.match(reference, /second pane that appears only then leaves Copy unpressed/);
+  assert.match(reference, /warns that the reply could not be copied and returns that on-screen reply instead/);
+  assert.match(reference, /`success` included/);
+});
+
 test('community files contain concrete contribution and conduct policies', () => {
   assert.match(read('CONTRIBUTING.md'), /npm run check/);
   assert.match(read('CONTRIBUTING.md'), /zero runtime dependencies/i);

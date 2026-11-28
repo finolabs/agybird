@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stripDesktopRegions } from './build-directory-edition.mjs';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const EDITION = join(ROOT, 'editions', 'codex');
 
@@ -31,6 +33,8 @@ const FILES = [
   'assets/icon-dark.svg',
 ];
 const FOLDERS = ['.codex-skills', 'references'];
+// The desktop transport is left out of this edition, as of the directory one.
+const EXCLUDED = ['references/desktop.md'];
 // Edition files that replace a source file at the same path.
 const OVERRIDES = ['.codex-skills/agybird-setup/SKILL.md'];
 
@@ -43,7 +47,11 @@ function listFiles(directory) {
 
 export function codexEditionFiles() {
   const files = new Map();
-  for (const path of [...FILES, ...FOLDERS.flatMap(listFiles)]) files.set(path, readFileSync(join(ROOT, path)));
+  for (const path of [...FILES, ...FOLDERS.flatMap(listFiles)]) {
+    if (EXCLUDED.includes(path)) continue;
+    const content = readFileSync(join(ROOT, path));
+    files.set(path, /\.(?:mjs|js|md)$/.test(path) ? Buffer.from(stripDesktopRegions(content.toString('utf8'), path)) : content);
+  }
   for (const path of OVERRIDES) files.set(path, readFileSync(join(EDITION, relative('.codex-skills', path))));
   const manifest = JSON.parse(files.get('.codex-plugin/plugin.json'));
   if (manifest.version !== JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version) throw new Error('.codex-plugin/plugin.json version differs from package.json');

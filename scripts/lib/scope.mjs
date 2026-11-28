@@ -205,15 +205,16 @@ function addUntracked(budget, top, files) {
   }
 }
 
-function listed(files) {
-  return files.length > MAX_LISTED_FILES ? [...files.slice(0, MAX_LISTED_FILES), `(${files.length - MAX_LISTED_FILES} more files not listed)`] : files;
+function listed(files, limit = MAX_LISTED_FILES) {
+  return files.length > limit ? [...files.slice(0, limit), `(${files.length - limit} more files not listed)`] : files;
 }
 
 function emptyTree(top) {
   return gitText(top, ['hash-object', '-t', 'tree', '--stdin'], { input: '' }).trim();
 }
 
-export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX_BYTES, deadline = Infinity }) {
+// `listLimit` caps the names in `files`; a caller that compares files needs them all.
+export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX_BYTES, deadline = Infinity, listLimit = MAX_LISTED_FILES }) {
   deadlineAt = deadline;
   if (!['auto', 'working-tree', 'branch'].includes(scope)) throw new Error(`Invalid scope: ${scope}; use auto, working-tree or branch`);
   if (base !== undefined && !SAFE_REF.test(base)) throw new Error(`Invalid base: ${base}`);
@@ -243,7 +244,7 @@ export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX
     if (tracked.overflowed) budget.truncated = true;
     addUntracked(budget, top, untracked);
     const diff = budget.text();
-    return { kind, base: null, files: listed([...trackedChanges, ...untracked]), diff: diff.trim() ? diff : '', truncated: budget.truncated, bytesRead: budget.read, root: top };
+    return { kind, base: null, files: listed([...trackedChanges, ...untracked], listLimit), diff: diff.trim() ? diff : '', truncated: budget.truncated, bytesRead: budget.read, root: top };
   }
 
   const baseRef = base ?? defaultBase(top);
@@ -255,5 +256,5 @@ export function collectScope({ cwd, scope = 'auto', base, maxBytes = DEFAULT_MAX
   budget.add(branchDiff.stdout);
   if (branchDiff.overflowed) budget.truncated = true;
   const diff = budget.text();
-  return { kind: 'branch', base: baseRef, files: listed(files), diff: diff.trim() ? diff : '', truncated: budget.truncated, root: top };
+  return { kind: 'branch', base: baseRef, files: listed(files, listLimit), diff: diff.trim() ? diff : '', truncated: budget.truncated, root: top };
 }

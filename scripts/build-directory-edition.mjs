@@ -51,27 +51,39 @@ const REFERENCE_EDITS = {
   'references/models.md': [[' Image work is the exception: the `image-generator` subagent picks its own model, so do not pass `--model` to choose one.', '']],
   'references/troubleshooting.md': [[' For images, look for the `image-generator` entry in `subagents[]` (or a `generate_image` call on older `agy`) and verify the artifact inside the working directory or the matching `brain/<conversation_id>` directory of the run or its image subagent.', '']],
 };
-const START = /^\s*\/\/ agybird:image-start\s*$/;
-const END = /^\s*\/\/ agybird:image-end\s*$/;
-
-export function stripImageRegions(text, name = 'source') {
+// A region is marked by whole lines, `// agybird:<kind>-start` in code or
+// `<!-- agybird:<kind>-start -->` in Markdown, and its matching end. Regions of
+// another kind are left as they are.
+export function stripRegions(text, kind, name = 'source') {
+  const marker = (edge) => new RegExp(`^\\s*(?:\\/\\/ agybird:${kind}-${edge}|<!-- agybird:${kind}-${edge} -->)\\s*$`);
+  const [start, end] = [marker('start'), marker('end')];
   const kept = [];
   let depth = 0;
   for (const line of text.split('\n')) {
-    if (START.test(line)) {
-      if (depth) throw new Error(`${name}: nested image region`);
+    if (start.test(line)) {
+      if (depth) throw new Error(`${name}: nested ${kind} region`);
       depth = 1;
       continue;
     }
-    if (END.test(line)) {
-      if (!depth) throw new Error(`${name}: image-end without a start`);
+    if (end.test(line)) {
+      if (!depth) throw new Error(`${name}: ${kind}-end without a start`);
       depth = 0;
       continue;
     }
     if (!depth) kept.push(line);
   }
-  if (depth) throw new Error(`${name}: image region left open`);
+  if (depth) throw new Error(`${name}: ${kind} region left open`);
   return kept.join('\n');
+}
+
+export function stripImageRegions(text, name = 'source') {
+  return stripRegions(text, 'image', name);
+}
+
+// The desktop transport stays out of both editions until the maintainer decides
+// whether their directories accept driving another app.
+export function stripDesktopRegions(text, name = 'source') {
+  return stripRegions(text, 'desktop', name);
 }
 
 function applyEdits(text, edits, name) {
@@ -86,9 +98,9 @@ function applyEdits(text, edits, name) {
 export function editionFiles() {
   const files = new Map();
   const read = (path) => readFileSync(join(ROOT, path), 'utf8');
-  for (const path of CODE_FILES) files.set(path, stripImageRegions(read(path), path));
-  for (const path of COPIED_FILES) files.set(path, read(path));
-  for (const [path, edits] of Object.entries(REFERENCE_EDITS)) files.set(path, applyEdits(read(path), edits, path));
+  for (const path of CODE_FILES) files.set(path, stripDesktopRegions(stripImageRegions(read(path), path), path));
+  for (const path of COPIED_FILES) files.set(path, stripDesktopRegions(read(path), path));
+  for (const [path, edits] of Object.entries(REFERENCE_EDITS)) files.set(path, stripDesktopRegions(applyEdits(read(path), edits, path), path));
   files.set('SKILL.md', readFileSync(join(EDITION, 'SKILL.md'), 'utf8'));
   files.set('README.md', readFileSync(join(EDITION, 'README.md'), 'utf8'));
   files.set('commands/setup.md', readFileSync(join(EDITION, 'commands', 'setup.md'), 'utf8'));

@@ -122,9 +122,8 @@ function lastJsonLine(text) {
   return null;
 }
 
-// Runs the runner once and returns its envelope. The prompt goes through stdin,
-// never the argument list, exactly as the skill does it.
-export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+// The runner and its arguments for one request.
+export function runnerCommand(workspace, request) {
   const args = [
     RUNNER_PATH,
     '--category', request.category,
@@ -133,6 +132,13 @@ export function runRunner({ workspace, request, env = process.env, onSpawn }) {
     '--timeout', request.timeout,
     ...request.runnerArgs,
   ];
+  return args;
+}
+
+// Runs the runner once and returns its envelope. The prompt goes through stdin,
+// never the argument list, exactly as the skill does it.
+export function runRunner({ workspace, request, env = process.env, onSpawn }) {
+  const args = runnerCommand(workspace, request);
   const childEnv = { ...env };
   if (request.stateDir) childEnv.AGYBIRD_STATE_DIR = request.stateDir;
   return new Promise((resolvePromise, reject) => {
@@ -226,10 +232,11 @@ async function executeJob(directory, job, env) {
   // knows the pid is still its own. Cancel just marks the record and waits.
   let runner = null;
   let runnerExited = false;
+  let stopRunner = (pid) => killTree(pid);
   let lastBeat = 0;
   const stopIfCancelled = () => {
     try {
-      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') killTree(runner.pid);
+      if (runner && !runnerExited && readJob(directory, job.id)?.status === 'cancelled') stopRunner(runner.pid);
     } catch {
       // the next check retries
     }
@@ -419,6 +426,11 @@ async function commandResult(argv, env) {
   output(options, { job: summary(job), envelope }, rendered);
 }
 
+// How long cancel waits for the worker to confirm that a job's runner stopped.
+export function cancelWaitMs(job) {
+  return CANCEL_WAIT_MS;
+}
+
 async function commandCancel(argv, env) {
   const { options, positional } = parseFlags(argv, COMMON);
   const directory = storeFor(options.cwd ?? process.cwd(), env);
@@ -442,7 +454,7 @@ async function commandCancel(argv, env) {
   // The worker stops its own runner; a worker that no longer beats cannot.
   let stopped = false;
   if (heartbeatFresh(before)) {
-    const deadline = Date.now() + CANCEL_WAIT_MS;
+    const deadline = Date.now() + cancelWaitMs(before);
     while (Date.now() < deadline) {
       if (readJob(directory, job.id)?.stoppedAt) {
         stopped = true;
@@ -518,13 +530,14 @@ async function readStdin() {
 
 async function commandTask(argv, env) {
   const { options, positional } = parseFlags(argv, TASK_FLAGS);
-  const approving = (options.approve ?? []).length > 0;
+  let approvals = options.approve ?? [];
+  const approving = approvals.length > 0;
   const text = positional.join(' ').trim() || (await readStdin()).trim() || (approving ? GRANTED_PROMPT : '');
   if (!text) throw new Error('Describe the task for Antigravity after the options, or pass it on stdin.');
   if (approving && options.background) throw new Error('A grant runs in the foreground only, so the user sees the run it unblocks.');
   if (approving && options.fresh) throw new Error('A grant applies to the conversation it unblocks; drop --fresh.');
   const cwd = options.cwd ?? process.cwd();
-  const approval = approvedRules(storeFor(cwd, env), options.approve);
+  const approval = approvedRules(storeFor(cwd, env), approvals);
   if (approving && (options.write || options.category)) throw new Error('An approval resumes the job that asked in its own mode; drop --write and --category.');
   const category = approval.category ?? options.category ?? 'code';
   const allowedCategories = ['code', 'general'];
@@ -541,7 +554,10 @@ async function commandTask(argv, env) {
   for (const rule of approval.rules) runnerArgs.push('--grant', rule);
   if (options.grantScope) runnerArgs.push('--grant-scope', options.grantScope);
   const request = { category, mode: approval.mode ?? (options.write ? 'write' : 'read'), timeout: options.timeout ?? '10m', runnerArgs, prompt: text };
-  const result = await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model });
+  finishTask(options, await launch({ cwd, kind: 'task', title: text.slice(0, 80), request, background: options.background, env, model }));
+}
+
+function finishTask(options, result) {
   if (options.background) {
     output(options, result, `Started ${result.job.id} in the background. Check it with /agybird:status ${result.job.id}.`);
     return;
@@ -610,7 +626,8 @@ function reviewCommand(kind) {
       output(options, { job: null, message: 'Nothing to review: no working-tree changes and no commits ahead of the base.' }, 'Nothing to review: no working-tree changes and no commits ahead of the base.');
       return;
     }
-    const { model, note } = pickModel({ cwd, env, tier: 'standard', model: options.model });
+    let picked = null;
+    const { model, note } = picked ?? pickModel({ cwd, env, tier: 'standard', model: options.model });
     if (note) process.stderr.write(`agybird: ${note}\n`);
     const request = buildReviewRequest({ kind, scope, options: { ...options, model }, focus: positional.join(' ').trim() });
     const title = `${kind === 'review' ? 'Review' : 'Adversarial review'} of ${reviewTarget(scope)}`;
@@ -645,9 +662,8 @@ async function commandPermissions(argv, env) {
     suggested_rule: request.suggested_rule,
     grantable: request.grantable === true && Boolean(request.suggested_rule),
   }));
-  const text = requests.length
-    ? requests.map((request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`).join('\n')
-    : `Job ${job.id} reported no permission request.`;
+  let describe = (request) => `- ${request.approval}: \`${request.tool}\` on ${request.target ? `\`${request.target}\`` : 'an unknown target'} -> ${request.grantable ? `\`${request.suggested_rule}\`` : 'cannot be granted by a rule'}${request.target_truncated ? ' (target shortened)' : ''}`;
+  const text = requests.length ? requests.map(describe).join('\n') : `Job ${job.id} reported no permission request.`;
   output(options, { job: summary(job), requests }, text);
 }
 
@@ -672,7 +688,11 @@ async function commandUsage(argv, env) {
 }
 
 async function commandSetup(argv, env) {
-  const { options } = parseFlags(argv, { ...COMMON, '--enable-review-gate': 'flag', '--disable-review-gate': 'flag' });
+  const { options } = parseFlags(argv, {
+    ...COMMON,
+    '--enable-review-gate': 'flag',
+    '--disable-review-gate': 'flag',
+  });
   if (options.enableReviewGate && options.disableReviewGate) throw new Error('Choose one of --enable-review-gate and --disable-review-gate.');
   const cwd = options.cwd ?? process.cwd();
   const gateAvailable = GATE_AVAILABLE;

@@ -16,6 +16,7 @@
     "SKILL.md",
     "scripts/agybird.mjs",
     "scripts/companion.mjs",
+    "scripts/desktop.mjs",
     "scripts/lib/",
     "prompts/",
     "schemas/",

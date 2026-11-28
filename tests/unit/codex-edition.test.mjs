@@ -33,6 +33,14 @@ test('the Codex edition keeps every skill and every file its skills and manifest
   assert.ok(manifest.interface.displayName.length <= 30 && manifest.interface.shortDescription.length <= 30);
 });
 
+test('the Codex edition carries no desktop transport', () => {
+  for (const [path, content] of files) {
+    if (/\.(?:svg|png|json)$/.test(path)) continue;
+    assert.doesNotMatch(content.toString('utf8'), /desktop|--via|agybird:desktop/i, `${path} still mentions the desktop transport`);
+    assert.doesNotMatch(path, /desktop|transport/, path);
+  }
+});
+
 test('the edition setup skill and companion offer no review gate', async () => {
   assert.doesNotMatch(text('.codex-skills/agybird-setup/SKILL.md'), /gate|hook/i);
   const root = mkdtempSync(join(tmpdir(), 'agybird-codex-edition-'));

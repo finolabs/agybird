@@ -1425,7 +1425,7 @@ function spawnCaptured(command, args, { cwd, env, timeoutMs, maxBytes = 16 * 102
   });
 }
 
-async function readPrompt(stream = process.stdin, limit = 1024 * 1024) {
+export async function readPrompt(stream = process.stdin, limit = 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of stream) {

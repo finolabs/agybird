@@ -32,5 +32,9 @@ When the plugin is installed, the user can also call its commands directly (`/ag
 6. Keep the whole objective in one conversation. The runner resumes the workspace's session on its own, so a follow-up needs no extra flag; confirm it worked through `evidence.session_resumed`.
 7. On `needs_permission`, put the request in front of the user and wait. Never grant a permission on the user's behalf. Once approved, run again with `--grant` and let the session resume rather than starting over.
 8. Independently verify the result according to the selected category.
+<!-- agybird:desktop-start -->
+
+When `scripts/companion.mjs setup --json` reports `"transport": "desktop"`, or the user asks for the Antigravity desktop app, read [references/desktop.md](references/desktop.md) and invoke `scripts/desktop.mjs` instead of `scripts/agybird.mjs`; it needs no `agy`, starts a new conversation every run and answers a permission prompt only through the companion's approval.
+<!-- agybird:desktop-end -->
 
 Choose the model per run with `--model` as [references/models.md](references/models.md) describes: the lowest tier that fits, in a pool that still has quota. A model or reasoning level the user asks for wins, even in their own words such as "use a stronger model" or "think harder"; state the chosen value and never persist it. Pass `--agent` or `--sandbox` only when the user explicitly asks for that exact override. Never change `useG1Credits` or any other credit policy without the user's explicit approval. Never bypass Antigravity permissions.

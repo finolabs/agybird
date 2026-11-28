@@ -59,6 +59,46 @@ test('image generates an image and lists the verified artifact', async () => {
   assert.match(run.stdout, /generated\.png/);
 });
 
+test('setup records the transport globally, or for one workspace with --here', async () => {
+  const env = companionEnv();
+  const cwd = mkdtempSync(join(tmpdir(), 'agybird-setup-'));
+  const first = parsed(await runCompanion(['setup', '--json'], { env, cwd }));
+  assert.equal(first.transport, 'cli');
+  assert.equal(first.transportSource, 'default');
+  assert.match((await runCompanion(['setup'], { env, cwd })).stdout, /^Transport: cli \(default\)$/m);
+  assert.equal(readdirSync(env.AGYBIRD_JOBS_DIR).includes('config.json'), false);
+
+  const chosen = parsed(await runCompanion(['setup', '--transport', 'cli', '--json'], { env, cwd }));
+  assert.deepEqual([chosen.transport, chosen.transportSource], ['cli', 'global']);
+  assert.equal(JSON.parse(readFileSync(join(env.AGYBIRD_JOBS_DIR, 'config.json'), 'utf8')).transport, 'cli');
+
+  const desktop = await runCompanion(['setup', '--transport', 'desktop', '--here', '--json'], { env, cwd });
+  if (process.platform === 'darwin') {
+    assert.deepEqual([parsed(desktop).transport, parsed(desktop).transportSource], ['desktop', 'workspace']);
+    const other = mkdtempSync(join(tmpdir(), 'agybird-setup-'));
+    assert.deepEqual(Object.values(pick(parsed(await runCompanion(['setup', '--json'], { env, cwd: other })))), ['cli', 'global']);
+  } else {
+    assert.notEqual(desktop.code, 0);
+    assert.match(desktop.stderr, /macOS/);
+    assert.equal(parsed(await runCompanion(['setup', '--json'], { env, cwd })).transportSource, 'global');
+  }
+});
+
+function pick(report) {
+  return { transport: report.transport, transportSource: report.transportSource };
+}
+
+test('setup refuses an unknown transport and --here without --transport', async () => {
+  const env = companionEnv();
+  const unknown = await runCompanion(['setup', '--transport', 'browser'], { env });
+  assert.notEqual(unknown.code, 0);
+  assert.match(unknown.stderr, /cli, desktop/);
+  const here = await runCompanion(['setup', '--here'], { env });
+  assert.notEqual(here.code, 0);
+  assert.match(here.stderr, /--transport/);
+  assert.equal(readdirSync(env.AGYBIRD_JOBS_DIR).includes('config.json'), false);
+});
+
 test('setup shows each quota pool and when it resets', async () => {
   const report = parsed(await runCompanion(['setup', '--json']));
   assert.equal(report.limits.length, 5);

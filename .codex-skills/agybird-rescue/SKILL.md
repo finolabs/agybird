@@ -24,3 +24,9 @@ command node "<plugin-root>/scripts/companion.mjs" permissions '<job-id>' --json
 ```
 
 For each entry, ask the user (with the host's question tool when it has one) whether to allow it once, allow and remember, or decline, naming its `tool`, `target` and `suggested_rule` exactly. When `target_truncated` is true, say the target was shortened and read the full action first; when `grantable` is false, say it cannot be granted by a rule and ask nothing. Only after an allow, run `command node "<plugin-root>/scripts/companion.mjs" task --approve <approval> --grant-scope once` (or `remember`) with that entry's `approval` value, in the foreground, with no other flag and no task text. Never pass a rule yourself and never approve an entry the user did not.
+<!-- agybird:desktop-start -->
+
+Add `--via desktop` or `--via cli` only when the user asked for the Antigravity app or the CLI for this task; otherwise the companion uses the transport chosen in setup.
+
+An entry with `transport: "desktop"` is a prompt waiting in the Antigravity app instead: ask only whether to allow it this time or decline, quoting its `question` exactly, and ask nothing when `approvable` is false. Only after an allow, run `command node "<plugin-root>/scripts/companion.mjs" task --approve <approval>` with no other flag; it answers "Yes, allow this time" once. After a decline, run the same command with `--decline <approval>` instead, which answers Skip in the app. A wider rule (its `scope`) is the user's to give in the app itself.
+<!-- agybird:desktop-end -->
